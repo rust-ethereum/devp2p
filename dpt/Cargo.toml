@@ -1,0 +1,10 @@
+[package]
+name = "dpt"
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["Wei Tang <hi@that.world>"]
+description = "Ethereum's Distributed Peer Table implementation in Rust."
+repository = "https://github.com/sorpaas/devp2p-rs"
+
+[dependencies]
+mio = "0.6"

@@ -1,0 +1,17 @@
+[package]
+name = "devp2p"
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["Wei Tang <hi@that.world>"]
+description = "Ethereum's devp2p protocol implementation in Rust."
+repository = "https://github.com/sorpaas/devp2p-rs"
+
+[dependencies]
+dpt = "0.1"
+rlpx = "0.1"
+
+[workspace]
+members = [
+  "./dpt",
+  "./rlpx",
+]

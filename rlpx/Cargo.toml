@@ -1,0 +1,10 @@
+[package]
+name = "rlpx"
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["Wei Tang <hi@that.world>"]
+description = "RLPx peer-to-peer protocol implementation in Rust."
+repository = "https://github.com/sorpaas/rlpx-rs"
+
+[dependencies]
+mio = "0.6"

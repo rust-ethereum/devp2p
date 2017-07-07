@@ -3,6 +3,7 @@ extern crate rand;
 extern crate sha3;
 extern crate etcommon_bigint as bigint;
 extern crate etcommon_hash as hash;
+extern crate etcommon_util;
 
 mod util;
 mod ecies;

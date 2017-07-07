@@ -33,8 +33,8 @@ mod tests {
 
     #[test]
     fn pk2id2pk() {
-        let prikey = SecretKey::new(&secp, &mut OsRng::new().unwrap());
+        let prikey = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
         let pubkey = PublicKey::from_secret_key(&SECP256K1, &prikey).unwrap();
-        assert_eq!(pubkey, id2pk(&secp, pk2id(&secp, &pubkey)));
+        assert_eq!(pubkey, id2pk(pk2id(&pubkey)));
     }
 }

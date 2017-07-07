@@ -1,13 +1,16 @@
 extern crate secp256k1;
 extern crate rand;
+extern crate sha3;
 extern crate etcommon_bigint as bigint;
+extern crate etcommon_hash as hash;
 
-mod ecies;
 mod util;
+mod ecies;
+mod peer;
 
 use bigint::H512;
 use util::pk2id;
-use secp256k1::Secp256k1;
+use hash::SECP256K1;
 use secp256k1::key::{PublicKey, SecretKey};
 
 #[derive(Debug, Clone)]
@@ -24,25 +27,25 @@ pub struct RLPx {
     max_peers: usize,
     client_id: String,
     capabilities: Vec<Capability>,
-    listen_port: usize,
+    listen_port: Option<usize>,
 }
 
 impl RLPx {
     pub fn with_options(
-        secp: &Secp256k1, secret_key: SecretKey, capabilities: &[Capability],
-        listen_port: usize, timeout: usize, max_peers: usize, client_id: String
+        secret_key: SecretKey, capabilities: &[Capability], listen_port: Option<usize>,
+        timeout: usize, max_peers: usize, client_id: String
     ) -> Self {
         Self {
             secret_key, timeout, max_peers, listen_port, client_id,
             capabilities: capabilities.into(),
-            id: pk2id(secp, &PublicKey::from_secret_key(secp, &secret_key).unwrap())
+            id: pk2id(&PublicKey::from_secret_key(&SECP256K1, &secret_key).unwrap())
         }
     }
 
     pub fn new(
-        secp: &Secp256k1, secret_key: SecretKey, capabilities: &[Capability], listen_port: usize
+        secret_key: SecretKey, capabilities: &[Capability], listen_port: Option<usize>
     ) -> Self {
-        Self::with_options(secp, secret_key, capabilities, listen_port,
+        Self::with_options(secret_key, capabilities, listen_port,
                            10 * 1000, 10,
                            format!("Rust etclient/${}",
                                    option_env!("CARGO_PKG_VERSION").unwrap_or("0.0")))

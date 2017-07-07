@@ -1,6 +1,8 @@
 extern crate secp256k1;
 extern crate rand;
 extern crate sha3;
+extern crate sha2;
+extern crate byteorder;
 extern crate etcommon_bigint as bigint;
 extern crate etcommon_hash as hash;
 extern crate etcommon_util;

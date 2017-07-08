@@ -12,6 +12,7 @@ mod util;
 mod ecies;
 mod peer;
 mod mac;
+mod errors;
 
 use bigint::H512;
 use util::pk2id;

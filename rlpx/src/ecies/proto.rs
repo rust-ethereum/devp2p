@@ -122,8 +122,20 @@ pub struct ECIESClientProto {
     remote_id: H512,
 }
 
+impl ECIESClientProto {
+    pub fn new(secret_key: SecretKey, remote_id: H512) -> Self {
+        Self { secret_key, remote_id }
+    }
+}
+
 pub struct ECIESServerProto {
     secret_key: SecretKey,
+}
+
+impl ECIESServerProto {
+    pub fn new(secret_key: SecretKey) -> Self {
+        Self { secret_key }
+    }
 }
 
 impl<T: AsyncRead + AsyncWrite + 'static> ClientProto<T> for ECIESClientProto {

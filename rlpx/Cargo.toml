@@ -8,7 +8,7 @@ repository = "https://github.com/sorpaas/devp2p-rs"
 
 [dependencies]
 mio = "0.6"
-secp256k1 = "0.6"
+devp2p-secp256k1 = "0.5"
 sha2 = "0.6"
 sha3 = "0.6"
 rand = "0.3.12"

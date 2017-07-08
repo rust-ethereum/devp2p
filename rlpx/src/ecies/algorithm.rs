@@ -23,7 +23,7 @@ const ACK_LEN: usize =
     64 /* public key */ + 32 /* nonce */ + 1;
 
 fn ecdh_x(public_key: &PublicKey, secret_key: &SecretKey) -> H256 {
-    let shared = SharedSecret::new(&SECP256K1, public_key, secret_key);
+    let shared = SharedSecret::new_raw(&SECP256K1, public_key, secret_key);
     H256::from(&shared[0..32])
 }
 
@@ -35,7 +35,7 @@ fn concat_kdf(key_material: H256) -> H256 {
     for counter in 0..(reps+1) {
         let mut sha256 = Sha256::new();
         let mut tmp: Vec<u8> = Vec::new();
-        tmp.write_u32::<BigEndian>(counter as u32).unwrap();
+        tmp.write_u32::<BigEndian>((counter + 1) as u32).unwrap();
         sha256.input(&tmp);
         sha256.input(&key_material);
         buffers.append(&mut sha256.result().as_ref().into());

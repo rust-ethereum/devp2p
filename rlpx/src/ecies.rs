@@ -352,13 +352,25 @@ impl ECIES {
         Ok(self.body_size.unwrap())
     }
 
-    pub fn frame_len(&self) -> usize {
+    pub fn auth_len(&self) -> usize {
+        65 + 16 + AUTH_LEN + 32
+    }
+
+    pub fn ack_len(&self) -> usize {
+        65 + 16 + ACK_LEN + 32
+    }
+
+    pub fn header_len(&self) -> usize {
+        32
+    }
+
+    pub fn body_len(&self) -> usize {
         let len = self.body_size.unwrap();
-        if len % 16 == 0 {
+        (if len % 16 == 0 {
             len
         } else {
             (len / 16 + 1) * 16
-        }
+        }) + 16
     }
 
     pub fn create_body(&mut self, data: &[u8]) -> Vec<u8> {
@@ -429,17 +441,23 @@ mod tests {
         let mut client_ecies = ECIES::new_client(client_secret_key, pk2id(&server_public_key)).unwrap();
 
         // Handshake
-        server_ecies.parse_auth(client_ecies.create_auth().unwrap().as_ref()).unwrap();
-        client_ecies.parse_ack(server_ecies.create_ack().unwrap().as_ref()).unwrap();
+        let auth = client_ecies.create_auth().unwrap();
+        assert_eq!(auth.len(), server_ecies.auth_len());
+        server_ecies.parse_auth(auth.as_ref()).unwrap();
+        let ack = server_ecies.create_ack().unwrap();
+        assert_eq!(ack.len(), client_ecies.ack_len());
+        client_ecies.parse_ack(ack.as_ref()).unwrap();
 
         let server_to_client_data = [0u8, 1u8, 2u8, 3u8, 4u8];
         let client_to_server_data = [5u8, 6u8, 7u8];
 
         // Test server to client 1
-        client_ecies.parse_header(
-            server_ecies.create_header(server_to_client_data.len()).as_ref()).unwrap();
-        let ret = client_ecies.parse_body(
-            server_ecies.create_body(&server_to_client_data).as_ref()).unwrap();
+        let header = server_ecies.create_header(server_to_client_data.len());
+        assert_eq!(header.len(), client_ecies.header_len());
+        client_ecies.parse_header(header.as_ref()).unwrap();
+        let body = server_ecies.create_body(&server_to_client_data);
+        assert_eq!(body.len(), client_ecies.body_len());
+        let ret = client_ecies.parse_body(body.as_ref()).unwrap();
         assert_eq!(ret, server_to_client_data);
 
         // Test client to server 1

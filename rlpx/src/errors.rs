@@ -12,6 +12,12 @@ pub enum ECIESError {
     InvalidAckData,
 }
 
+impl From<ECIESError> for io::Error {
+    fn from(error: ECIESError) -> io::Error {
+        io::Error::new(io::ErrorKind::Other, "ECIES error")
+    }
+}
+
 impl From<io::Error> for ECIESError {
     fn from(error: io::Error) -> ECIESError {
         ECIESError::IO(error)

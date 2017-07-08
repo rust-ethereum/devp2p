@@ -7,6 +7,13 @@ extern crate crypto;
 extern crate etcommon_bigint as bigint;
 extern crate etcommon_hash as hash;
 extern crate etcommon_util;
+extern crate bytes;
+#[macro_use]
+extern crate futures;
+extern crate tokio_io;
+extern crate tokio_core;
+extern crate tokio_proto;
+extern crate tokio_service;
 
 mod util;
 mod ecies;

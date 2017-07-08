@@ -352,6 +352,15 @@ impl ECIES {
         Ok(self.body_size.unwrap())
     }
 
+    pub fn frame_len(&self) -> usize {
+        let len = self.body_size.unwrap();
+        if len % 16 == 0 {
+            len
+        } else {
+            (len / 16 + 1) * 16
+        }
+    }
+
     pub fn create_body(&mut self, data: &[u8]) -> Vec<u8> {
         let len = if data.len() % 16 == 0 {
             data.len()

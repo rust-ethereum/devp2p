@@ -342,9 +342,13 @@ impl ECIES {
         } else {
             (data.len() / 16 + 1) * 16
         };
+        let mut data_padded = vec![0u8; len];
+        for i in 0..data.len() {
+            data_padded[i] = data[i];
+        }
         let mut encrypted = vec![0u8; len];
         self.egress_aes.as_mut().unwrap().encrypt(
-            &mut RefReadBuffer::new(&data),
+            &mut RefReadBuffer::new(&data_padded),
             &mut RefWriteBuffer::new(&mut encrypted), false);
         self.egress_mac.as_mut().unwrap().update_body(encrypted.as_ref());
         let tag = self.egress_mac.as_mut().unwrap().digest();

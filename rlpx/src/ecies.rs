@@ -97,7 +97,7 @@ impl ECIES {
         }
     }
 
-    pub fn encrypt_message(&self, data: &[u8]) -> Vec<u8> {
+    fn encrypt_message(&self, data: &[u8]) -> Vec<u8> {
         let secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
         let x = ecdh_x(&self.remote_public_key.unwrap(), &secret_key);
         let key = concat_kdf(x);
@@ -121,7 +121,7 @@ impl ECIES {
         ret
     }
 
-    pub fn decrypt_message(&self, encrypted: &[u8]) -> Vec<u8> {
+    fn decrypt_message(&self, encrypted: &[u8]) -> Vec<u8> {
         let public_key = PublicKey::from_slice(encrypted[0..65]);
         let data_iv = encrypted[65..(encrypted.len() - 32)];
         let tag = H256::from(encrypted[(encrypted.len() - 32)..]);
@@ -142,7 +142,7 @@ impl ECIES {
         decrypted_data
     }
 
-    pub fn create_auth_unencrypted(&self) -> [u8; AUTH_LEN] {
+    fn create_auth_unencrypted(&self) -> [u8; AUTH_LEN] {
         let x = ecdh_x(&self.remote_public_key.unwrap(), &self.secret_key);
         let msg = Message::from_slice((x ^ self.nonce).as_ref()).unwrap();
         let sig_rec = SECP256K1.sign_recoverable(&msg, &self.ephemeral_secret_key).unwrap();
@@ -164,7 +164,7 @@ impl ECIES {
         init_msg
     }
 
-    pub fn parse_auth_unencrypted(&mut self, data: [u8; AUTH_LEN]) {
+    fn parse_auth_unencrypted(&mut self, data: [u8; AUTH_LEN]) {
         let sig_rec = RecoverableSignature::from_compact(
             &SECP256K1, data[0..64], RecoveryId::from_i32(sig[64] as i32)).unwrap();
         let heid = H256::from(&data[65..97]);
@@ -182,8 +182,8 @@ impl ECIES {
         assert!(heid == check_heid);
     }
 
-    pub fn parse_auth(&mut self, data: Vec<u8>) {
-        self.remote_init_msg = data.clone();
+    pub fn parse_auth(&mut self, data: &[u8]) {
+        self.remote_init_msg = data.into();
         let unencrypted = self.decrypt_message(&data);
         assert!(unencrypted.len() == AUTH_LEN);
         let data = [u8; AUTH_LEN];
@@ -193,7 +193,7 @@ impl ECIES {
         self.parse_auth_unencrypted(unencrypted)
     }
 
-    pub fn create_ack_unencrypted(&self) -> [u8; ACK_LEN] {
+    fn create_ack_unencrypted(&self) -> [u8; ACK_LEN] {
         let mut ret = [0u8; ACK_LEN];
         ret[0..64].copy_from_slice(pk2id(self.ephemeral_public_key));
         ret[64..96].copy_from_slice(self.nonce);
@@ -209,7 +209,7 @@ impl ECIES {
         encrypted
     }
 
-    pub fn parse_ack_unencrypted(&mut self, data: [u8; ACK_LEN]) {
+    fn parse_ack_unencrypted(&mut self, data: [u8; ACK_LEN]) {
         self.remote_ephemeral_public_key = id2pk(H256::from(data[0..64]));
         self.remote_nonce = H128::from(data[64..96]);
         assert!(data[96] == 0u8);
@@ -218,7 +218,7 @@ impl ECIES {
             ecdh_x(self.remote_ephemeral_public_key, self.ephemeral_private_key));
     }
 
-    pub fn parse_ack(&mut self, data: Vec<u8>) {
+    pub fn parse_ack(&mut self, data: &[u8]) {
         self.remote_init_msg = data.clone();
         let unencrypted = self.decrypt_message(&data);
         assert!(unencrypted.len() == ACK_LEN);
@@ -230,7 +230,7 @@ impl ECIES {
         self.setup_frame();
     }
 
-    pub fn setup_frame(incoming: bool) {
+    fn setup_frame(incoming: bool) {
         let h_nonce = if incoming {
             let hasher = Keccak256::new();
             hasher.input(self.nonce);
@@ -350,12 +350,52 @@ mod tests {
     use super::ECIES;
 
     #[test]
-    fn handshake_auth() {
-        let remote_secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
-        let remote_public_key = PublicKey::from_secret_key(
-            &SECP256K1, &remote_secret_key).unwrap();
-        let secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
-        let ecies = ECIES::new_client(secret_key, pk2id(&remote_public_key));
-        let auth = ecies.create_auth();
+    fn communicate() {
+        let server_secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
+        let server_public_key = PublicKey::from_secret_key(
+            &SECP256K1, &server_secret_key).unwrap();
+        let client_secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
+        let client_public_key = PublicKey::from_secret_key(
+            &SECP256K1, &client_public_key).unwrap();
+
+        let server_ecies = ECIES::new_server(server_secret_key);
+        let client_ecies = ECIES::new_client(client_secret_key, pk2id(&server_public_key));
+
+        // Handshake
+        server_ecies.parse_auth(client_ecies.create_auth());
+        client_ecies.parse_ack(server_ecies.create_ack());
+
+        let server_to_client_data = [0u8, 1u8, 2u8, 3u8, 4u8];
+        let client_to_server_data = [5u8, 6u8, 7u8];
+
+        // Test server to client 1
+        client_ecies.parse_header(server_ecies.create_header(server_to_client_data.len()));
+        let ret = client_ecies.parse_body(server_ecies.create_body(server_to_client_data));
+        assert_eq!(ret, server_to_client_data);
+
+        // Test client to server 1
+        server_ecies.parse_header(client_ecies.create_header(client_to_server_data.len()));
+        let ret = server_ecies.parse_body(client_ecies.create_body(client_to_server_data));
+        assert_eq!(ret, client_to_server_data);
+
+        // Test server to client 2
+        client_ecies.parse_header(server_ecies.create_header(server_to_client_data.len()));
+        let ret = client_ecies.parse_body(server_ecies.create_body(server_to_client_data));
+        assert_eq!(ret, server_to_client_data);
+
+        // Test server to client 3
+        client_ecies.parse_header(server_ecies.create_header(server_to_client_data.len()));
+        let ret = client_ecies.parse_body(server_ecies.create_body(server_to_client_data));
+        assert_eq!(ret, server_to_client_data);
+
+        // Test client to server 2
+        server_ecies.parse_header(client_ecies.create_header(client_to_server_data.len()));
+        let ret = server_ecies.parse_body(client_ecies.create_body(client_to_server_data));
+        assert_eq!(ret, client_to_server_data);
+
+        // Test client to server 3
+        server_ecies.parse_header(client_ecies.create_header(client_to_server_data.len()));
+        let ret = server_ecies.parse_body(client_ecies.create_body(client_to_server_data));
+        assert_eq!(ret, client_to_server_data);
     }
 }

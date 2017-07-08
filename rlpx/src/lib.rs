@@ -3,6 +3,7 @@ extern crate rand;
 extern crate sha3;
 extern crate sha2;
 extern crate byteorder;
+extern crate crypto;
 extern crate etcommon_bigint as bigint;
 extern crate etcommon_hash as hash;
 extern crate etcommon_util;
@@ -10,6 +11,7 @@ extern crate etcommon_util;
 mod util;
 mod ecies;
 mod peer;
+mod mac;
 
 use bigint::H512;
 use util::pk2id;

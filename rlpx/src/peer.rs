@@ -14,6 +14,7 @@ use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};
 use rlp;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
+/// Capability information
 pub struct CapabilityInfo {
     pub name: &'static str,
     pub version: usize,
@@ -75,6 +76,7 @@ impl Decodable for HelloMessage {
     }
 }
 
+/// Peer stream of a RLPx
 pub struct PeerStream {
     stream: ECIESStream,
     protocol_version: usize,
@@ -82,13 +84,16 @@ pub struct PeerStream {
     shared_capabilities: Vec<CapabilityInfo>,
     port: usize,
     id: H512,
+    remote_id: H512,
 }
 
 impl PeerStream {
-    pub fn id(&self) -> H512 {
-        self.id
+    /// Remote public id of this peer
+    pub fn remote_id(&self) -> H512 {
+        self.remote_id
     }
 
+    /// Connect to a peer over TCP
     pub fn connect(
         addr: &SocketAddr, handle: &Handle,
         secret_key: SecretKey, remote_id: H512,
@@ -182,7 +187,7 @@ impl PeerStream {
                         Ok(PeerStream {
                             stream: transport,
                             client_version: nonhello_client_version,
-                            protocol_version, port, id,
+                            protocol_version, port, id, remote_id,
                             shared_capabilities
                         })
                     },

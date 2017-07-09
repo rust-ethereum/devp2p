@@ -1,3 +1,5 @@
+//! ECIES protocol implementation
+
 mod algorithm;
 mod proto;
 

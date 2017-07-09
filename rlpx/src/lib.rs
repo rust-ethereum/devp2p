@@ -1,5 +1,8 @@
+//! RLPx protocol implementation in Rust
+
 extern crate secp256k1;
 extern crate rand;
+
 extern crate sha3;
 extern crate sha2;
 extern crate byteorder;
@@ -35,12 +38,14 @@ use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::{Framed, Encoder, Decoder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Sending node type specifying either all, any or a particular peer
 pub enum Node {
     Any,
     All,
     Peer(H512),
 }
 
+/// A RLPx stream and sink
 pub struct RLPxStream {
     streams: Vec<PeerStream>,
     futures: Vec<Box<Future<Item = PeerStream, Error = io::Error>>>,
@@ -52,6 +57,7 @@ pub struct RLPxStream {
 }
 
 impl RLPxStream {
+    /// Create a new RLPx stream
     pub fn new(secret_key: SecretKey, protocol_version: usize,
                client_version: String, capabilities: Vec<CapabilityInfo>,
                port: usize) -> RLPxStream {
@@ -63,6 +69,7 @@ impl RLPxStream {
         }
     }
 
+    /// Append a new peer to this RLPx stream
     pub fn add_peer(
         &mut self, addr: &SocketAddr, handle: &Handle, remote_id: H512
     ) {
@@ -73,6 +80,7 @@ impl RLPxStream {
         self.futures.push(future);
     }
 
+    /// Poll over new peers to resolve them to TCP streams
     pub fn poll_new_peers(&mut self) -> Poll<(), io::Error> {
         let ref mut futures = self.futures;
         let ref mut streams = self.streams;
@@ -137,7 +145,7 @@ impl Stream for RLPxStream {
                 return true;
             }
 
-            let id = peer.id();
+            let id = peer.remote_id();
             match peer.poll() {
                 Ok(Async::NotReady) => true,
                 Ok(Async::Ready(None)) => false,
@@ -169,7 +177,7 @@ impl Sink for RLPxStream {
         let mut any_ready = false;
 
         retain_mut(streams, |ref mut peer| {
-            let id = peer.id();
+            let id = peer.remote_id();
 
             if match node {
                 Node::Peer(peer_id) => peer_id == id,

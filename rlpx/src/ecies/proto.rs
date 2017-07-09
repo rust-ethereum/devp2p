@@ -13,21 +13,25 @@ use std::net::SocketAddr;
 use super::algorithm::ECIES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Current ECIES state of a connection
 pub enum ECIESState {
     Auth, Ack, Header, Body
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Raw values for an ECIES protocol
 pub enum ECIESValue {
     Auth, Ack, Header(usize), Body(Vec<u8>)
 }
 
+/// Tokio codec for ECIES
 pub struct ECIESCodec {
     ecies: ECIES,
     state: ECIESState,
 }
 
 impl ECIESCodec {
+    /// Create a new server codec using the given secret key
     pub fn new_server(secret_key: SecretKey) -> Result<Self, ECIESError> {
         Ok(Self {
             ecies: ECIES::new_server(secret_key)?,
@@ -35,6 +39,7 @@ impl ECIESCodec {
         })
     }
 
+    /// Create a new client codec using the given secret key and the server's public id
     pub fn new_client(secret_key: SecretKey, remote_id: H512) -> Result<Self, ECIESError> {
         Ok(Self {
             ecies: ECIES::new_client(secret_key, remote_id)?,
@@ -133,6 +138,7 @@ impl Encoder for ECIESCodec {
     }
 }
 
+/// ECIES stream over TCP exchanging raw bytes
 pub struct ECIESStream {
     stream: Framed<TcpStream, ECIESCodec>,
     polled_header: bool,
@@ -140,6 +146,7 @@ pub struct ECIESStream {
 }
 
 impl ECIESStream {
+    /// Connect to an ECIES server
     pub fn connect(
         addr: &SocketAddr, handle: &Handle,
         secret_key: SecretKey, remote_id: H512

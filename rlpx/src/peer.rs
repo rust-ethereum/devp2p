@@ -13,13 +13,20 @@ use futures::future;
 use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};
 use rlp;
 
+#[derive(Clone, Debug)]
+pub struct CapabilityInfo {
+    pub name: String,
+    pub version: usize,
+    pub length: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Capability {
+pub struct CapabilityMessage {
     pub name: String,
     pub version: usize,
 }
 
-impl Encodable for Capability {
+impl Encodable for CapabilityMessage {
     fn rlp_append(&self, s: &mut RlpStream) {
         s.begin_list(2);
         s.append(&self.name);
@@ -27,7 +34,7 @@ impl Encodable for Capability {
     }
 }
 
-impl Decodable for Capability {
+impl Decodable for CapabilityMessage {
     fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
         Ok(Self {
             name: rlp.val_at(0)?,
@@ -40,7 +47,7 @@ impl Decodable for Capability {
 pub struct HelloMessage {
     pub protocol_version: usize,
     pub client_version: String,
-    pub capabilities: Vec<Capability>,
+    pub capabilities: Vec<CapabilityMessage>,
     pub port: usize,
     pub id: H512,
 }
@@ -72,7 +79,7 @@ pub struct PeerStream {
     stream: ECIESStream,
     protocol_version: usize,
     client_version: String,
-    shared_capabilities: Vec<Capability>,
+    shared_capabilities: Vec<CapabilityInfo>,
     port: usize,
     id: H512,
 }
@@ -82,7 +89,7 @@ impl PeerStream {
         addr: &SocketAddr, handle: &Handle,
         secret_key: SecretKey, remote_id: H512,
         protocol_version: usize, client_version: String,
-        capabilities: Vec<Capability>, port: usize
+        capabilities: Vec<CapabilityInfo>, port: usize
     ) -> Box<Future<Item = PeerStream, Error = io::Error>> {
         let public_key = match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
             Ok(key) => key,
@@ -96,38 +103,76 @@ impl PeerStream {
 
         let stream = ECIESStream::connect(addr, handle, secret_key.clone(), remote_id)
             .and_then(move |socket| socket.send(rlp::encode(&HelloMessage {
-                port, id, protocol_version, client_version, capabilities
+                port, id, protocol_version, client_version,
+                capabilities: {
+                    let mut caps = Vec::new();
+                    for cap in capabilities {
+                        caps.push(CapabilityMessage {
+                            name: cap.name,
+                            version: cap.version
+                        });
+                    }
+                    caps
+                }
             }).to_vec()))
             .and_then(|transport| transport.into_future().map_err(|(e, _)| e))
             .and_then(move |(hello, transport)| {
                 if hello.is_none() {
-                    return Err(io::Error::new(io::ErrorKind::Other, "hello failed"));
+                    return Err(io::Error::new(io::ErrorKind::Other, "hello failed (no value)"));
+                }
+                let hello = hello.unwrap();
+
+                let message_id_rlp = UntrustedRlp::new(&hello[0..1]);
+                let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
+                match message_id {
+                    Ok(message_id) => {
+                        if message_id != 0 {
+                            return Err(io::Error::new(io::ErrorKind::Other,
+                                                      "hello failed (message id)"));
+                        }
+                    },
+                    Err(_) => {
+                        return Err(io::Error::new(io::ErrorKind::Other,
+                                                  "hello failed (message id parsing)"));
+                    }
                 }
 
-                let hello = hello.unwrap();
-                if hello[0] != 0 && hello[0] != 128 {
-                    Err(io::Error::new(io::ErrorKind::Other, "hello failed"))
-                } else {
-                    let rlp: Result<HelloMessage, rlp::DecoderError> =
-                        UntrustedRlp::new(&hello[1..]).as_val();
-                    match rlp {
-                        Ok(val) => {
-                            println!("hello message: {:?}", val);
-                            let mut shared_capabilities: Vec<Capability> = Vec::new();
-                            for cap in nonhello_capabilities {
-                                if val.capabilities.contains(&cap) {
-                                    shared_capabilities.push(cap.clone())
-                                }
+                let rlp: Result<HelloMessage, rlp::DecoderError> =
+                    UntrustedRlp::new(&hello[1..]).as_val();
+                match rlp {
+                    Ok(val) => {
+                        println!("hello message: {:?}", val);
+                        let mut shared_capabilities: Vec<CapabilityInfo> = Vec::new();
+
+                        for cap_info in nonhello_capabilities {
+                            if val.capabilities.iter().find(
+                                |v| v.name == cap_info.name && v.version == cap_info.version)
+                                .is_some()
+                            {
+                                shared_capabilities.push(cap_info.clone());
                             }
-                            Ok(PeerStream {
-                                stream: transport,
-                                client_version: nonhello_client_version,
-                                protocol_version, port, id,
-                                shared_capabilities
-                            })
-                        },
-                        Err(_) => Err(io::Error::new(io::ErrorKind::Other, "hello failed"))
-                    }
+                        }
+
+                        let mut shared_caps_original = shared_capabilities.clone();
+
+                        for cap_info in shared_caps_original {
+                            shared_capabilities.retain(|v| {
+                                if v.name != cap_info.name { true }
+                                else if v.version < cap_info.version { false }
+                                else { true }
+                            });
+                        }
+
+                        shared_capabilities.sort_by_key(|v| v.name.clone());
+
+                        Ok(PeerStream {
+                            stream: transport,
+                            client_version: nonhello_client_version,
+                            protocol_version, port, id,
+                            shared_capabilities
+                        })
+                    },
+                    Err(_) => Err(io::Error::new(io::ErrorKind::Other, "hello failed (rlp error)"))
                 }
             });
 

@@ -102,19 +102,29 @@ impl PeerStream {
         let nonhello_client_version = client_version.clone();
 
         let stream = ECIESStream::connect(addr, handle, secret_key.clone(), remote_id)
-            .and_then(move |socket| socket.send(rlp::encode(&HelloMessage {
-                port, id, protocol_version, client_version,
-                capabilities: {
-                    let mut caps = Vec::new();
-                    for cap in capabilities {
-                        caps.push(CapabilityMessage {
-                            name: cap.name,
-                            version: cap.version
-                        });
+            .and_then(move |socket| {
+                let hello = rlp::encode(&HelloMessage {
+                    port, id, protocol_version, client_version,
+                    capabilities: {
+                        let mut caps = Vec::new();
+                        for cap in capabilities {
+                            caps.push(CapabilityMessage {
+                                name: cap.name,
+                                version: cap.version
+                            });
+                        }
+                        caps
                     }
-                    caps
+                }).to_vec();
+                let message_id: Vec<u8> = rlp::encode(&0usize).to_vec();
+                assert!(message_id.len() == 1);
+                let mut ret: Vec<u8> = Vec::new();
+                ret.push(message_id[0]);
+                for d in &hello {
+                    ret.push(*d);
                 }
-            }).to_vec()))
+                socket.send(ret)
+            })
             .and_then(|transport| transport.into_future().map_err(|(e, _)| e))
             .and_then(move |(hello, transport)| {
                 if hello.is_none() {

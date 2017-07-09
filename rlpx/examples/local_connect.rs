@@ -28,7 +28,7 @@ fn main() {
     let handle = core.handle();
     let client = TcpClient::new(
         ECIESClientProto::new(
-            SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap()), H512::from_str("a0e5760cbe9bf16572a9b84e5906c6c53b9e0e7a08b3ed6d13798ea4cfcf9c8794c214ef9ede4433ba70041f09d605900ff5d8b5e67962d7e0e0dde3c2a62dbc"
+            SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap()), H512::from_str("d02c7c6d49c668f750cf6c007b4a9cc96be08c335d3e027afa110f86c48192725aa2e8a60c581044c7c489fee45a3d0acbbfe4d10eb1717bc6b3374364bf895d"
             ).unwrap()))
         .connect(&addr, &handle)
         .map(|client_service| client_service);

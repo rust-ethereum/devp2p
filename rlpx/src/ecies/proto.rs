@@ -3,8 +3,6 @@ use futures::{Future, Stream, Sink};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::{Framed, Encoder, Decoder};
 use tokio_core::reactor::Core;
-use tokio_proto::{TcpClient, TcpServer};
-use tokio_proto::pipeline::{ClientProto, ServerProto};
 use bytes::{BytesMut, BufMut};
 use errors::ECIESError;
 use secp256k1::key::SecretKey;
@@ -25,6 +23,22 @@ pub enum ECIESValue {
 pub struct ECIESCodec {
     ecies: ECIES,
     state: ECIESState,
+}
+
+impl ECIESCodec {
+    pub fn new_server(secret_key: SecretKey) -> Result<Self, ECIESError> {
+        Ok(Self {
+            ecies: ECIES::new_server(secret_key)?,
+            state: ECIESState::Auth
+        })
+    }
+
+    pub fn new_client(secret_key: SecretKey, remote_id: H512) -> Result<Self, ECIESError> {
+        Ok(Self {
+            ecies: ECIES::new_client(secret_key, remote_id)?,
+            state: ECIESState::Auth
+        })
+    }
 }
 
 impl Decoder for ECIESCodec {
@@ -114,86 +128,5 @@ impl Encoder for ECIESCodec {
                 Ok(())
             }
         }
-    }
-}
-
-pub struct ECIESClientProto {
-    secret_key: SecretKey,
-    remote_id: H512,
-}
-
-impl ECIESClientProto {
-    pub fn new(secret_key: SecretKey, remote_id: H512) -> Self {
-        Self { secret_key, remote_id }
-    }
-}
-
-pub struct ECIESServerProto {
-    secret_key: SecretKey,
-}
-
-impl ECIESServerProto {
-    pub fn new(secret_key: SecretKey) -> Self {
-        Self { secret_key }
-    }
-}
-
-impl<T: AsyncRead + AsyncWrite + 'static> ClientProto<T> for ECIESClientProto {
-    type Request = ECIESValue;
-    type Response = ECIESValue;
-    type Transport = Framed<T, ECIESCodec>;
-    type BindTransport = Box<Future<Item = Self::Transport, Error = io::Error>>;
-
-    fn bind_transport(&self, io: T) -> Self::BindTransport {
-        let ecies = match ECIES::new_client(self.secret_key.clone(), self.remote_id) {
-            Ok(val) => val,
-            Err(e) => return Box::new(future::err(
-                io::Error::new(io::ErrorKind::Other, "invalid handshake")))
-                as Self::BindTransport,
-        };
-        let transport = io.framed(ECIESCodec { ecies, state: ECIESState::Auth });
-
-        let handshake = transport.send(ECIESValue::Auth)
-            .and_then(|transport| transport.into_future().map_err(|(e, _)| e))
-            .and_then(|(ack, transport)| {
-                if ack == Some(ECIESValue::Ack) {
-                    Ok(transport)
-                } else {
-                    Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"))
-                }
-            });
-
-        Box::new(handshake)
-    }
-}
-
-impl<T: AsyncRead + AsyncWrite + 'static> ServerProto<T> for ECIESServerProto {
-    type Request = ECIESValue;
-    type Response = ECIESValue;
-    type Transport = Framed<T, ECIESCodec>;
-    type BindTransport = Box<Future<Item = Self::Transport, Error = io::Error>>;
-
-    fn bind_transport(&self, io: T) -> Self::BindTransport {
-        let ecies = match ECIES::new_server(self.secret_key.clone()) {
-            Ok(val) => val,
-            Err(e) => return Box::new(future::err(
-                io::Error::new(io::ErrorKind::Other, "invalid handshake")))
-                as Self::BindTransport,
-        };
-        let transport = io.framed(ECIESCodec { ecies, state: ECIESState::Auth });
-
-        let handshake = transport.into_future()
-            .map_err(|(e, _)| e)
-            .and_then(|(auth, transport)| {
-                if auth == Some(ECIESValue::Auth) {
-                    Box::new(transport.send(ECIESValue::Ack)) as Self::BindTransport
-                } else {
-                    Box::new(
-                        future::err(io::Error::new(io::ErrorKind::Other, "invalid handshake")))
-                        as Self::BindTransport
-                }
-            });
-
-        Box::new(handshake)
     }
 }

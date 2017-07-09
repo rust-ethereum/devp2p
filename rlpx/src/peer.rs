@@ -13,7 +13,7 @@ use futures::future;
 use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};
 use rlp;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapabilityInfo {
     pub name: String,
     pub version: usize,
@@ -177,5 +177,87 @@ impl PeerStream {
             });
 
         Box::new(stream)
+    }
+}
+
+impl Stream for PeerStream {
+    type Item = (CapabilityInfo, usize, Vec<u8>);
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        match try_ready!(self.stream.poll()) {
+            Some(val) => {
+                let message_id_rlp = UntrustedRlp::new(&val[0..1]);
+                let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
+
+                let (cap, id) = match message_id {
+                    Ok(message_id) => {
+                        if message_id < 0x10 {
+                            println!("got reserved message: {}, {:?}", message_id, &val[1..]);
+                            return Ok(Async::NotReady);
+                        }
+
+                        let mut message_id = message_id - 0x10;
+                        let mut index = 0;
+                        for cap in &self.shared_capabilities {
+                            if message_id > cap.length {
+                                message_id = message_id - cap.length;
+                                index = index + 1;
+                            }
+                        }
+                        if index >= self.shared_capabilities.len() {
+                            return Err(io::Error::new(io::ErrorKind::Other,
+                                                      "message id parsing failed (too big)"));
+                        }
+                        (self.shared_capabilities[index].clone(), message_id)
+                    },
+                    Err(_) => {
+                        return Err(io::Error::new(io::ErrorKind::Other,
+                                                  "message id parsing failed (invalid)"));
+                    }
+                };
+
+                Ok(Async::Ready(Some((cap, id, (&val[1..]).into()))))
+            },
+            None => Ok(Async::Ready(None)),
+        }
+    }
+}
+
+impl Sink for PeerStream {
+    type SinkItem = (CapabilityInfo, usize, Vec<u8>);
+    type SinkError = io::Error;
+
+    fn start_send(&mut self, (cap, id, data): (CapabilityInfo, usize, Vec<u8>)) -> StartSend<Self::SinkItem, Self::SinkError> {
+        if !self.shared_capabilities.contains(&cap) {
+            return Ok(AsyncSink::Ready);
+        }
+
+        let mut message_id = 0x10;
+        for scap in &self.shared_capabilities {
+            if scap != &cap {
+                message_id = message_id + scap.length;
+            } else {
+                break;
+            }
+        }
+        message_id = message_id + id;
+        let first = rlp::encode(&message_id);
+        assert!(first.len() == 1);
+
+        let mut ret: Vec<u8> = Vec::new();
+        ret.push(first[0]);
+        for d in &data {
+            ret.push(*d);
+        }
+
+        match self.stream.start_send(ret)? {
+            AsyncSink::Ready => Ok(AsyncSink::Ready),
+            AsyncSink::NotReady(_) => Ok(AsyncSink::NotReady((cap, id, data))),
+        }
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+        self.stream.poll_complete()
     }
 }

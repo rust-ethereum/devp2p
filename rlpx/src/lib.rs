@@ -65,6 +65,33 @@ impl RLPxStream {
                                          self.capabilities.clone(), self.port);
         self.futures.push(future);
     }
+
+    pub fn poll_new_peers(&mut self) -> Poll<(), io::Error> {
+        let ref mut futures = self.futures;
+        let ref mut streams = self.streams;
+
+        let mut all_ready = true;
+
+        retain_mut(futures, |ref mut future| {
+            match future.poll() {
+                Ok(Async::NotReady) => {
+                    all_ready = false;
+                    true
+                },
+                Ok(Async::Ready(peer)) => {
+                    streams.push(peer);
+                    false
+                },
+                Err(e) => false,
+            }
+        });
+
+        if all_ready {
+            Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
+        }
+    }
 }
 
 fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)
@@ -93,19 +120,9 @@ impl Stream for RLPxStream {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        let ref mut futures = self.futures;
-        let ref mut streams = self.streams;
+        self.poll_new_peers();
 
-        retain_mut(futures, |ref mut future| {
-            match future.poll() {
-                Ok(Async::NotReady) => true,
-                Ok(Async::Ready(peer)) => {
-                    streams.push(peer);
-                    false
-                },
-                Err(e) => false,
-            }
-        });
+        let ref mut streams = self.streams;
 
         let mut ret: Option<Self::Item> = None;
         retain_mut(streams, |ref mut peer| {
@@ -137,19 +154,9 @@ impl Sink for RLPxStream {
     type SinkError = io::Error;
 
     fn start_send(&mut self, (cap, id, data): (CapabilityInfo, usize, Vec<u8>)) -> StartSend<Self::SinkItem, Self::SinkError> {
-        let ref mut futures = self.futures;
-        let ref mut streams = self.streams;
+        self.poll_new_peers();
 
-        retain_mut(futures, |ref mut future| {
-            match future.poll() {
-                Ok(Async::NotReady) => true,
-                Ok(Async::Ready(peer)) => {
-                    streams.push(peer);
-                    false
-                },
-                Err(e) => false,
-            }
-        });
+        let ref mut streams = self.streams;
 
         let mut any_ready = false;
 

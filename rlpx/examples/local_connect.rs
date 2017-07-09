@@ -30,8 +30,8 @@ fn main() {
     let mut client = RLPxStream::new(
         SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap()),
         4, "etclient Rust/0.1.0".to_string(),
-        vec![CapabilityInfo { name: "eth".to_string(), version: 62, length: 8 },
-             CapabilityInfo { name: "eth".to_string(), version: 63, length: 17 }],
+        vec![CapabilityInfo { name: "eth", version: 62, length: 8 },
+             CapabilityInfo { name: "eth", version: 63, length: 17 }],
         0);
 
     client.add_peer(&addr, &handle, H512::from_str(REMOTE_ID).unwrap());

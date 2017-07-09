@@ -13,9 +13,9 @@ use futures::future;
 use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};
 use rlp;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub struct CapabilityInfo {
-    pub name: String,
+    pub name: &'static str,
     pub version: usize,
     pub length: usize,
 }
@@ -113,7 +113,7 @@ impl PeerStream {
                         let mut caps = Vec::new();
                         for cap in capabilities {
                             caps.push(CapabilityMessage {
-                                name: cap.name,
+                                name: cap.name.to_string(),
                                 version: cap.version
                             });
                         }

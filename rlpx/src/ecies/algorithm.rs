@@ -14,6 +14,7 @@ use crypto::aessafe::{AesSafe256Encryptor, AesSafe128Encryptor};
 use crypto::symmetriccipher::{Decryptor, Encryptor};
 use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
 use errors::ECIESError;
+use rlp;
 
 const AUTH_LEN: usize =
     65 /* signature with recovery */ + 32 /* keccak256 ephemeral */ +
@@ -317,6 +318,8 @@ impl ECIES {
         buffer.write_uint::<BigEndian>(size as u64, 3);
         let mut header = [0u8; 16];
         header[0..3].copy_from_slice(buffer.as_ref());
+        header[3..6].copy_from_slice(&[194u8, 128u8, 128u8].as_ref());
+
         let mut encrypted = [0u8; 16];
         self.egress_aes.as_mut().unwrap().encrypt(
             &mut RefReadBuffer::new(&header),
@@ -349,6 +352,7 @@ impl ECIES {
             &mut RefReadBuffer::new(&header),
             &mut RefWriteBuffer::new(&mut decrypted), false);
         self.body_size = Some(decrypted.as_ref().read_uint::<BigEndian>(3)? as usize);
+
         Ok(self.body_size.unwrap())
     }
 

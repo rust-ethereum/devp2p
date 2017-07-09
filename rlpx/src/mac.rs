@@ -25,7 +25,7 @@ impl MAC {
         let mut encrypted = vec![0u8; data.len()];
         aes.encrypt(
             &mut RefReadBuffer::new(self.digest().as_ref()),
-            &mut RefWriteBuffer::new(encrypted.as_mut()), false);
+            &mut RefWriteBuffer::new(encrypted.as_mut()), true);
         for i in 0..data.len() {
             encrypted[i] = encrypted[i] ^ data[i];
         }
@@ -39,7 +39,7 @@ impl MAC {
         let mut encrypted = vec![0u8; 16];
         aes.encrypt(
             &mut RefReadBuffer::new(self.digest().as_ref()),
-            &mut RefWriteBuffer::new(encrypted.as_mut()), false);
+            &mut RefWriteBuffer::new(encrypted.as_mut()), true);
         for i in 0..16 {
             encrypted[i] = encrypted[i] ^ prev[i];
         }

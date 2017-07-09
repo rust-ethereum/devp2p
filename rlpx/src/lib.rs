@@ -6,6 +6,7 @@ extern crate byteorder;
 extern crate crypto;
 extern crate etcommon_bigint as bigint;
 extern crate etcommon_crypto as hash;
+extern crate etcommon_rlp as rlp;
 extern crate etcommon_util;
 extern crate bytes;
 #[macro_use]

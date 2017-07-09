@@ -16,7 +16,7 @@ extern crate tokio_core;
 
 mod util;
 pub mod ecies;
-pub mod peer;
+mod peer;
 mod mac;
 mod errors;
 

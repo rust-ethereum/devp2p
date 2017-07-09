@@ -1,13 +1,15 @@
 use futures::future;
-use futures::{Future, Stream, Sink};
+use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::{Framed, Encoder, Decoder};
-use tokio_core::reactor::Core;
+use tokio_core::reactor::{Handle, Core};
+use tokio_core::net::TcpStream;
 use bytes::{BytesMut, BufMut};
 use errors::ECIESError;
 use secp256k1::key::SecretKey;
 use bigint::H512;
 use std::io;
+use std::net::SocketAddr;
 use super::algorithm::ECIES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,5 +130,117 @@ impl Encoder for ECIESCodec {
                 Ok(())
             }
         }
+    }
+}
+
+pub struct ECIESStream {
+    stream: Framed<TcpStream, ECIESCodec>,
+    polled_header: bool,
+    sending_body: Option<Vec<u8>>,
+}
+
+impl ECIESStream {
+    pub fn connect(
+        addr: &SocketAddr, handle: &Handle,
+        secret_key: SecretKey, remote_id: H512
+    ) -> Box<Future<Item = ECIESStream, Error = io::Error>> {
+        let ecies = match ECIESCodec::new_client(secret_key, remote_id) {
+            Ok(val) => val,
+            Err(e) => return Box::new(future::err(
+                io::Error::new(io::ErrorKind::Other, "invalid handshake")))
+                as Box<Future<Item = ECIESStream, Error = io::Error>>,
+        };
+
+        let stream = TcpStream::connect(addr, handle)
+            .and_then(|socket| socket.framed(ecies).send(ECIESValue::Auth))
+            .and_then(|transport| transport.into_future().map_err(|(e, _)| e))
+            .and_then(move |(ack, transport)| {
+                if ack == Some(ECIESValue::Ack) {
+                    Ok(ECIESStream {
+                        stream: transport,
+                        polled_header: false,
+                        sending_body: None,
+                    })
+                } else {
+                    Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"))
+                }
+            });
+
+        Box::new(stream)
+    }
+}
+
+impl Stream for ECIESStream {
+    type Item = Vec<u8>;
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        if !self.polled_header {
+            match try_ready!(self.stream.poll()) {
+                Some(ECIESValue::Header(_)) => (),
+                Some(_) =>
+                    return Err(io::Error::new(io::ErrorKind::Other, "ECIES stream protocol error")),
+                None => return Ok(Async::Ready(None)),
+            };
+            self.polled_header = true;
+        }
+        let body = match try_ready!(self.stream.poll()) {
+            Some(ECIESValue::Body(val)) => val,
+            Some(_) =>
+                return Err(io::Error::new(io::ErrorKind::Other, "ECIES stream protocol error")),
+            None => return Ok(Async::Ready(None)),
+        };
+        self.polled_header = false;
+        Ok(Async::Ready(Some(body)))
+    }
+}
+
+impl Sink for ECIESStream {
+    type SinkItem = Vec<u8>;
+    type SinkError = io::Error;
+
+    fn start_send(&mut self, item: Vec<u8>) -> StartSend<Self::SinkItem, Self::SinkError> {
+        if self.sending_body.is_some() {
+            let sending_body = self.sending_body.take().unwrap();
+            match self.stream.start_send(ECIESValue::Body(sending_body))? {
+                AsyncSink::Ready => (), // Cache cleared, able to deal with the current item.
+                AsyncSink::NotReady(ECIESValue::Body(sending_body)) => {
+                    self.sending_body = Some(sending_body);
+                    return Ok(AsyncSink::NotReady(item));
+                },
+                _ => panic!(),
+            }
+        }
+
+        match self.stream.start_send(ECIESValue::Header(item.len()))? {
+            AsyncSink::Ready => (),
+            AsyncSink::NotReady(header) => return Ok(AsyncSink::NotReady(item)),
+        }
+
+        match self.stream.start_send(ECIESValue::Body(item))? {
+            AsyncSink::Ready => (),
+            AsyncSink::NotReady(ECIESValue::Body(item)) => {
+                self.sending_body = Some(item);
+            },
+            _ => panic!(),
+        }
+
+        Ok(AsyncSink::Ready)
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+        if self.sending_body.is_some() {
+            let sending_body = self.sending_body.take().unwrap();
+            match self.stream.start_send(ECIESValue::Body(sending_body))? {
+                AsyncSink::Ready => (),
+                AsyncSink::NotReady(ECIESValue::Body(sending_body)) => {
+                    self.sending_body = Some(sending_body);
+                    return Ok(Async::NotReady);
+                },
+                _ => panic!(),
+            }
+        }
+
+        self.stream.poll_complete()
     }
 }

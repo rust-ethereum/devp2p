@@ -34,6 +34,13 @@ use tokio_core::reactor::Handle;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::{Framed, Encoder, Decoder};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Node {
+    Any,
+    All,
+    Peer(H512),
+}
+
 pub struct RLPxStream {
     streams: Vec<PeerStream>,
     futures: Vec<Box<Future<Item = PeerStream, Error = io::Error>>>,
@@ -116,7 +123,7 @@ fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)
 }
 
 impl Stream for RLPxStream {
-    type Item = (CapabilityInfo, usize, Vec<u8>);
+    type Item = (H512, CapabilityInfo, usize, Vec<u8>);
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -130,11 +137,12 @@ impl Stream for RLPxStream {
                 return true;
             }
 
+            let id = peer.id();
             match peer.poll() {
                 Ok(Async::NotReady) => true,
                 Ok(Async::Ready(None)) => false,
-                Ok(Async::Ready(Some(val))) => {
-                    ret = Some(val);
+                Ok(Async::Ready(Some((cap, message_id, data)))) => {
+                    ret = Some((id, cap, message_id, data));
                     true
                 },
                 Err(e) => false,
@@ -150,10 +158,10 @@ impl Stream for RLPxStream {
 }
 
 impl Sink for RLPxStream {
-    type SinkItem = (CapabilityInfo, usize, Vec<u8>);
+    type SinkItem = (Node, CapabilityInfo, usize, Vec<u8>);
     type SinkError = io::Error;
 
-    fn start_send(&mut self, (cap, id, data): (CapabilityInfo, usize, Vec<u8>)) -> StartSend<Self::SinkItem, Self::SinkError> {
+    fn start_send(&mut self, (node, cap, message_id, data): (Node, CapabilityInfo, usize, Vec<u8>)) -> StartSend<Self::SinkItem, Self::SinkError> {
         self.poll_new_peers();
 
         let ref mut streams = self.streams;
@@ -161,20 +169,30 @@ impl Sink for RLPxStream {
         let mut any_ready = false;
 
         retain_mut(streams, |ref mut peer| {
-            match peer.start_send((cap.clone(), id, data.clone())) {
-                Ok(AsyncSink::Ready) => {
-                    any_ready = true;
-                    true
-                },
-                Ok(AsyncSink::NotReady(_)) => true,
-                Err(e) => false,
+            let id = peer.id();
+
+            if match node {
+                Node::Peer(peer_id) => peer_id == id,
+                Node::All => true,
+                Node::Any => !any_ready,
+            } {
+                match peer.start_send((cap.clone(), message_id, data.clone())) {
+                    Ok(AsyncSink::Ready) => {
+                        any_ready = true;
+                        true
+                    },
+                    Ok(AsyncSink::NotReady(_)) => true,
+                    Err(e) => false,
+                }
+            } else {
+                true
             }
         });
 
         if any_ready {
             Ok(AsyncSink::Ready)
         } else {
-            Ok(AsyncSink::NotReady((cap, id, data)))
+            Ok(AsyncSink::NotReady((node, cap, message_id, data)))
         }
     }
 

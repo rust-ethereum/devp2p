@@ -85,6 +85,10 @@ pub struct PeerStream {
 }
 
 impl PeerStream {
+    pub fn id(&self) -> H512 {
+        self.id
+    }
+
     pub fn connect(
         addr: &SocketAddr, handle: &Handle,
         secret_key: SecretKey, remote_id: H512,

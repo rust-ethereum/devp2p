@@ -49,7 +49,7 @@ pub struct HelloMessage {
     pub protocol_version: usize,
     pub client_version: String,
     pub capabilities: Vec<CapabilityMessage>,
-    pub port: usize,
+    pub port: u16,
     pub id: H512,
 }
 
@@ -82,7 +82,7 @@ pub struct PeerStream {
     protocol_version: usize,
     client_version: String,
     shared_capabilities: Vec<CapabilityInfo>,
-    port: usize,
+    port: u16,
     id: H512,
     remote_id: H512,
 }
@@ -98,7 +98,7 @@ impl PeerStream {
         addr: &SocketAddr, handle: &Handle,
         secret_key: SecretKey, remote_id: H512,
         protocol_version: usize, client_version: String,
-        capabilities: Vec<CapabilityInfo>, port: usize
+        capabilities: Vec<CapabilityInfo>, port: u16
     ) -> Box<Future<Item = PeerStream, Error = io::Error>> {
         let public_key = match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
             Ok(key) => key,

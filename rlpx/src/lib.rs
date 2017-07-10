@@ -53,27 +53,29 @@ pub struct RLPxStream {
     protocol_version: usize,
     client_version: String,
     capabilities: Vec<CapabilityInfo>,
-    port: usize,
+    port: u16,
+    handle: Handle,
 }
 
 impl RLPxStream {
     /// Create a new RLPx stream
-    pub fn new(secret_key: SecretKey, protocol_version: usize,
+    pub fn new(handle: &Handle, secret_key: SecretKey, protocol_version: usize,
                client_version: String, capabilities: Vec<CapabilityInfo>,
-               port: usize) -> RLPxStream {
+               port: u16) -> RLPxStream {
         RLPxStream {
             streams: Vec::new(),
             futures: Vec::new(),
             secret_key, protocol_version, client_version,
             capabilities, port,
+            handle: handle.clone(),
         }
     }
 
     /// Append a new peer to this RLPx stream
     pub fn add_peer(
-        &mut self, addr: &SocketAddr, handle: &Handle, remote_id: H512
+        &mut self, addr: &SocketAddr, remote_id: H512
     ) {
-        let future = PeerStream::connect(addr, handle, self.secret_key.clone(),
+        let future = PeerStream::connect(addr, &self.handle, self.secret_key.clone(),
                                          remote_id, self.protocol_version,
                                          self.client_version.clone(),
                                          self.capabilities.clone(), self.port);

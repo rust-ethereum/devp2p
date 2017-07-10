@@ -28,13 +28,14 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let mut client = RLPxStream::new(
+        &handle,
         SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap()),
         4, "etclient Rust/0.1.0".to_string(),
         vec![CapabilityInfo { name: "eth", version: 62, length: 8 },
              CapabilityInfo { name: "eth", version: 63, length: 17 }],
         0);
 
-    client.add_peer(&addr, &handle, H512::from_str(REMOTE_ID).unwrap());
+    client.add_peer(&addr, H512::from_str(REMOTE_ID).unwrap());
 
     core.run(client.into_future().map_err(|(e, _)| e)
              .and_then(|(val, client)| {

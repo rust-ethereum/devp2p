@@ -62,6 +62,7 @@ pub struct DPTStream {
     id: H512,
     connected: Vec<DPTNode>,
     timeout: Option<(Timeout, Vec<H512>)>,
+    incoming: Vec<DPTNode>,
     address: IpAddr,
     udp_port: u16,
     tcp_port: u16,
@@ -96,7 +97,7 @@ impl DPTStream {
                tcp_port: u16) -> Result<Self, io::Error> {
         Ok(Self {
             stream: UdpSocket::bind(addr, handle)?.framed(DPTCodec::new(secret_key)),
-            id, connected: bootstrap_nodes,
+            id, connected: bootstrap_nodes, incoming: Vec::new(),
             timeout: None,
             address: addr.ip(), udp_port: addr.port(), tcp_port
         })
@@ -104,7 +105,7 @@ impl DPTStream {
 }
 
 impl Stream for DPTStream {
-    type Item = Vec<DPTNode>;
+    type Item = DPTNode;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -129,7 +130,12 @@ impl Stream for DPTStream {
 
         let (message, remote_id, hash) = match try_ready!(self.stream.poll()) {
             Some(Some(val)) => val,
-            Some(None) => return Ok(Async::NotReady),
+            Some(None) =>
+                if self.incoming.len() > 0 {
+                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                } else {
+                    return Ok(Async::NotReady);
+                },
             None => return Ok(Async::Ready(None)),
         };
 
@@ -137,7 +143,12 @@ impl Stream for DPTStream {
             0x01 /* ping */ => {
                 let incoming_message: PingMessage = match UntrustedRlp::new(&message.data).as_val() {
                     Ok(val) => val,
-                    Err(_) => return Ok(Async::NotReady),
+                    Err(_) =>
+                        if self.incoming.len() > 0 {
+                            return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                        } else {
+                            return Ok(Async::NotReady);
+                        },
                 };
                 let typ = 0x02u8;
                 let echo = hash;
@@ -152,12 +163,21 @@ impl Stream for DPTStream {
                     typ, data, addr: message.addr
                 });
 
-                return Ok(Async::NotReady);
+                if self.incoming.len() > 0 {
+                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                } else {
+                    return Ok(Async::NotReady);
+                }
             },
             0x02 /* pong */ => {
                 let incoming_message: PongMessage = match UntrustedRlp::new(&message.data).as_val() {
                     Ok(val) => val,
-                    Err(_) => return Ok(Async::NotReady),
+                    Err(_) =>
+                        if self.incoming.len() > 0 {
+                            return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                        } else {
+                            return Ok(Async::NotReady);
+                        },
                 };
                 if self.timeout.is_some() {
                     self.timeout.as_mut().unwrap().1.retain(|v| {
@@ -165,7 +185,11 @@ impl Stream for DPTStream {
                     });
                 }
 
-                return Ok(Async::NotReady);
+                if self.incoming.len() > 0 {
+                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                } else {
+                    return Ok(Async::NotReady);
+                }
             },
             0x03 /* find neighbours */ => {
                 // Return at most 3 nodes at a time.
@@ -194,14 +218,22 @@ impl Stream for DPTStream {
                     typ, data, addr: message.addr
                 });
 
-                return Ok(Async::NotReady);
+                if self.incoming.len() > 0 {
+                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                } else {
+                    return Ok(Async::NotReady);
+                }
             },
             0x04 /* neighbours */ => {
                 let incoming_message: NeighboursMessage = match UntrustedRlp::new(&message.data).as_val() {
                     Ok(val) => val,
-                    Err(_) => return Ok(Async::NotReady),
+                    Err(_) =>
+                        if self.incoming.len() > 0 {
+                            return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                        } else {
+                            return Ok(Async::NotReady);
+                        }
                 };
-                let mut ret = Vec::new();
                 for i in 0..incoming_message.nodes.len() {
                     if self.connected.iter()
                         .all(|node| node.id != incoming_message.nodes[i].id)
@@ -217,17 +249,21 @@ impl Stream for DPTStream {
                             id: remote_id
                         };
                         self.connected.push(node.clone());
-                        ret.push(node);
+                        self.incoming.push(node);
                     }
                 }
-                if ret.len() > 0 {
-                    return Ok(Async::Ready(Some(ret)));
+                if self.incoming.len() > 0 {
+                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
                 } else {
                     return Ok(Async::NotReady);
                 }
             },
             _ => {
-                return Ok(Async::NotReady);
+                if self.incoming.len() > 0 {
+                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                } else {
+                    return Ok(Async::NotReady);
+                }
             }
         }
     }

@@ -197,6 +197,27 @@ impl PeerStream {
 
         Box::new(stream)
     }
+
+    fn handle_reserved_message(
+        &mut self, message_id: usize, data: Vec<u8>
+    ) -> Result<(), io::Error> {
+        match message_id {
+            0x01 /* disconnect */ => {
+                let reason: Result<usize, rlp::DecoderError> = UntrustedRlp::new(&data).val_at(0);
+                return Err(io::Error::new(io::ErrorKind::Other,
+                                          "explicit disconnect"));
+            },
+            0x02 /* ping */ => {
+                let mut payload: Vec<u8> = rlp::encode(&0x03usize /* pong */).to_vec();
+                payload.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
+                self.stream.start_send(payload)?;
+            },
+            0x03 /* pong */ => (),
+            _ => return Err(io::Error::new(io::ErrorKind::Other,
+                                           "unhandled reserved message")),
+        }
+        Ok(())
+    }
 }
 
 impl Stream for PeerStream {
@@ -212,7 +233,7 @@ impl Stream for PeerStream {
                 let (cap, id) = match message_id {
                     Ok(message_id) => {
                         if message_id < 0x10 {
-                            println!("got reserved message: {}, {:?}", message_id, &val[1..]);
+                            self.handle_reserved_message(message_id, (&val[1..]).into())?;
                             return Ok(Async::NotReady);
                         }
 

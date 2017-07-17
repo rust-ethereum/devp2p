@@ -7,8 +7,12 @@ description = "Ethereum's devp2p protocol implementation in Rust."
 repository = "https://github.com/sorpaas/devp2p-rs"
 
 [dependencies]
-dpt = "0.1"
-rlpx = "0.1"
+dpt = "0.2"
+rlpx = "0.2"
+futures = "0.1"
+tokio-io = "0.1"
+tokio-core = "0.1"
+devp2p-secp256k1 = "0.5"
 
 [workspace]
 members = [

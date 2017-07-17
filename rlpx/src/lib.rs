@@ -109,6 +109,11 @@ impl RLPxStream {
             Ok(Async::NotReady)
         }
     }
+
+    /// Active peers count
+    pub fn active_peers_len(&self) -> usize {
+        self.futures.len() + self.streams.len()
+    }
 }
 
 fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)

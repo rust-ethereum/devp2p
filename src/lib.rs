@@ -77,16 +77,22 @@ impl DevP2PStream {
     }
 
     fn poll_dpt_ping(&mut self) -> Poll<(), io::Error> {
-        let result = self.ping_timeout.poll()?;
+        let mut result = self.ping_timeout.poll()?;
 
-        match result {
-            Async::NotReady => return Ok(Async::Ready(())),
-            Async::Ready(()) => {
-                self.dpt.start_send(DPTMessage::Ping(Timeout::new(
-                    self.ping_timeout_interval, &self.handle)?))?;
-                self.dpt.poll_complete()?;
-            },
+        loop {
+            match result {
+                Async::NotReady => return Ok(Async::Ready(())),
+                Async::Ready(()) => {
+                    self.dpt.start_send(DPTMessage::Ping(Timeout::new(
+                        self.ping_timeout_interval, &self.handle)?))?;
+                    self.dpt.poll_complete()?;
+                    self.ping_timeout = Timeout::new(self.ping_interval, &self.handle)?;
+
+                    result = self.ping_timeout.poll()?;
+                },
+            }
         }
+
         Ok(Async::Ready(()))
     }
 }

@@ -48,7 +48,8 @@ pub enum Node {
 /// A RLPx stream and sink
 pub struct RLPxStream {
     streams: Vec<PeerStream>,
-    futures: Vec<Box<Future<Item = PeerStream, Error = io::Error>>>,
+    futures: Vec<(H512, Box<Future<Item = PeerStream, Error = io::Error>>)>,
+    active_peers: Vec<H512>,
     secret_key: SecretKey,
     protocol_version: usize,
     client_version: String,
@@ -68,6 +69,7 @@ impl RLPxStream {
             secret_key, protocol_version, client_version,
             capabilities, port,
             handle: handle.clone(),
+            active_peers: Vec::new(),
         }
     }
 
@@ -79,17 +81,19 @@ impl RLPxStream {
                                          remote_id, self.protocol_version,
                                          self.client_version.clone(),
                                          self.capabilities.clone(), self.port);
-        self.futures.push(future);
+        self.futures.push((remote_id, future));
+        self.active_peers.push(remote_id);
     }
 
     /// Poll over new peers to resolve them to TCP streams
     pub fn poll_new_peers(&mut self) -> Poll<(), io::Error> {
         let ref mut futures = self.futures;
         let ref mut streams = self.streams;
+        let ref mut active_peers = self.active_peers;
 
         let mut all_ready = true;
 
-        retain_mut(futures, |ref mut future| {
+        retain_mut(futures, |&mut (remote_id, ref mut future)| {
             match future.poll() {
                 Ok(Async::NotReady) => {
                     all_ready = false;
@@ -99,7 +103,12 @@ impl RLPxStream {
                     streams.push(peer);
                     false
                 },
-                Err(e) => false,
+                Err(e) => {
+                    active_peers.retain(|peer_id| {
+                        *peer_id != remote_id
+                    });
+                    false
+                },
             }
         });
 
@@ -110,9 +119,9 @@ impl RLPxStream {
         }
     }
 
-    /// Active peers count
-    pub fn active_peers_len(&self) -> usize {
-        self.futures.len() + self.streams.len()
+    /// Active peers
+    pub fn active_peers(&self) -> &[H512] {
+        self.active_peers.as_ref()
     }
 }
 
@@ -145,6 +154,7 @@ impl Stream for RLPxStream {
         self.poll_new_peers();
 
         let ref mut streams = self.streams;
+        let ref mut active_peers = self.active_peers;
 
         let mut ret: Option<Self::Item> = None;
         retain_mut(streams, |ref mut peer| {
@@ -160,7 +170,12 @@ impl Stream for RLPxStream {
                     ret = Some((id, cap, message_id, data));
                     true
                 },
-                Err(e) => false,
+                Err(e) => {
+                    active_peers.retain(|peer_id| {
+                        *peer_id != id
+                    });
+                    false
+                },
             }
         });
 
@@ -180,6 +195,7 @@ impl Sink for RLPxStream {
         self.poll_new_peers();
 
         let ref mut streams = self.streams;
+        let ref mut active_peers = self.active_peers;
 
         let mut any_ready = false;
 
@@ -191,13 +207,19 @@ impl Sink for RLPxStream {
                 Node::All => true,
                 Node::Any => !any_ready,
             } {
+                let remote_id = peer.remote_id();
                 match peer.start_send((cap.clone(), message_id, data.clone())) {
                     Ok(AsyncSink::Ready) => {
                         any_ready = true;
                         true
                     },
                     Ok(AsyncSink::NotReady(_)) => true,
-                    Err(e) => false,
+                    Err(e) => {
+                        active_peers.retain(|peer_id| {
+                            *peer_id != remote_id
+                        });
+                        false
+                    },
                 }
             } else {
                 true
@@ -213,17 +235,24 @@ impl Sink for RLPxStream {
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
         let ref mut streams = self.streams;
+        let ref mut active_peers = self.active_peers;
 
         let mut all_ready = true;
 
         retain_mut(streams, |ref mut peer| {
+            let remote_id = peer.remote_id();
             match peer.poll_complete() {
                 Ok(Async::Ready(())) => true,
                 Ok(Async::NotReady) => {
                     all_ready = false;
                     true
                 },
-                Err(e) => false,
+                Err(e) => {
+                    active_peers.retain(|peer_id| {
+                        *peer_id != remote_id
+                    });
+                    false
+                },
             }
         });
 

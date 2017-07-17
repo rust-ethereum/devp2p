@@ -73,16 +73,18 @@ impl RLPxStream {
         }
     }
 
-    /// Append a new peer to this RLPx stream
+    /// Append a new peer to this RLPx stream if it does not exist
     pub fn add_peer(
         &mut self, addr: &SocketAddr, remote_id: H512
     ) {
-        let future = PeerStream::connect(addr, &self.handle, self.secret_key.clone(),
-                                         remote_id, self.protocol_version,
-                                         self.client_version.clone(),
-                                         self.capabilities.clone(), self.port);
-        self.futures.push((remote_id, future));
-        self.active_peers.push(remote_id);
+        if !self.active_peers.contains(&remote_id) {
+            let future = PeerStream::connect(addr, &self.handle, self.secret_key.clone(),
+                                             remote_id, self.protocol_version,
+                                             self.client_version.clone(),
+                                             self.capabilities.clone(), self.port);
+            self.futures.push((remote_id, future));
+            self.active_peers.push(remote_id);
+        }
     }
 
     /// Poll over new peers to resolve them to TCP streams
@@ -151,7 +153,7 @@ impl Stream for RLPxStream {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.poll_new_peers();
+        self.poll_new_peers()?;
 
         let ref mut streams = self.streams;
         let ref mut active_peers = self.active_peers;
@@ -192,7 +194,7 @@ impl Sink for RLPxStream {
     type SinkError = io::Error;
 
     fn start_send(&mut self, (node, cap, message_id, data): (Node, CapabilityInfo, usize, Vec<u8>)) -> StartSend<Self::SinkItem, Self::SinkError> {
-        self.poll_new_peers();
+        self.poll_new_peers()?;
 
         let ref mut streams = self.streams;
         let ref mut active_peers = self.active_peers;

@@ -27,7 +27,9 @@ use std::net::{IpAddr, SocketAddr, Ipv4Addr, Ipv6Addr};
 use std::io;
 use bigint::{H256, H512};
 use rlp::UntrustedRlp;
-use secp256k1::key::SecretKey;
+use hash::SECP256K1;
+use secp256k1::key::{PublicKey, SecretKey};
+use util::pk2id;
 
 fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)
     where F: FnMut(&mut T) -> bool
@@ -92,9 +94,13 @@ impl DPTNode {
 impl DPTStream {
     /// Create a new DPT stream
     pub fn new(addr: &SocketAddr, handle: &Handle,
-               secret_key: SecretKey, id: H512,
+               secret_key: SecretKey,
                bootstrap_nodes: Vec<DPTNode>,
                tcp_port: u16) -> Result<Self, io::Error> {
+        let id = pk2id(&match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
+            Ok(val) => val,
+            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "converting pub key failed")),
+        });
         Ok(Self {
             stream: UdpSocket::bind(addr, handle)?.framed(DPTCodec::new(secret_key)),
             id, connected: bootstrap_nodes, incoming: Vec::new(),

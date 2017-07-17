@@ -134,15 +134,18 @@ impl Stream for DPTStream {
             self.timeout = None;
         }
 
-        let (message, remote_id, hash) = match try_ready!(self.stream.poll()) {
-            Some(Some(val)) => val,
-            Some(None) =>
+        let (message, remote_id, hash) = match try!(self.stream.poll()) {
+            Async::Ready(Some(Some(val))) => val,
+            Async::Ready(Some(None)) | Async::NotReady => {
                 if self.incoming.len() > 0 {
                     return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                } else if self.connected.len() == 0 {
+                    return Err(io::Error::new(io::ErrorKind::Other, "no reachable DPT endpoint"));
                 } else {
                     return Ok(Async::NotReady);
-                },
-            None => return Ok(Async::Ready(None)),
+                }
+            },
+            Async::Ready(None) => return Ok(Async::Ready(None)),
         };
 
         match message.typ {

@@ -59,8 +59,13 @@ pub struct RLPxSendMessage {
 /// Receiving message for RLPx
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RLPxReceiveMessage {
-    Connected(H512),
-    Disconnected(H512),
+    Connected {
+        node: H512,
+        capabilities: Vec<CapabilityInfo>,
+    },
+    Disconnected {
+        node: H512
+    },
     Normal {
         node: H512,
         capability: CapabilityInfo,
@@ -73,7 +78,7 @@ pub enum RLPxReceiveMessage {
 pub struct RLPxStream {
     streams: Vec<PeerStream>,
     futures: Vec<(H512, Box<Future<Item = PeerStream, Error = io::Error>>)>,
-    newly_connected: Vec<H512>,
+    newly_connected: Vec<(H512, Vec<CapabilityInfo>)>,
     newly_disconnected: Vec<H512>,
     active_peers: Vec<H512>,
     secret_key: SecretKey,
@@ -153,8 +158,8 @@ impl RLPxStream {
                     true
                 },
                 Ok(Async::Ready(peer)) => {
+                    newly_connected.push((remote_id, peer.capabilities().into()));
                     streams.push(peer);
-                    newly_connected.push(remote_id);
                     false
                 },
                 Err(e) => {
@@ -208,10 +213,16 @@ impl Stream for RLPxStream {
         self.poll_new_peers()?;
 
         if self.newly_connected.len() > 0 {
-            return Ok(Async::Ready(Some(RLPxReceiveMessage::Connected(self.newly_connected.pop().unwrap()))));
+            let connected = self.newly_connected.pop().unwrap();
+            return Ok(Async::Ready(Some(RLPxReceiveMessage::Connected {
+                node: connected.0,
+                capabilities: connected.1,
+            })));
         }
         if self.newly_disconnected.len() > 0 {
-            return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected(self.newly_disconnected.pop().unwrap()))));
+            return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected {
+                node: self.newly_disconnected.pop().unwrap()
+            })));
         }
 
         let ref mut streams = self.streams;
@@ -233,7 +244,12 @@ impl Stream for RLPxStream {
                     false
                 },
                 Ok(Async::Ready(Some((cap, message_id, data)))) => {
-                    ret = Some(RLPxReceiveMessage::Normal { node: id, capability: cap, id: message_id, data });
+                    ret = Some(RLPxReceiveMessage::Normal {
+                        node: id,
+                        capability: cap,
+                        id: message_id,
+                        data
+                    });
                     true
                 },
                 Err(e) => {
@@ -250,10 +266,16 @@ impl Stream for RLPxStream {
             Ok(Async::Ready(ret))
         } else {
             if newly_connected.len() > 0 {
-                return Ok(Async::Ready(Some(RLPxReceiveMessage::Connected(newly_connected.pop().unwrap()))));
+                let connected = newly_connected.pop().unwrap();
+                return Ok(Async::Ready(Some(RLPxReceiveMessage::Connected {
+                    node: connected.0,
+                    capabilities: connected.1,
+                })));
             }
             if newly_disconnected.len() > 0 {
-                return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected(newly_disconnected.pop().unwrap()))));
+                return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected {
+                    node: newly_disconnected.pop().unwrap()
+                })));
             }
             Ok(Async::NotReady)
         }

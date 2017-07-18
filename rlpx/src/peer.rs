@@ -93,6 +93,11 @@ impl PeerStream {
         self.remote_id
     }
 
+    /// Get all capabilities of this peer stream
+    pub fn capabilities(&self) -> &[CapabilityInfo] {
+        &self.shared_capabilities
+    }
+
     /// Connect to a peer over TCP
     pub fn connect(
         addr: &SocketAddr, handle: &Handle,
@@ -274,10 +279,18 @@ impl Sink for PeerStream {
         });
 
         if cap.is_none() {
+            debug!("giving up sending cap {} of id {} to 0x{:x} because remote does not support.",
+                   cap_name, id, self.remote_id());
             return Ok(AsyncSink::Ready);
         }
 
         let cap = *cap.unwrap();
+
+        if id >= cap.length {
+            debug!("giving up sending cap {} of id {} to 0x{:x} because it is too big.",
+                   cap_name, id, self.remote_id());
+            return Ok(AsyncSink::Ready);
+        }
 
         let mut message_id = 0x10;
         for scap in &self.shared_capabilities {

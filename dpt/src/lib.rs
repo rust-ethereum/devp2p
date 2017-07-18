@@ -12,6 +12,7 @@ extern crate futures;
 extern crate tokio_io;
 extern crate tokio_core;
 extern crate time;
+extern crate rand;
 
 mod proto;
 mod message;
@@ -32,6 +33,7 @@ use rlp::UntrustedRlp;
 use hash::SECP256K1;
 use secp256k1::key::{PublicKey, SecretKey};
 use util::pk2id;
+use rand::{Rng, thread_rng};
 
 fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)
     where F: FnMut(&mut T) -> bool
@@ -307,8 +309,11 @@ impl Sink for DPTStream {
                     timestamp: time::now_utc().to_timespec().sec as u64,
                 };
                 let data = rlp::encode(&message).to_vec();
+
                 let ref mut connected = self.connected;
                 let ref mut stream = self.stream;
+                thread_rng().shuffle(connected);
+
                 retain_mut(connected, |node| {
                     match stream.start_send(DPTCodecMessage {
                         addr: node.udp_addr(), typ, data: data.clone()

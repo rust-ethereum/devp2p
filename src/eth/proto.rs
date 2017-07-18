@@ -1,6 +1,7 @@
 use rlp::{Encodable, Decodable, RlpStream, DecoderError, UntrustedRlp};
 use bigint::{Address, LogsBloom, Gas, H256, U256, B256};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ETHMessage {
     Status {
         protocol_version: usize,

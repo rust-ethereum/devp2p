@@ -17,3 +17,4 @@ mod raw;
 mod eth;
 
 pub use raw::DevP2PStream;
+pub use eth::{ETHStream, ETHSendMessage, ETHReceiveMessage, ETHMessage};

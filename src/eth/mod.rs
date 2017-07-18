@@ -15,6 +15,7 @@ use super::DevP2PStream;
 
 pub use self::proto::ETHMessage;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ETHReceiveMessage {
     Connected {
         node: H512,
@@ -30,6 +31,7 @@ pub enum ETHReceiveMessage {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ETHSendMessage {
     pub node: RLPxNode,
     pub data: ETHMessage,

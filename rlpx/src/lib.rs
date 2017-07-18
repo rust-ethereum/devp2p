@@ -38,6 +38,7 @@ use std::net::SocketAddr;
 use tokio_core::reactor::Handle;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::{Framed, Encoder, Decoder};
+use rand::{Rng, thread_rng};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Sending node type specifying either all, any or a particular peer
@@ -294,6 +295,12 @@ impl Sink for RLPxStream {
         let ref mut newly_disconnected = self.newly_disconnected;
 
         let mut any_ready = false;
+        if match &message.node {
+            &RLPxNode::Any => true,
+            _ => false,
+        } {
+            thread_rng().shuffle(streams);
+        }
 
         retain_mut(streams, |ref mut peer| {
             let id = peer.remote_id();

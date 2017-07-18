@@ -86,6 +86,7 @@ pub struct DPTNode {
     pub id: H512,
 }
 
+#[derive(Debug, Clone)]
 pub enum DPTNodeParseError {
     UrlError,
     HexError,

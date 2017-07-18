@@ -115,6 +115,28 @@ impl RLPxStream {
         }
     }
 
+    /// Force disconnecting a peer if it is already connected or about
+    /// to be connected. Useful for removing peers on a different hard
+    /// fork network
+    pub fn disconnect_peer(&mut self, remote_id: H512) {
+        let ref mut futures = self.futures;
+        let ref mut streams = self.streams;
+        let ref mut newly_disconnected = self.newly_disconnected;
+
+        retain_mut(streams, |peer| {
+            if peer.remote_id() == remote_id {
+                newly_disconnected.push(remote_id);
+                false
+            } else {
+                true
+            }
+        });
+
+        retain_mut(futures, |&mut (peer_id, _)| {
+            peer_id != remote_id
+        });
+    }
+
     /// Poll over new peers to resolve them to TCP streams
     pub fn poll_new_peers(&mut self) -> Poll<(), io::Error> {
         let ref mut futures = self.futures;

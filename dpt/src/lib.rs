@@ -102,7 +102,7 @@ impl DPTNode {
         SocketAddr::new(self.address, self.udp_port)
     }
 
-    pub fn from_url(&self, url: &Url) -> Result<DPTNode, DPTNodeParseError> {
+    pub fn from_url(url: &Url) -> Result<DPTNode, DPTNodeParseError> {
         let address = match url.host() {
             Some(Host::Ipv4(ip)) => IpAddr::V4(ip),
             Some(Host::Ipv6(ip)) => IpAddr::V6(ip),

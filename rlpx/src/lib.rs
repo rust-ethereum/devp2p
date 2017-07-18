@@ -205,14 +205,14 @@ impl Stream for RLPxStream {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        self.poll_new_peers()?;
+
         if self.newly_connected.len() > 0 {
             return Ok(Async::Ready(Some(RLPxReceiveMessage::Connected(self.newly_connected.pop().unwrap()))));
         }
         if self.newly_disconnected.len() > 0 {
             return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected(self.newly_disconnected.pop().unwrap()))));
         }
-
-        self.poll_new_peers()?;
 
         let ref mut streams = self.streams;
         let ref mut active_peers = self.active_peers;

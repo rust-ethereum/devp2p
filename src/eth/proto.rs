@@ -2,6 +2,7 @@ use rlp::{Encodable, Decodable, RlpStream, DecoderError, UntrustedRlp};
 use bigint::{Address, LogsBloom, Gas, H256, U256, B256};
 use block::Transaction;
 
+/// ETH message version 62 and 63
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ETHMessage {
     Status {
@@ -17,6 +18,7 @@ pub enum ETHMessage {
 }
 
 impl ETHMessage {
+    /// Get the message id of the ETH message
     pub fn id(&self) -> usize {
         match self {
             &ETHMessage::Status { .. } => 0,
@@ -26,6 +28,7 @@ impl ETHMessage {
         }
     }
 
+    /// Decode a RLP into ETH message using the given message id
     pub fn decode(rlp: &UntrustedRlp, id: usize) -> Result<Self, DecoderError> {
         Ok(match id {
             0 => {

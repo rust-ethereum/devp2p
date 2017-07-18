@@ -16,6 +16,7 @@ use super::DevP2PStream;
 pub use self::proto::ETHMessage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Receiving message of ETH
 pub enum ETHReceiveMessage {
     Connected {
         node: H512,
@@ -32,11 +33,13 @@ pub enum ETHReceiveMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Sending message of ETH
 pub struct ETHSendMessage {
     pub node: RLPxNode,
     pub data: ETHMessage,
 }
 
+/// Represent a ETH stream over DevP2P protocol
 pub struct ETHStream {
     stream: DevP2PStream,
     genesis_hash: H256,
@@ -46,6 +49,7 @@ pub struct ETHStream {
 }
 
 impl ETHStream {
+    /// Create a new ETH stream
     pub fn new(addr: &SocketAddr,
                handle: &Handle, secret_key: SecretKey,
                client_version: String, network_id: usize,
@@ -66,18 +70,24 @@ impl ETHStream {
         })
     }
 
+    /// Force disconnecting a peer if it is already connected or about
+    /// to be connected. Useful for removing peers on a different hard
+    /// fork network
     pub fn disconnect_peer(&mut self, remote_id: H512) {
         self.stream.disconnect_peer(remote_id);
     }
 
+    /// Active peers
     pub fn active_peers(&mut self) -> &[H512] {
         self.stream.active_peers()
     }
 
+    /// Set the best hash of the blockchain
     pub fn set_best_hash(&mut self, hash: H256) {
         self.best_hash = hash;
     }
 
+    /// Set the total difficulty of the blockchain
     pub fn set_total_difficulty(&mut self, diff: U256) {
         self.total_difficulty = diff;
     }

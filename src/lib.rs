@@ -62,7 +62,8 @@ impl DevP2PStream {
     /// to be connected. Useful for removing peers on a different hard
     /// fork network
     pub fn disconnect_peer(&mut self, remote_id: H512) {
-        self.rlpx.disconnect_peer(remote_id)
+        self.rlpx.disconnect_peer(remote_id);
+        self.dpt.disconnect_peer(remote_id);
     }
 
     /// Active peers

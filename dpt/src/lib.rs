@@ -110,6 +110,13 @@ impl DPTStream {
             address: addr.ip(), udp_port: addr.port(), tcp_port
         })
     }
+
+    /// Disconnect from a node
+    pub fn disconnect_peer(&mut self, remote_id: H512) {
+        self.connected.retain(|node| {
+            node.id != remote_id
+        });
+    }
 }
 
 impl Stream for DPTStream {

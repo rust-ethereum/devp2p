@@ -158,10 +158,15 @@ impl ECIESStream {
                 as Box<Future<Item = ECIESStream, Error = io::Error>>,
         };
 
+        debug!("connecting to ecies stream ...");
         let stream = TcpStream::connect(addr, handle)
-            .and_then(|socket| socket.framed(ecies).send(ECIESValue::Auth))
+            .and_then(|socket| {
+                debug!("sending ecies auth ...");
+                socket.framed(ecies).send(ECIESValue::Auth)
+            })
             .and_then(|transport| transport.into_future().map_err(|(e, _)| e))
             .and_then(move |(ack, transport)| {
+                debug!("receiving ecies ack ...");
                 if ack == Some(ECIESValue::Ack) {
                     Ok(ECIESStream {
                         stream: transport,

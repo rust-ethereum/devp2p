@@ -159,11 +159,13 @@ impl RLPxStream {
                     true
                 },
                 Ok(Async::Ready(peer)) => {
+                    debug!("new peer connected");
                     newly_connected.push((remote_id, peer.capabilities().into()));
                     streams.push(peer);
                     false
                 },
                 Err(e) => {
+                    debug!("peer disconnected with error {:?}", e);
                     active_peers.retain(|peer_id| {
                         *peer_id != remote_id
                     });
@@ -171,6 +173,8 @@ impl RLPxStream {
                 },
             }
         });
+
+        debug!("streams {} futures {}", streams.len(), futures.len());
 
         if all_ready {
             Ok(Async::Ready(()))
@@ -241,6 +245,7 @@ impl Stream for RLPxStream {
             match peer.poll() {
                 Ok(Async::NotReady) => true,
                 Ok(Async::Ready(None)) => {
+                    debug!("peer disconnected no error");
                     newly_disconnected.push(id);
                     false
                 },
@@ -254,6 +259,7 @@ impl Stream for RLPxStream {
                     true
                 },
                 Err(e) => {
+                    debug!("peer disconnected with error {:?}", e);
                     active_peers.retain(|peer_id| {
                         *peer_id != id
                     });
@@ -318,6 +324,7 @@ impl Sink for RLPxStream {
                     },
                     Ok(AsyncSink::NotReady(_)) => true,
                     Err(e) => {
+                        debug!("peer disconnected with error {:?}", e);
                         active_peers.retain(|peer_id| {
                             *peer_id != remote_id
                         });
@@ -353,6 +360,7 @@ impl Sink for RLPxStream {
                     true
                 },
                 Err(e) => {
+                    debug!("peer disconnected with error: {:?}", e);
                     active_peers.retain(|peer_id| {
                         *peer_id != remote_id
                     });

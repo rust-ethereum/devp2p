@@ -57,7 +57,8 @@ impl ETHStream {
                total_difficulty: U256,
                bootstrap_nodes: Vec<DPTNode>,
                ping_interval: Duration, ping_timeout_interval: Duration,
-               optimal_peers_len: usize) -> Result<Self, io::Error> {
+               optimal_peers_len: usize, optimal_peers_interval: Duration
+    ) -> Result<Self, io::Error> {
         Ok(ETHStream {
             stream: DevP2PStream::new(addr, handle, secret_key,
                                       4, client_version,
@@ -65,7 +66,7 @@ impl ETHStream {
                                            CapabilityInfo { name: "eth", version: 63, length: 17 }],
                                       bootstrap_nodes,
                                       ping_interval, ping_timeout_interval,
-                                      optimal_peers_len)?,
+                                      optimal_peers_len, optimal_peers_interval)?,
             genesis_hash, best_hash, total_difficulty, network_id
         })
     }
@@ -145,7 +146,7 @@ impl Stream for ETHStream {
                 let message = match ETHMessage::decode(&UntrustedRlp::new(&data), id) {
                     Ok(val) => val,
                     Err(_) => {
-                        debug!("got an ununderstandable message, ignoring.");
+                        debug!("got an ununderstandable message with id {}, data {:?}, ignoring.", id, data);
                         return self.poll();
                     },
                 };

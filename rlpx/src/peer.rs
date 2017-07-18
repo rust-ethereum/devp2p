@@ -115,8 +115,11 @@ impl PeerStream {
         let nonhello_capabilities = capabilities.clone();
         let nonhello_client_version = client_version.clone();
 
+        debug!("connecting to rlpx peer {:x}", id);
+
         let stream = ECIESStream::connect(addr, handle, secret_key.clone(), remote_id)
             .and_then(move |socket| {
+                debug!("sending hello message ...");
                 let hello = rlp::encode(&HelloMessage {
                     port, id, protocol_version, client_version,
                     capabilities: {
@@ -139,9 +142,14 @@ impl PeerStream {
                 }
                 socket.send(ret)
             })
-            .and_then(|transport| transport.into_future().map_err(|(e, _)| e))
+            .and_then(|transport| transport.into_future().map_err(|(e, _)| {
+                debug!("transport error: {:?}", e);
+                e
+            }))
             .and_then(move |(hello, transport)| {
+                debug!("receiving hello message ...");
                 if hello.is_none() {
+                    debug!("hello failed because of no value");
                     return Err(io::Error::new(io::ErrorKind::Other, "hello failed (no value)"));
                 }
                 let hello = hello.unwrap();
@@ -151,11 +159,13 @@ impl PeerStream {
                 match message_id {
                     Ok(message_id) => {
                         if message_id != 0 {
+                            debug!("hello failed because message id is not 0");
                             return Err(io::Error::new(io::ErrorKind::Other,
                                                       "hello failed (message id)"));
                         }
                     },
                     Err(_) => {
+                        debug!("hello failed because message id cannot be parsed");
                         return Err(io::Error::new(io::ErrorKind::Other,
                                                   "hello failed (message id parsing)"));
                     }
@@ -196,7 +206,10 @@ impl PeerStream {
                             shared_capabilities
                         })
                     },
-                    Err(_) => Err(io::Error::new(io::ErrorKind::Other, "hello failed (rlp error)"))
+                    Err(_) => {
+                        debug!("hello failed because message rlp parsing failed");
+                        Err(io::Error::new(io::ErrorKind::Other, "hello failed (rlp error)"))
+                    }
                 }
             });
 
@@ -209,17 +222,25 @@ impl PeerStream {
         match message_id {
             0x01 /* disconnect */ => {
                 let reason: Result<usize, rlp::DecoderError> = UntrustedRlp::new(&data).val_at(0);
+                debug!("received disconnect message, reason: {:?}", reason);
                 return Err(io::Error::new(io::ErrorKind::Other,
                                           "explicit disconnect"));
             },
             0x02 /* ping */ => {
+                debug!("received ping message data {:?}", data);
                 let mut payload: Vec<u8> = rlp::encode(&0x03usize /* pong */).to_vec();
                 payload.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
+                debug!("sending pong message payload {:?}", payload);
                 self.stream.start_send(payload)?;
             },
-            0x03 /* pong */ => (),
-            _ => return Err(io::Error::new(io::ErrorKind::Other,
-                                           "unhandled reserved message")),
+            0x03 /* pong */ => {
+                debug!("received pong message");
+            },
+            _ => {
+                debug!("received unknown reserved message");
+                return Err(io::Error::new(io::ErrorKind::Other,
+                                          "unhandled reserved message"))
+            },
         }
         Ok(())
     }

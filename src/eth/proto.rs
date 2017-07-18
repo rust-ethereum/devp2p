@@ -12,7 +12,7 @@ pub enum ETHMessage {
         best_hash: H256,
         genesis_hash: H256,
     },
-    NewBlockHashes(Vec<H256>),
+    NewBlockHashes(Vec<(H256, U256)>),
     Transactions(Vec<Transaction>),
     Unknown,
 }
@@ -41,7 +41,12 @@ impl ETHMessage {
                 }
             },
             1 => {
-                ETHMessage::NewBlockHashes(rlp.as_list()?)
+                let mut r = Vec::new();
+                for i in 0..rlp.item_count()? {
+                    let d = rlp.at(i)?;
+                    r.push((d.val_at(0)?, d.val_at(1)?));
+                }
+                ETHMessage::NewBlockHashes(r)
             },
             2 => {
                 ETHMessage::Transactions(rlp.as_list()?)
@@ -67,7 +72,12 @@ impl Encodable for ETHMessage {
                 s.append(&genesis_hash);
             },
             &ETHMessage::NewBlockHashes(ref hashes) => {
-                s.append_list(&hashes);
+                s.begin_list(hashes.len());
+                for &(hash, number) in hashes {
+                    s.begin_list(2);
+                    s.append(&hash);
+                    s.append(&number);
+                }
             },
             &ETHMessage::Transactions(ref transactions) => {
                 s.append_list(&transactions);
@@ -76,5 +86,17 @@ impl Encodable for ETHMessage {
                 s.begin_list(0);
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ETHMessage;
+    use rlp::{Encodable, Decodable, RlpStream, DecoderError, UntrustedRlp};
+
+    #[test]
+    fn test_new_block_hashes_message() {
+        let data: [u8; 39] = [230, 229, 160, 11, 242, 248, 253, 140, 225, 253, 52, 9, 21, 69, 46, 23, 90, 133, 106, 179, 73, 226, 76, 239, 254, 249, 176, 45, 113, 180, 213, 192, 189, 117, 194, 131, 62, 213, 12];
+        ETHMessage::decode(&UntrustedRlp::new(&data), 1).unwrap();
     }
 }

@@ -16,6 +16,8 @@ pub struct DevP2PStream {
     ping_timeout_interval: Duration,
     ping_timeout: Timeout,
     optimal_peers_len: usize,
+    optimal_peers_interval: Duration,
+    optimal_peers_timeout: Timeout,
     handle: Handle,
 }
 
@@ -27,19 +29,28 @@ impl DevP2PStream {
                capabilities: Vec<CapabilityInfo>,
                bootstrap_nodes: Vec<DPTNode>,
                ping_interval: Duration, ping_timeout_interval: Duration,
-               optimal_peers_len: usize) -> Result<Self, io::Error> {
+               optimal_peers_len: usize, optimal_peers_interval: Duration
+    ) -> Result<Self, io::Error> {
         let port = addr.port();
+
+        let mut rlpx = RLPxStream::new(handle, secret_key.clone(),
+                                       protocol_version, client_version,
+                                       capabilities, port);
+
+        for node in &bootstrap_nodes {
+            rlpx.add_peer(&SocketAddr::new(node.address, node.tcp_port), node.id);
+        }
 
         let dpt = DPTStream::new(addr, handle, secret_key.clone(),
                                  bootstrap_nodes, port)?;
-        let rlpx = RLPxStream::new(handle, secret_key.clone(),
-                                   protocol_version, client_version,
-                                   capabilities, port);
+
         let ping_timeout = Timeout::new(ping_interval, handle)?;
+        let optimal_peers_timeout = Timeout::new(optimal_peers_interval, handle)?;
 
         Ok(DevP2PStream {
             dpt, rlpx, ping_interval, ping_timeout,
-            ping_timeout_interval,
+            ping_timeout_interval, optimal_peers_timeout,
+            optimal_peers_interval,
             optimal_peers_len, handle: handle.clone()
         })
     }
@@ -69,10 +80,26 @@ impl DevP2PStream {
     }
 
     fn poll_dpt_request_new_peers(&mut self) -> Poll<(), io::Error> {
-        if self.rlpx.active_peers().len() < self.optimal_peers_len {
-            self.dpt.start_send(DPTMessage::RequestNewPeer)?;
-            self.dpt.poll_complete()?;
+        let mut result = self.optimal_peers_timeout.poll()?;
+
+        loop {
+            match result {
+                Async::NotReady => return Ok(Async::Ready(())),
+                Async::Ready(()) => {
+                    if self.rlpx.active_peers().len() < self.optimal_peers_len {
+                        debug!("not enough peers, requesting new ...");
+                        self.dpt.start_send(DPTMessage::RequestNewPeer)?;
+                        self.dpt.poll_complete()?;
+                    }
+
+                    self.optimal_peers_timeout = Timeout::new(self.optimal_peers_interval,
+                                                              &self.handle)?;
+
+                    result = self.optimal_peers_timeout.poll()?;
+                }
+            }
         }
+
 
         Ok(Async::Ready(()))
     }

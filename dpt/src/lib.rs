@@ -193,6 +193,7 @@ impl Stream for DPTStream {
 
         match message.typ {
             0x01 /* ping */ => {
+                debug!("got ping message");
                 let incoming_message: PingMessage = match UntrustedRlp::new(&message.data).as_val() {
                     Ok(val) => val,
                     Err(_) =>
@@ -222,6 +223,7 @@ impl Stream for DPTStream {
                 }
             },
             0x02 /* pong */ => {
+                debug!("got pong message");
                 let incoming_message: PongMessage = match UntrustedRlp::new(&message.data).as_val() {
                     Ok(val) => val,
                     Err(_) =>
@@ -244,6 +246,7 @@ impl Stream for DPTStream {
                 }
             },
             0x03 /* find neighbours */ => {
+                debug!("got find neighbours message");
                 // Return at most 3 nodes at a time.
                 let mut nodes = Vec::new();
                 for i in 0..self.connected.len() {
@@ -277,15 +280,19 @@ impl Stream for DPTStream {
                 }
             },
             0x04 /* neighbours */ => {
+                debug!("got neighbours message");
                 let incoming_message: NeighboursMessage = match UntrustedRlp::new(&message.data).as_val() {
                     Ok(val) => val,
-                    Err(_) =>
+                    Err(_) => {
+                        debug!("neighbours parsing error");
                         if self.incoming.len() > 0 {
                             return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
                         } else {
                             return Ok(Async::NotReady);
                         }
+                    }
                 };
+                debug!("neighbouts message len {}", incoming_message.nodes.len());
                 for i in 0..incoming_message.nodes.len() {
                     if self.connected.iter()
                         .all(|node| node.id != incoming_message.nodes[i].id)
@@ -300,8 +307,12 @@ impl Stream for DPTStream {
                             udp_port, tcp_port,
                             id: remote_id
                         };
+                        debug!("pushing new node {:?}", node);
                         self.connected.push(node.clone());
                         self.incoming.push(node);
+                        debug!("connected {}", self.connected.len());
+                    } else {
+                        // debug!("already connected {:x}", incoming_message.nodes[i].id);
                     }
                 }
                 if self.incoming.len() > 0 {

@@ -50,9 +50,10 @@ fn main() {
             udp_port: BOOTSTRAP_PORT,
             id: H512::from_str(BOOTSTRAP_ID).unwrap(),
         }],
-        Duration::new(5, 0),
-        Duration::new(2, 0),
-        5).unwrap();
+        Duration::new(600, 0),
+        Duration::new(700, 0),
+        5,
+        Duration::new(5, 0)).unwrap();
 
     loop {
         let (val, new_client) = core.run(client.into_future().map_err(|(e, _)| e)).unwrap();

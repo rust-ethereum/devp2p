@@ -127,6 +127,7 @@ impl Stream for DPTStream {
             };
 
             if timeoutted {
+                debug!("{} endpoints timeoutted", hs.len());
                 for h in hs {
                     self.connected.retain(|v| v.id != *h);
                 }

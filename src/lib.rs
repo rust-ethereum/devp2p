@@ -58,6 +58,18 @@ impl DevP2PStream {
         })
     }
 
+    /// Force disconnecting a peer if it is already connected or about
+    /// to be connected. Useful for removing peers on a different hard
+    /// fork network
+    pub fn disconnect_peer(&mut self, remote_id: H512) {
+        self.rlpx.disconnect_peer(remote_id)
+    }
+
+    /// Active peers
+    pub fn active_peers(&mut self) -> &[H512] {
+        self.rlpx.active_peers()
+    }
+
     fn poll_dpt_receive_peers(&mut self) -> Poll<(), io::Error> {
         loop {
             let node = match self.dpt.poll() {

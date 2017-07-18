@@ -265,13 +265,19 @@ impl Stream for PeerStream {
 }
 
 impl Sink for PeerStream {
-    type SinkItem = (CapabilityInfo, usize, Vec<u8>);
+    type SinkItem = (&'static str, usize, Vec<u8>);
     type SinkError = io::Error;
 
-    fn start_send(&mut self, (cap, id, data): (CapabilityInfo, usize, Vec<u8>)) -> StartSend<Self::SinkItem, Self::SinkError> {
-        if !self.shared_capabilities.contains(&cap) {
+    fn start_send(&mut self, (cap_name, id, data): (&'static str, usize, Vec<u8>)) -> StartSend<Self::SinkItem, Self::SinkError> {
+        let cap = self.shared_capabilities.iter().find(|cap| {
+            cap.name == cap_name
+        });
+
+        if cap.is_none() {
             return Ok(AsyncSink::Ready);
         }
+
+        let cap = *cap.unwrap();
 
         let mut message_id = 0x10;
         for scap in &self.shared_capabilities {
@@ -293,7 +299,7 @@ impl Sink for PeerStream {
 
         match self.stream.start_send(ret)? {
             AsyncSink::Ready => Ok(AsyncSink::Ready),
-            AsyncSink::NotReady(_) => Ok(AsyncSink::NotReady((cap, id, data))),
+            AsyncSink::NotReady(_) => Ok(AsyncSink::NotReady((cap_name, id, data))),
         }
     }
 

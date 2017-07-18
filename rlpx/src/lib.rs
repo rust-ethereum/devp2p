@@ -51,7 +51,7 @@ pub enum RLPxNode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RLPxSendMessage {
     pub node: RLPxNode,
-    pub capability: CapabilityInfo,
+    pub capability_name: &'static str,
     pub id: usize,
     pub data: Vec<u8>,
 }
@@ -282,7 +282,7 @@ impl Sink for RLPxStream {
                 RLPxNode::Any => !any_ready,
             } {
                 let remote_id = peer.remote_id();
-                match peer.start_send((message.capability.clone(), message.id, message.data.clone())) {
+                match peer.start_send((message.capability_name, message.id, message.data.clone())) {
                     Ok(AsyncSink::Ready) => {
                         any_ready = true;
                         true

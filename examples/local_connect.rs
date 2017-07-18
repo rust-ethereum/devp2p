@@ -6,9 +6,12 @@ extern crate etcommon_bigint;
 extern crate etcommon_rlp as rlp;
 
 #[macro_use]
+extern crate log;
+#[macro_use]
 extern crate futures;
 extern crate tokio_io;
 extern crate tokio_core;
+extern crate env_logger;
 
 use etcommon_bigint::H512;
 use etcommon_crypto::SECP256K1;
@@ -23,12 +26,14 @@ use devp2p::DevP2PStream;
 use devp2p::rlpx::CapabilityInfo;
 use devp2p::dpt::DPTNode;
 
-const BOOTSTRAP_ID: &str = "42d8f29d1db5f4b2947cd5c3d76c6d0d3697e6b9b3430c3d41e46b4bb77655433aeedc25d4b4ea9d8214b6a43008ba67199374a9b53633301bca0cd20c6928ab";
-const BOOTSTRAP_IP: &str = "104.155.176.151";
+const BOOTSTRAP_ID: &str = "0e6e864a545fa1f22364ec781a4e2673a8c7e9d4fb02dbef02aeee46f1db4b9ea820f4479c0136cbc0a0e30501c2eba123eb7c16df45b539b69231db083edaf0";
+const BOOTSTRAP_IP: &str = "127.0.0.1";
 const BOOTSTRAP_PORT: u16 = 30303;
 
 fn main() {
-    let addr = "0.0.0.0:30303".parse().unwrap();
+    env_logger::init();
+
+    let addr = "0.0.0.0:50505".parse().unwrap();
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -45,12 +50,13 @@ fn main() {
             udp_port: BOOTSTRAP_PORT,
             id: H512::from_str(BOOTSTRAP_ID).unwrap(),
         }],
-        Duration::new(60, 0),
-        Duration::new(10, 0),
+        Duration::new(5, 0),
+        Duration::new(2, 0),
         5).unwrap();
 
     loop {
         let (val, new_client) = core.run(client.into_future().map_err(|(e, _)| e)).unwrap();
         client = new_client;
+        println!("received {:?}", val);
     }
 }

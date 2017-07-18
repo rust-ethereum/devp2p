@@ -41,16 +41,40 @@ use tokio_io::codec::{Framed, Encoder, Decoder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Sending node type specifying either all, any or a particular peer
-pub enum Node {
+pub enum RLPxNode {
     Any,
     All,
     Peer(H512),
+}
+
+/// Sending message for RLPx
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RLPxSendMessage {
+    pub node: RLPxNode,
+    pub capability: CapabilityInfo,
+    pub id: usize,
+    pub data: Vec<u8>,
+}
+
+/// Receiving message for RLPx
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RLPxReceiveMessage {
+    Connected(H512),
+    Disconnected(H512),
+    Normal {
+        node: H512,
+        capability: CapabilityInfo,
+        id: usize,
+        data: Vec<u8>,
+    }
 }
 
 /// A RLPx stream and sink
 pub struct RLPxStream {
     streams: Vec<PeerStream>,
     futures: Vec<(H512, Box<Future<Item = PeerStream, Error = io::Error>>)>,
+    newly_connected: Vec<H512>,
+    newly_disconnected: Vec<H512>,
     active_peers: Vec<H512>,
     secret_key: SecretKey,
     protocol_version: usize,
@@ -72,6 +96,8 @@ impl RLPxStream {
             capabilities, port,
             handle: handle.clone(),
             active_peers: Vec::new(),
+            newly_connected: Vec::new(),
+            newly_disconnected: Vec::new(),
         }
     }
 
@@ -94,6 +120,7 @@ impl RLPxStream {
         let ref mut futures = self.futures;
         let ref mut streams = self.streams;
         let ref mut active_peers = self.active_peers;
+        let ref mut newly_connected = self.newly_connected;
 
         let mut all_ready = true;
 
@@ -105,6 +132,7 @@ impl RLPxStream {
                 },
                 Ok(Async::Ready(peer)) => {
                     streams.push(peer);
+                    newly_connected.push(remote_id);
                     false
                 },
                 Err(e) => {
@@ -151,14 +179,23 @@ fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)
 }
 
 impl Stream for RLPxStream {
-    type Item = (H512, CapabilityInfo, usize, Vec<u8>);
+    type Item = RLPxReceiveMessage;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        if self.newly_connected.len() > 0 {
+            return Ok(Async::Ready(Some(RLPxReceiveMessage::Connected(self.newly_connected.pop().unwrap()))));
+        }
+        if self.newly_disconnected.len() > 0 {
+            return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected(self.newly_disconnected.pop().unwrap()))));
+        }
+
         self.poll_new_peers()?;
 
         let ref mut streams = self.streams;
         let ref mut active_peers = self.active_peers;
+        let ref mut newly_connected = self.newly_connected;
+        let ref mut newly_disconnected = self.newly_disconnected;
 
         let mut ret: Option<Self::Item> = None;
         retain_mut(streams, |ref mut peer| {
@@ -169,15 +206,19 @@ impl Stream for RLPxStream {
             let id = peer.remote_id();
             match peer.poll() {
                 Ok(Async::NotReady) => true,
-                Ok(Async::Ready(None)) => false,
+                Ok(Async::Ready(None)) => {
+                    newly_disconnected.push(id);
+                    false
+                },
                 Ok(Async::Ready(Some((cap, message_id, data)))) => {
-                    ret = Some((id, cap, message_id, data));
+                    ret = Some(RLPxReceiveMessage::Normal { node: id, capability: cap, id: message_id, data });
                     true
                 },
                 Err(e) => {
                     active_peers.retain(|peer_id| {
                         *peer_id != id
                     });
+                    newly_disconnected.push(id);
                     false
                 },
             }
@@ -186,33 +227,40 @@ impl Stream for RLPxStream {
         if ret.is_some() {
             Ok(Async::Ready(ret))
         } else {
+            if newly_connected.len() > 0 {
+                return Ok(Async::Ready(Some(RLPxReceiveMessage::Connected(newly_connected.pop().unwrap()))));
+            }
+            if newly_disconnected.len() > 0 {
+                return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected(newly_disconnected.pop().unwrap()))));
+            }
             Ok(Async::NotReady)
         }
     }
 }
 
 impl Sink for RLPxStream {
-    type SinkItem = (Node, CapabilityInfo, usize, Vec<u8>);
+    type SinkItem = RLPxSendMessage;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, (node, cap, message_id, data): (Node, CapabilityInfo, usize, Vec<u8>)) -> StartSend<Self::SinkItem, Self::SinkError> {
+    fn start_send(&mut self, message: RLPxSendMessage) -> StartSend<Self::SinkItem, Self::SinkError> {
         self.poll_new_peers()?;
 
         let ref mut streams = self.streams;
         let ref mut active_peers = self.active_peers;
+        let ref mut newly_disconnected = self.newly_disconnected;
 
         let mut any_ready = false;
 
         retain_mut(streams, |ref mut peer| {
             let id = peer.remote_id();
 
-            if match node {
-                Node::Peer(peer_id) => peer_id == id,
-                Node::All => true,
-                Node::Any => !any_ready,
+            if match message.node {
+                RLPxNode::Peer(peer_id) => peer_id == id,
+                RLPxNode::All => true,
+                RLPxNode::Any => !any_ready,
             } {
                 let remote_id = peer.remote_id();
-                match peer.start_send((cap.clone(), message_id, data.clone())) {
+                match peer.start_send((message.capability.clone(), message.id, message.data.clone())) {
                     Ok(AsyncSink::Ready) => {
                         any_ready = true;
                         true
@@ -222,6 +270,7 @@ impl Sink for RLPxStream {
                         active_peers.retain(|peer_id| {
                             *peer_id != remote_id
                         });
+                        newly_disconnected.push(remote_id);
                         false
                     },
                 }
@@ -233,13 +282,14 @@ impl Sink for RLPxStream {
         if any_ready {
             Ok(AsyncSink::Ready)
         } else {
-            Ok(AsyncSink::NotReady((node, cap, message_id, data)))
+            Ok(AsyncSink::NotReady(message))
         }
     }
 
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
         let ref mut streams = self.streams;
         let ref mut active_peers = self.active_peers;
+        let ref mut newly_disconnected = self.newly_disconnected;
 
         let mut all_ready = true;
 
@@ -255,6 +305,7 @@ impl Sink for RLPxStream {
                     active_peers.retain(|peer_id| {
                         *peer_id != remote_id
                     });
+                    newly_disconnected.push(remote_id);
                     false
                 },
             }

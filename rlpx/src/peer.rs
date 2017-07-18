@@ -160,7 +160,7 @@ impl PeerStream {
                     UntrustedRlp::new(&hello[1..]).as_val();
                 match rlp {
                     Ok(val) => {
-                        println!("hello message: {:?}", val);
+                        debug!("hello message: {:?}", val);
                         let mut shared_capabilities: Vec<CapabilityInfo> = Vec::new();
 
                         for cap_info in nonhello_capabilities {

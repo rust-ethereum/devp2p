@@ -13,7 +13,7 @@ extern crate secp256k1;
 extern crate etcommon_bigint as bigint;
 
 use dpt::{DPTNode, DPTStream, DPTMessage};
-use rlpx::{Node, CapabilityInfo, RLPxStream};
+use rlpx::{RLPxSendMessage, RLPxReceiveMessage, CapabilityInfo, RLPxStream};
 use tokio_core::reactor::{Handle, Timeout};
 use std::time::Duration;
 use std::net::SocketAddr;
@@ -100,7 +100,7 @@ impl DevP2PStream {
 }
 
 impl Stream for DevP2PStream {
-    type Item = (H512, CapabilityInfo, usize, Vec<u8>);
+    type Item = RLPxReceiveMessage;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -113,10 +113,10 @@ impl Stream for DevP2PStream {
 }
 
 impl Sink for DevP2PStream {
-    type SinkItem = (Node, CapabilityInfo, usize, Vec<u8>);
+    type SinkItem = RLPxSendMessage;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, val: (Node, CapabilityInfo, usize, Vec<u8>)) -> StartSend<Self::SinkItem, Self::SinkError> {
+    fn start_send(&mut self, val: RLPxSendMessage) -> StartSend<Self::SinkItem, Self::SinkError> {
         self.poll_dpt_receive_peers()?;
         let result = self.rlpx.start_send(val)?;
         self.poll_dpt_request_new_peers()?;

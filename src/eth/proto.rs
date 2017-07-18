@@ -1,5 +1,6 @@
 use rlp::{Encodable, Decodable, RlpStream, DecoderError, UntrustedRlp};
 use bigint::{Address, LogsBloom, Gas, H256, U256, B256};
+use block::Transaction;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ETHMessage {
@@ -10,6 +11,8 @@ pub enum ETHMessage {
         best_hash: H256,
         genesis_hash: H256,
     },
+    NewBlockHashes(Vec<H256>),
+    Transactions(Vec<Transaction>),
     Unknown,
 }
 
@@ -17,6 +20,8 @@ impl ETHMessage {
     pub fn id(&self) -> usize {
         match self {
             &ETHMessage::Status { .. } => 0,
+            &ETHMessage::NewBlockHashes(_) => 1,
+            &ETHMessage::Transactions(_) => 2,
             &ETHMessage::Unknown => 127,
         }
     }
@@ -31,6 +36,12 @@ impl ETHMessage {
                     best_hash: rlp.val_at(3)?,
                     genesis_hash: rlp.val_at(4)?,
                 }
+            },
+            1 => {
+                ETHMessage::NewBlockHashes(rlp.as_list()?)
+            },
+            2 => {
+                ETHMessage::Transactions(rlp.as_list()?)
             },
             _ => {
                 ETHMessage::Unknown
@@ -51,6 +62,12 @@ impl Encodable for ETHMessage {
                 s.append(&total_difficulty);
                 s.append(&best_hash);
                 s.append(&genesis_hash);
+            },
+            &ETHMessage::NewBlockHashes(ref hashes) => {
+                s.append_list(&hashes);
+            },
+            &ETHMessage::Transactions(ref transactions) => {
+                s.append_list(&transactions);
             },
             &ETHMessage::Unknown => {
                 s.begin_list(0);

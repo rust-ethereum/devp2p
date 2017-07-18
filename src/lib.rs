@@ -12,6 +12,7 @@ extern crate tokio_io;
 extern crate secp256k1;
 extern crate etcommon_bigint as bigint;
 extern crate etcommon_rlp as rlp;
+extern crate etcommon_block as block;
 
 mod raw;
 mod eth;

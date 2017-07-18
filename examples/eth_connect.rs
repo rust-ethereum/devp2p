@@ -56,7 +56,7 @@ fn main() {
         }],
         Duration::new(5, 0),
         Duration::new(2, 0),
-        5).unwrap();
+        25).unwrap();
 
     loop {
         let (val, new_client) = core.run(client.into_future().map_err(|(e, _)| e)).unwrap();

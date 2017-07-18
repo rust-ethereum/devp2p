@@ -134,6 +134,20 @@ impl Stream for DevP2PStream {
         let result = self.rlpx.poll()?;
         self.poll_dpt_request_new_peers()?;
         self.poll_dpt_ping()?;
+
+        match &result {
+            &Async::Ready(Some(RLPxReceiveMessage::Disconnected {
+                node: id
+            })) => {
+                let peer = self.dpt.get_peer(id);
+                if peer.is_some() {
+                    let node = peer.unwrap();
+                    self.rlpx.add_peer(&SocketAddr::new(node.address, node.tcp_port), node.id);
+                }
+            },
+            _ => (),
+        }
+
         Ok(result)
     }
 }

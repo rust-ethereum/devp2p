@@ -35,6 +35,7 @@ use futures::future;
 use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};
 use std::io;
 use std::net::SocketAddr;
+use std::collections::HashMap;
 use tokio_core::reactor::Handle;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::{Framed, Encoder, Decoder};
@@ -230,58 +231,61 @@ impl Stream for RLPxStream {
             })));
         }
 
-        let ref mut streams = self.streams;
-        let ref mut active_peers = self.active_peers;
-        let ref mut newly_connected = self.newly_connected;
-        let ref mut newly_disconnected = self.newly_disconnected;
-
         let mut ret: Option<Self::Item> = None;
-        retain_mut(streams, |ref mut peer| {
-            if ret.is_some() {
-                return true;
-            }
 
-            let id = peer.remote_id();
-            match peer.poll() {
-                Ok(Async::NotReady) => true,
-                Ok(Async::Ready(None)) => {
-                    debug!("peer disconnected no error");
-                    newly_disconnected.push(id);
-                    false
-                },
-                Ok(Async::Ready(Some((cap, message_id, data)))) => {
-                    ret = Some(RLPxReceiveMessage::Normal {
-                        node: id,
-                        capability: cap,
-                        id: message_id,
-                        data
-                    });
-                    true
-                },
-                Err(e) => {
-                    debug!("peer disconnected with error {:?}", e);
-                    active_peers.retain(|peer_id| {
-                        *peer_id != id
-                    });
-                    newly_disconnected.push(id);
-                    false
-                },
-            }
-        });
+        {
+            let ref mut streams = self.streams;
+            let ref mut active_peers = self.active_peers;
+            let ref mut newly_connected = self.newly_connected;
+            let ref mut newly_disconnected = self.newly_disconnected;
+
+            retain_mut(streams, |ref mut peer| {
+                if ret.is_some() {
+                    return true;
+                }
+
+                let id = peer.remote_id();
+                match peer.poll() {
+                    Ok(Async::NotReady) => true,
+                    Ok(Async::Ready(None)) => {
+                        debug!("peer disconnected no error");
+                        newly_disconnected.push(id);
+                        false
+                    },
+                    Ok(Async::Ready(Some((cap, message_id, data)))) => {
+                        ret = Some(RLPxReceiveMessage::Normal {
+                            node: id,
+                            capability: cap,
+                            id: message_id,
+                            data
+                        });
+                        true
+                    },
+                    Err(e) => {
+                        debug!("peer disconnected with error {:?}", e);
+                        active_peers.retain(|peer_id| {
+                            *peer_id != id
+                        });
+                        newly_disconnected.push(id);
+                        false
+                    },
+                }
+            });
+        }
 
         if ret.is_some() {
             Ok(Async::Ready(ret))
         } else {
-            if newly_connected.len() > 0 {
-                let connected = newly_connected.pop().unwrap();
+            if self.newly_connected.len() > 0 {
+                let connected = self.newly_connected.pop().unwrap();
                 return Ok(Async::Ready(Some(RLPxReceiveMessage::Connected {
                     node: connected.0,
                     capabilities: connected.1,
                 })));
             }
-            if newly_disconnected.len() > 0 {
+            if self.newly_disconnected.len() > 0 {
                 return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected {
-                    node: newly_disconnected.pop().unwrap()
+                    node: self.newly_disconnected.pop().unwrap()
                 })));
             }
             Ok(Async::NotReady)

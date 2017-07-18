@@ -32,7 +32,7 @@ const GENESIS_HASH: &str = "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec
 const GENESIS_DIFFICULTY: usize = 17179869184;
 const NETWORK_ID: usize = 1;
 
-const BOOTSTRAP_NODES: [&str; 8] = [
+const BOOTSTRAP_NODES: [&str; 9] = [
     "enode://e809c4a2fec7daed400e5e28564e23693b23b2cc5a019b612505631bbe7b9ccf709c1796d2a3d29ef2b045f210caf51e3c4f5b6d3587d43ad5d6397526fa6179@174.112.32.157:30303",
 	"enode://6e538e7c1280f0a31ff08b382db5302480f775480b8e68f8febca0ceff81e4b19153c6f8bf60313b93bef2cc34d34e1df41317de0ce613a201d1660a788a03e2@52.206.67.235:30303",
 	"enode://5fbfb426fbb46f8b8c1bd3dd140f5b511da558cd37d60844b525909ab82e13a25ee722293c829e52cb65c2305b1637fa9a2ea4d6634a224d5f400bfe244ac0de@162.243.55.45:30303",
@@ -40,7 +40,8 @@ const BOOTSTRAP_NODES: [&str; 8] = [
 	"enode://814920f1ec9510aa9ea1c8f79d8b6e6a462045f09caa2ae4055b0f34f7416fca6facd3dd45f1cf1673c0209e0503f02776b8ff94020e98b6679a0dc561b4eba0@104.154.136.117:30303",
 	"enode://72e445f4e89c0f476d404bc40478b0df83a5b500d2d2e850e08eb1af0cd464ab86db6160d0fde64bd77d5f0d33507ae19035671b3c74fec126d6e28787669740@104.198.71.200:30303",
 	"enode://39abab9d2a41f53298c0c9dc6bbca57b0840c3ba9dccf42aa27316addc1b7e56ade32a0a9f7f52d6c5db4fe74d8824bcedfeaecf1a4e533cacb71cf8100a9442@144.76.238.49:30303",
-    "enode://f50e675a34f471af2438b921914b5f06499c7438f3146f6b8936f1faeb50b8a91d0d0c24fb05a66f05865cd58c24da3e664d0def806172ddd0d4c5bdbf37747e@144.76.238.49:30306"
+    "enode://f50e675a34f471af2438b921914b5f06499c7438f3146f6b8936f1faeb50b8a91d0d0c24fb05a66f05865cd58c24da3e664d0def806172ddd0d4c5bdbf37747e@144.76.238.49:30306",
+    "enode://50372f1556c73671ee6e91d539f8946f059d40114da5aae889686e6874e6f34270c2d7f7f2779d16b9b4078ff9c19c74188d3127f6fd0186eb4a647ce413f73f@35.194.140.8:30303",
 ];
 
 fn main() {
@@ -78,6 +79,7 @@ fn main() {
                 node, data, version
             } => {
                 match data {
+                    ETHMessage::Status { .. } => (),
                     ETHMessage::Transactions(_) => {
                         println!("received new transactions, active {}", client.active_peers().len());
                     },
@@ -104,7 +106,7 @@ fn main() {
                 }
             },
             val => {
-                println!("received {:?}, active {}", val, client.active_peers().len());
+                // println!("received {:?}, active {}", val, client.active_peers().len());
             }
         }
     }

@@ -1,6 +1,6 @@
 use rlp::{Encodable, Decodable, RlpStream, DecoderError, UntrustedRlp};
 use bigint::{Address, LogsBloom, Gas, H256, U256, B256};
-use block::{Header, Transaction};
+use block::{Header, Transaction, Block};
 
 /// ETH message version 62 and 63
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,10 @@ pub enum ETHMessage {
     BlockHeaders(Vec<Header>),
     GetBlockBodies(Vec<H256>),
     BlockBodies(Vec<(Vec<Transaction>, Vec<Header>)>),
+    NewBlock {
+        block: Block,
+        total_difficulty: U256
+    },
     Unknown,
 }
 
@@ -37,6 +41,7 @@ impl ETHMessage {
             &ETHMessage::BlockHeaders(_) => 4,
             &ETHMessage::GetBlockBodies(_) => 5,
             &ETHMessage::BlockBodies(_) => 6,
+            &ETHMessage::NewBlock { .. } => 7,
             &ETHMessage::Unknown => 127,
         }
     }
@@ -85,6 +90,12 @@ impl ETHMessage {
                     r.push((d.list_at(0)?, d.list_at(1)?));
                 }
                 ETHMessage::BlockBodies(r)
+            },
+            7 => {
+                ETHMessage::NewBlock {
+                    block: rlp.val_at(0)?,
+                    total_difficulty: rlp.val_at(1)?,
+                }
             },
             _ => {
                 ETHMessage::Unknown
@@ -140,6 +151,11 @@ impl Encodable for ETHMessage {
                     s.append_list(&ommers);
                 }
             },
+            &ETHMessage::NewBlock { ref block, ref total_difficulty } => {
+                s.begin_list(2);
+                s.append(block);
+                s.append(total_difficulty);
+            }
             &ETHMessage::Unknown => {
                 s.begin_list(0);
             },

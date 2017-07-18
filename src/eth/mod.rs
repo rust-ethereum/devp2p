@@ -144,11 +144,11 @@ impl Stream for ETHStream {
             RLPxReceiveMessage::Normal {
                 node, capability, id, data,
             } => {
-                info!("got eth message with id {}", id);
+                debug!("got eth message with id {}", id);
                 let message = match ETHMessage::decode(&UntrustedRlp::new(&data), id) {
                     Ok(val) => val,
                     Err(_) => {
-                        info!("got an ununderstandable message with id {}, data {:?}, ignoring.", id, data);
+                        debug!("got an ununderstandable message with id {}, data {:?}, ignoring.", id, data);
                         return self.poll();
                     },
                 };

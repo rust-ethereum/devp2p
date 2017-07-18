@@ -150,6 +150,16 @@ impl DPTStream {
             node.id != remote_id
         });
     }
+
+    /// Get the peer by its id
+    pub fn get_peer(&self, remote_id: H512) -> Option<DPTNode> {
+        for i in 0..self.connected.len() {
+            if self.connected[i].id == remote_id {
+                return Some(self.connected[i].clone());
+            }
+        }
+        return None;
+    }
 }
 
 impl Stream for DPTStream {

@@ -1,6 +1,6 @@
 [package]
 name = "dpt"
-version = "0.2.2"
+version = "0.2.3"
 license = "Apache-2.0"
 authors = ["Wei Tang <hi@that.world>"]
 description = "Ethereum's Distributed Peer Table implementation in Rust."
@@ -19,6 +19,7 @@ tokio-io = "0.1"
 tokio-core = "0.1"
 time = "0.1"
 log = "0.3"
+url = "1.5.1"
 
 [dev-dependencies]
 env_logger = "0.3"

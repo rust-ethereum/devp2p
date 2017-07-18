@@ -13,6 +13,7 @@ extern crate tokio_io;
 extern crate tokio_core;
 extern crate time;
 extern crate rand;
+extern crate url;
 
 mod proto;
 mod message;
@@ -28,12 +29,14 @@ use tokio_core::reactor::{Timeout, Handle};
 use tokio_core::net::{UdpSocket, UdpFramed};
 use std::net::{IpAddr, SocketAddr, Ipv4Addr, Ipv6Addr};
 use std::io;
+use std::str::FromStr;
 use bigint::{H256, H512};
 use rlp::UntrustedRlp;
 use hash::SECP256K1;
 use secp256k1::key::{PublicKey, SecretKey};
 use util::pk2id;
 use rand::{Rng, thread_rng};
+use url::{Host, Url};
 
 fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)
     where F: FnMut(&mut T) -> bool
@@ -83,6 +86,11 @@ pub struct DPTNode {
     pub id: H512,
 }
 
+pub enum DPTNodeParseError {
+    UrlError,
+    HexError,
+}
+
 impl DPTNode {
     /// The TCP socket address of this node
     pub fn tcp_addr(&self) -> SocketAddr {
@@ -92,6 +100,28 @@ impl DPTNode {
     /// The UDP socket address of this node
     pub fn udp_addr(&self) -> SocketAddr {
         SocketAddr::new(self.address, self.udp_port)
+    }
+
+    pub fn from_url(&self, url: &Url) -> Result<DPTNode, DPTNodeParseError> {
+        let address = match url.host() {
+            Some(Host::Ipv4(ip)) => IpAddr::V4(ip),
+            Some(Host::Ipv6(ip)) => IpAddr::V6(ip),
+            _ => return Err(DPTNodeParseError::UrlError),
+        };
+        let port = match url.port() {
+            Some(port) => port,
+            _ => return Err(DPTNodeParseError::UrlError),
+        };
+        let id = match H512::from_str(url.username()) {
+            Ok(id) => id,
+            _ => return Err(DPTNodeParseError::HexError),
+        };
+
+        Ok(DPTNode {
+            address, id,
+            tcp_port: port,
+            udp_port: port,
+        })
     }
 }
 

@@ -22,7 +22,8 @@ use futures::future;
 use futures::{Stream, Sink, Future};
 use std::str::FromStr;
 use std::time::Duration;
-use devp2p::ETHStream;
+use devp2p::{ETHSendMessage, ETHReceiveMessage, ETHMessage, ETHStream};
+use devp2p::rlpx::RLPxNode;
 use devp2p::dpt::DPTNode;
 use bigint::{H256, U256, H512};
 use url::Url;
@@ -66,6 +67,45 @@ fn main() {
     loop {
         let (val, new_client) = core.run(client.into_future().map_err(|(e, _)| e)).unwrap();
         client = new_client;
-        println!("received {:?}, active {}", val, client.active_peers().len());
+
+        if val.is_none() {
+            break;
+        }
+        let val = val.unwrap();
+
+        match val {
+            ETHReceiveMessage::Normal {
+                node, data, version
+            } => {
+                match data {
+                    ETHMessage::Transactions(_) => {
+                        println!("received new transactions, active {}", client.active_peers().len());
+                    },
+                    ETHMessage::GetBlockHeaders {
+                        number, max_headers, skip, reverse
+                    } => {
+                        println!("requested header {}, active {}", number, client.active_peers().len());
+                        client = core.run(client.send(ETHSendMessage {
+                            node: RLPxNode::Peer(node),
+                            data: ETHMessage::BlockHeaders(Vec::new()),
+                        })).unwrap();
+                    },
+                    ETHMessage::GetBlockBodies(hash) => {
+                        println!("requested body {:?}, active {}", hash, client.active_peers().len());
+
+                        client = core.run(client.send(ETHSendMessage {
+                            node: RLPxNode::Peer(node),
+                            data: ETHMessage::BlockBodies(Vec::new()),
+                        })).unwrap();
+                    },
+                    msg => {
+                        println!("received {:?}, active {}", msg, client.active_peers().len());
+                    },
+                }
+            },
+            val => {
+                println!("received {:?}, active {}", val, client.active_peers().len());
+            }
+        }
     }
 }

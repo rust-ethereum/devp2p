@@ -1,6 +1,6 @@
 use rlp::{Encodable, Decodable, RlpStream, DecoderError, UntrustedRlp};
 use bigint::{Address, LogsBloom, Gas, H256, U256, B256};
-use block::Transaction;
+use block::{Header, Transaction};
 
 /// ETH message version 62 and 63
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +14,15 @@ pub enum ETHMessage {
     },
     NewBlockHashes(Vec<(H256, U256)>),
     Transactions(Vec<Transaction>),
+    GetBlockHeaders {
+        number: U256,
+        max_headers: usize,
+        skip: usize,
+        reverse: bool,
+    },
+    BlockHeaders(Vec<Header>),
+    GetBlockBodies(Vec<H256>),
+    BlockBodies(Vec<(Vec<Transaction>, Vec<Header>)>),
     Unknown,
 }
 
@@ -24,6 +33,10 @@ impl ETHMessage {
             &ETHMessage::Status { .. } => 0,
             &ETHMessage::NewBlockHashes(_) => 1,
             &ETHMessage::Transactions(_) => 2,
+            &ETHMessage::GetBlockHeaders { .. } => 3,
+            &ETHMessage::BlockHeaders(_) => 4,
+            &ETHMessage::GetBlockBodies(_) => 5,
+            &ETHMessage::BlockBodies(_) => 6,
             &ETHMessage::Unknown => 127,
         }
     }
@@ -50,6 +63,28 @@ impl ETHMessage {
             },
             2 => {
                 ETHMessage::Transactions(rlp.as_list()?)
+            },
+            3 => {
+                ETHMessage::GetBlockHeaders {
+                    number: rlp.val_at(0)?,
+                    max_headers: rlp.val_at(1)?,
+                    skip: rlp.val_at(2)?,
+                    reverse: rlp.val_at(3)?,
+                }
+            },
+            4 => {
+                ETHMessage::BlockHeaders(rlp.as_list()?)
+            },
+            5 => {
+                ETHMessage::GetBlockBodies(rlp.as_list()?)
+            },
+            6 => {
+                let mut r = Vec::new();
+                for i in 0..rlp.item_count()? {
+                    let d = rlp.at(i)?;
+                    r.push((d.list_at(0)?, d.list_at(1)?));
+                }
+                ETHMessage::BlockBodies(r)
             },
             _ => {
                 ETHMessage::Unknown
@@ -82,6 +117,29 @@ impl Encodable for ETHMessage {
             &ETHMessage::Transactions(ref transactions) => {
                 s.append_list(&transactions);
             },
+            &ETHMessage::GetBlockHeaders {
+                number,
+                max_headers, skip, reverse
+            } => {
+                s.begin_list(4);
+                s.append(&number);
+                s.append(&max_headers);
+                s.append(&skip);
+                s.append(&reverse);
+            },
+            &ETHMessage::BlockHeaders(ref headers) => {
+                s.append_list(&headers);
+            },
+            &ETHMessage::GetBlockBodies(ref hashes) => {
+                s.append_list(&hashes);
+            },
+            &ETHMessage::BlockBodies(ref bodies) => {
+                for &(ref transactions, ref ommers) in bodies {
+                    s.begin_list(2);
+                    s.append_list(&transactions);
+                    s.append_list(&ommers);
+                }
+            },
             &ETHMessage::Unknown => {
                 s.begin_list(0);
             },
@@ -98,5 +156,11 @@ mod tests {
     fn test_new_block_hashes_message() {
         let data: [u8; 39] = [230, 229, 160, 11, 242, 248, 253, 140, 225, 253, 52, 9, 21, 69, 46, 23, 90, 133, 106, 179, 73, 226, 76, 239, 254, 249, 176, 45, 113, 180, 213, 192, 189, 117, 194, 131, 62, 213, 12];
         ETHMessage::decode(&UntrustedRlp::new(&data), 1).unwrap();
+    }
+
+    #[test]
+    fn test_get_block_headers_message() {
+        let data: [u8; 8] = [199, 131, 29, 76, 0, 1, 128, 128];
+        ETHMessage::decode(&UntrustedRlp::new(&data), 3).unwrap();
     }
 }

@@ -63,7 +63,8 @@ impl ETHStream {
             stream: DevP2PStream::new(addr, handle, secret_key,
                                       4, client_version,
                                       vec![CapabilityInfo { name: "eth", version: 62, length: 8 },
-                                           CapabilityInfo { name: "eth", version: 63, length: 17 }],
+                                           // CapabilityInfo { name: "eth", version: 63, length: 17 },
+                                      ],
                                       bootstrap_nodes,
                                       ping_interval, ping_timeout_interval,
                                       optimal_peers_len, optimal_peers_interval)?,
@@ -143,10 +144,11 @@ impl Stream for ETHStream {
             RLPxReceiveMessage::Normal {
                 node, capability, id, data,
             } => {
+                info!("got eth message with id {}", id);
                 let message = match ETHMessage::decode(&UntrustedRlp::new(&data), id) {
                     Ok(val) => val,
                     Err(_) => {
-                        debug!("got an ununderstandable message with id {}, data {:?}, ignoring.", id, data);
+                        info!("got an ununderstandable message with id {}, data {:?}, ignoring.", id, data);
                         return self.poll();
                     },
                 };

@@ -4,6 +4,8 @@ pub extern crate dpt;
 pub extern crate rlpx;
 
 #[macro_use]
+extern crate log;
+#[macro_use]
 extern crate futures;
 extern crate tokio_core;
 extern crate tokio_io;

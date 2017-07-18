@@ -17,6 +17,10 @@ devp2p-secp256k1 = "0.5"
 etcommon-bigint = "0.1"
 etcommon-rlp = "0.1"
 etcommon-crypto = "0.1"
+log = "0.3"
+
+[dev-dependencies]
+env_logger = "0.3"
 
 [workspace]
 members = [

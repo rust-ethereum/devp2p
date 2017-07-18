@@ -6,6 +6,8 @@ extern crate etcommon_rlp as rlp;
 extern crate sha3;
 extern crate secp256k1;
 #[macro_use]
+extern crate log;
+#[macro_use]
 extern crate futures;
 extern crate tokio_io;
 extern crate tokio_core;

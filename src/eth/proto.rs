@@ -15,7 +15,7 @@ pub enum ETHMessage {
     NewBlockHashes(Vec<(H256, U256)>),
     Transactions(Vec<Transaction>),
     GetBlockHeaders {
-        number: U256,
+        number: U256, // TODO: this can also be a hash.
         max_headers: usize,
         skip: usize,
         reverse: bool,

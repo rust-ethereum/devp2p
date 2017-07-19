@@ -13,6 +13,7 @@ extern crate tokio_io;
 extern crate tokio_core;
 extern crate env_logger;
 extern crate url;
+extern crate sha3;
 
 use etcommon_crypto::SECP256K1;
 use tokio_core::reactor::Core;
@@ -21,12 +22,13 @@ use rand::os::OsRng;
 use futures::future;
 use futures::{Stream, Sink, Future};
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Instant, Duration};
 use devp2p::{ETHSendMessage, ETHReceiveMessage, ETHMessage, ETHStream, DevP2PConfig};
 use devp2p::rlpx::RLPxNode;
 use devp2p::dpt::DPTNode;
 use bigint::{H256, U256, H512};
 use url::Url;
+use sha3::{Digest, Keccak256};
 
 const GENESIS_HASH: &str = "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3";
 const GENESIS_DIFFICULTY: usize = 17179869184;
@@ -43,6 +45,13 @@ const BOOTSTRAP_NODES: [&str; 9] = [
     "enode://f50e675a34f471af2438b921914b5f06499c7438f3146f6b8936f1faeb50b8a91d0d0c24fb05a66f05865cd58c24da3e664d0def806172ddd0d4c5bdbf37747e@144.76.238.49:30306",
     "enode://50372f1556c73671ee6e91d539f8946f059d40114da5aae889686e6874e6f34270c2d7f7f2779d16b9b4078ff9c19c74188d3127f6fd0186eb4a647ce413f73f@35.194.140.8:30303",
 ];
+
+pub fn keccak256(data: &[u8]) -> H256 {
+    let mut hasher = Keccak256::new();
+    hasher.input(data);
+    let out = hasher.result();
+    H256::from(out.as_ref())
+}
 
 fn main() {
     env_logger::init();
@@ -67,6 +76,12 @@ fn main() {
             optimal_peers_interval: Duration::new(5, 0),
             reconnect_dividend: 5,
         }).unwrap();
+
+    let mut best_number: U256 = U256::zero();
+    let mut best_hash: H256 = H256::from_str(GENESIS_HASH).unwrap();
+    let mut got_bodies_for_current = true;
+
+    let mut when = Instant::now() + Duration::new(1, 0);
 
     loop {
         let (val, new_client) = core.run(client.into_future().map_err(|(e, _)| e)).unwrap();
@@ -103,6 +118,27 @@ fn main() {
                             data: ETHMessage::BlockBodies(Vec::new()),
                         })).unwrap();
                     },
+
+                    ETHMessage::BlockHeaders(ref headers) => {
+                        println!("received block headers of len {}, active {}", headers.len(),
+                                 client.active_peers().len());
+                        if got_bodies_for_current {
+                            for header in headers {
+                                if header.parent_hash == best_hash {
+                                    best_hash = keccak256(&rlp::encode(header).to_vec());
+                                    best_number = header.number;
+                                    println!("updated best number: {}", header.number);
+                                    println!("updated best hash: 0x{:x}", best_hash);
+                                }
+                            }
+                        }
+                    },
+
+                    ETHMessage::BlockBodies(ref bodies) => {
+                        println!("received block bodies of len {}, active {}", bodies.len(),
+                                 client.active_peers().len());
+                    }
+
                     msg => {
                         println!("received {:?}, active {}", msg, client.active_peers().len());
                     },
@@ -111,6 +147,20 @@ fn main() {
             val => {
                 // println!("received {:?}, active {}", val, client.active_peers().len());
             }
+        }
+
+        if when <= Instant::now() {
+            println!("request downloading header ...");
+            client = core.run(client.send(ETHSendMessage {
+                node: RLPxNode::All,
+                data: ETHMessage::GetBlockHeaders {
+                    number: best_number + U256::one(),
+                    max_headers: 2048,
+                    skip: 0,
+                    reverse: false,
+                }
+            })).unwrap();
+            when = Instant::now() + Duration::new(1, 0);
         }
     }
 }

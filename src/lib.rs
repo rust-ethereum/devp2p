@@ -13,9 +13,10 @@ extern crate secp256k1;
 extern crate etcommon_bigint as bigint;
 extern crate etcommon_rlp as rlp;
 extern crate etcommon_block as block;
+extern crate rand;
 
 mod raw;
 mod eth;
 
-pub use raw::DevP2PStream;
+pub use raw::{DevP2PStream, DevP2PConfig};
 pub use eth::{ETHStream, ETHSendMessage, ETHReceiveMessage, ETHMessage};

@@ -144,6 +144,11 @@ impl DPTStream {
         })
     }
 
+    /// Get all connected peers
+    pub fn connected_peers(&self) -> &[DPTNode] {
+        &self.connected
+    }
+
     /// Disconnect from a node
     pub fn disconnect_peer(&mut self, remote_id: H512) {
         self.connected.retain(|node| {

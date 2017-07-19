@@ -3,22 +3,32 @@ use rlpx::{RLPxSendMessage, RLPxReceiveMessage, CapabilityInfo, RLPxStream};
 use tokio_core::reactor::{Handle, Timeout};
 use std::time::Duration;
 use std::net::SocketAddr;
+use std::cmp::min;
 use std::io;
 use secp256k1::key::SecretKey;
 use futures::{StartSend, Async, Poll, Stream, Sink, Future, future};
 use bigint::H512;
+use rand::{thread_rng, Rng};
+
+/// Config for DevP2P
+pub struct DevP2PConfig {
+    pub ping_interval: Duration,
+    pub ping_timeout_interval: Duration,
+    pub optimal_peers_len: usize,
+    pub optimal_peers_interval: Duration,
+    pub reconnect_dividend: usize,
+}
 
 /// An Ethereum DevP2P stream that handles peers management
 pub struct DevP2PStream {
     dpt: DPTStream,
     rlpx: RLPxStream,
-    ping_interval: Duration,
-    ping_timeout_interval: Duration,
+
     ping_timeout: Timeout,
-    optimal_peers_len: usize,
-    optimal_peers_interval: Duration,
     optimal_peers_timeout: Timeout,
     handle: Handle,
+
+    config: DevP2PConfig,
 }
 
 impl DevP2PStream {
@@ -28,8 +38,7 @@ impl DevP2PStream {
                protocol_version: usize, client_version: String,
                capabilities: Vec<CapabilityInfo>,
                bootstrap_nodes: Vec<DPTNode>,
-               ping_interval: Duration, ping_timeout_interval: Duration,
-               optimal_peers_len: usize, optimal_peers_interval: Duration
+               config: DevP2PConfig,
     ) -> Result<Self, io::Error> {
         let port = addr.port();
 
@@ -44,14 +53,14 @@ impl DevP2PStream {
         let dpt = DPTStream::new(addr, handle, secret_key.clone(),
                                  bootstrap_nodes, port)?;
 
-        let ping_timeout = Timeout::new(ping_interval, handle)?;
-        let optimal_peers_timeout = Timeout::new(optimal_peers_interval, handle)?;
+        let ping_timeout = Timeout::new(config.ping_interval, handle)?;
+        let optimal_peers_timeout = Timeout::new(config.optimal_peers_interval, handle)?;
 
         Ok(DevP2PStream {
-            dpt, rlpx, ping_interval, ping_timeout,
-            ping_timeout_interval, optimal_peers_timeout,
-            optimal_peers_interval,
-            optimal_peers_len, handle: handle.clone()
+            dpt, rlpx, ping_timeout,
+            optimal_peers_timeout,
+            config,
+            handle: handle.clone()
         })
     }
 
@@ -86,13 +95,23 @@ impl DevP2PStream {
             match result {
                 Async::NotReady => return Ok(Async::Ready(())),
                 Async::Ready(()) => {
-                    if self.rlpx.active_peers().len() < self.optimal_peers_len {
+                    if self.rlpx.active_peers().len() < self.config.optimal_peers_len {
                         debug!("not enough peers, requesting new ...");
                         self.dpt.start_send(DPTMessage::RequestNewPeer)?;
                         self.dpt.poll_complete()?;
+
+                        debug!("reconnect to old connected peers ...");
+                        let mut connected: Vec<DPTNode> = self.dpt.connected_peers().into();
+                        thread_rng().shuffle(&mut connected);
+                        for i in 0..min(self.config.optimal_peers_len - self.rlpx.active_peers().len(),
+                                        connected.len() / self.config.reconnect_dividend) {
+                            self.rlpx.add_peer(&SocketAddr::new(connected[i].address,
+                                                                connected[i].tcp_port),
+                                               connected[i].id);
+                        }
                     }
 
-                    self.optimal_peers_timeout = Timeout::new(self.optimal_peers_interval,
+                    self.optimal_peers_timeout = Timeout::new(self.config.optimal_peers_interval,
                                                               &self.handle)?;
 
                     result = self.optimal_peers_timeout.poll()?;
@@ -112,9 +131,9 @@ impl DevP2PStream {
                 Async::NotReady => return Ok(Async::Ready(())),
                 Async::Ready(()) => {
                     self.dpt.start_send(DPTMessage::Ping(Timeout::new(
-                        self.ping_timeout_interval, &self.handle)?))?;
+                        self.config.ping_timeout_interval, &self.handle)?))?;
                     self.dpt.poll_complete()?;
-                    self.ping_timeout = Timeout::new(self.ping_interval, &self.handle)?;
+                    self.ping_timeout = Timeout::new(self.config.ping_interval, &self.handle)?;
 
                     result = self.ping_timeout.poll()?;
                 },

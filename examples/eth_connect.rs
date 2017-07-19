@@ -22,7 +22,7 @@ use futures::future;
 use futures::{Stream, Sink, Future};
 use std::str::FromStr;
 use std::time::Duration;
-use devp2p::{ETHSendMessage, ETHReceiveMessage, ETHMessage, ETHStream};
+use devp2p::{ETHSendMessage, ETHReceiveMessage, ETHMessage, ETHStream, DevP2PConfig};
 use devp2p::rlpx::RLPxNode;
 use devp2p::dpt::DPTNode;
 use bigint::{H256, U256, H512};
@@ -60,10 +60,13 @@ fn main() {
         H256::from_str(GENESIS_HASH).unwrap(),
         U256::from(GENESIS_DIFFICULTY),
         BOOTSTRAP_NODES.iter().map(|v| DPTNode::from_url(&Url::parse(v).unwrap()).unwrap()).collect(),
-        Duration::new(600, 0),
-        Duration::new(700, 0),
-        25,
-        Duration::new(5, 0)).unwrap();
+        DevP2PConfig {
+            ping_interval: Duration::new(600, 0),
+            ping_timeout_interval: Duration::new(700, 0),
+            optimal_peers_len: 25,
+            optimal_peers_interval: Duration::new(5, 0),
+            reconnect_dividend: 5,
+        }).unwrap();
 
     loop {
         let (val, new_client) = core.run(client.into_future().map_err(|(e, _)| e)).unwrap();

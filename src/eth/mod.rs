@@ -11,7 +11,7 @@ use std::io;
 use std::time::Duration;
 use std::net::SocketAddr;
 
-use super::DevP2PStream;
+use super::{DevP2PStream, DevP2PConfig};
 
 pub use self::proto::ETHMessage;
 
@@ -56,8 +56,7 @@ impl ETHStream {
                genesis_hash: H256, best_hash: H256,
                total_difficulty: U256,
                bootstrap_nodes: Vec<DPTNode>,
-               ping_interval: Duration, ping_timeout_interval: Duration,
-               optimal_peers_len: usize, optimal_peers_interval: Duration
+               config: DevP2PConfig,
     ) -> Result<Self, io::Error> {
         Ok(ETHStream {
             stream: DevP2PStream::new(addr, handle, secret_key,
@@ -66,8 +65,7 @@ impl ETHStream {
                                            // CapabilityInfo { name: "eth", version: 63, length: 17 },
                                       ],
                                       bootstrap_nodes,
-                                      ping_interval, ping_timeout_interval,
-                                      optimal_peers_len, optimal_peers_interval)?,
+                                      config)?,
             genesis_hash, best_hash, total_difficulty, network_id
         })
     }

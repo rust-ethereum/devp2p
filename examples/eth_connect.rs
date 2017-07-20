@@ -4,6 +4,8 @@ extern crate secp256k1;
 extern crate etcommon_crypto;
 extern crate etcommon_bigint as bigint;
 extern crate etcommon_rlp as rlp;
+extern crate etcommon_block as block;
+extern crate etcommon_util;
 
 #[macro_use]
 extern crate log;
@@ -29,10 +31,14 @@ use devp2p::dpt::DPTNode;
 use bigint::{H256, U256, H512};
 use url::Url;
 use sha3::{Digest, Keccak256};
+use block::{Header, Block};
+use etcommon_util::read_hex;
 
 const GENESIS_HASH: &str = "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3";
 const GENESIS_DIFFICULTY: usize = 17179869184;
 const NETWORK_ID: usize = 1;
+
+const ETC_DAO_BLOCK: &str = "f903cff9020fa0a218e2c611f21232d857e3c8cecdcdf1f65f25a4477f98f6f47e4063807f2308a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479461c808d82a3ac53231750dadc13c777b59310bd9a0614d7d358b03cbdaf0343529673be20ad45809d02487f023e047efdce9da8affa0d33068a7f21bff5018a00ca08a3566a06be4196dfe9e39f96e431565a619d455a07bda9aa65977800376129148cbfe89d35a016dd51c95d6e6dc1e76307d315468b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008638c3bf2616aa831d4c008347e7c08301482084578f7aa78fe4b883e5bda9e7a59ee4bb99e9b1bca0c52daa7054babe515b17ee98540c0889cf5e1595c5dd77496997ca84a68c8da18805276a600980199df901b9f86c018504a817c8008252089453d284357ec70ce289d6d64134dfac8e511c8a3d888b6cfa3afc058000801ba08d94a55c7ac7adbfa2285ef7f4b0c955ae1a02647452cd4ead03ee6f449675c6a067149821b74208176d78fc4dffbe37c8b64eecfd47532406b9727c4ae8eb7c9af86d018504a817c8008252089453d284357ec70ce289d6d64134dfac8e511c8a3d890116db7272d6d94000801ca06d31e3d59bfea97a34103d8ce767a8fe7a79b8e2f30af1e918df53f9e78e69aba0098e5b80e1cc436421aa54eb17e96b08fe80d28a2fbd46451b56f2bca7a321e7f86c018504a817c8008252089453d284357ec70ce289d6d64134dfac8e511c8a3d8814da2c24e0d37014801ba0fdbbc462a8a60ac3d8b13ee236b45af9b7991cf4f0f556d3af46aa5aeca242aba05de5dc03fdcb6cf6d14609dbe6f5ba4300b8ff917c7d190325d9ea2144a7a2fbf86c018504a817c8008252089453d284357ec70ce289d6d64134dfac8e511c8a3d880e301365046d5000801ba0bafb9f71cef873b9e0395b9ed89aac4f2a752e2a4b88ba3c9b6c1fea254eae73a01cef688f6718932f7705d9c1f0dd5a8aad9ddb196b826775f6e5703fdb997706c0";
 
 // const BOOTSTRAP_NODES: [&str; 9] = [
 //     "enode://e809c4a2fec7daed400e5e28564e23693b23b2cc5a019b612505631bbe7b9ccf709c1796d2a3d29ef2b045f210caf51e3c4f5b6d3587d43ad5d6397526fa6179@174.112.32.157:30303",
@@ -51,7 +57,7 @@ const NETWORK_ID: usize = 1;
 // ];
 
 const BOOTSTRAP_NODES: [&str; 1] = [
-    "enode://d02c7c6d49c668f750cf6c007b4a9cc96be08c335d3e027afa110f86c48192725aa2e8a60c581044c7c489fee45a3d0acbbfe4d10eb1717bc6b3374364bf895d@127.0.0.1:60606"
+    "enode://1a686737c260539c2a80b8defe649a356806ca43f71e1915ae00c65245b893e2eee31bc0ca41f7733d31ba7cdcd60584e3c3f89cccabba08ca5bce889f44244c@127.0.0.1:60606"
 ];
 
 pub fn keccak256(data: &[u8]) -> H256 {
@@ -142,11 +148,21 @@ fn main() {
                     ETHMessage::GetBlockHeadersByNumber {
                         number, max_headers, skip, reverse
                     } => {
-                        println!("requested header {}", number);
-                        client_sender = core.run(client_sender.send(ETHSendMessage {
-                            node: RLPxNode::Peer(node),
-                            data: ETHMessage::BlockHeaders(Vec::new()),
-                        })).unwrap();
+                        if number == U256::from(1920000) {
+                            println!("requested DAO header");
+                            let block_raw = read_hex(ETC_DAO_BLOCK).unwrap();
+                            let block: Block = rlp::decode(&block_raw);
+                            client_sender = core.run(client_sender.send(ETHSendMessage {
+                                node: RLPxNode::Peer(node),
+                                data: ETHMessage::BlockHeaders(vec![ block.header ]),
+                            })).unwrap();
+                        } else {
+                            println!("requested header {}", number);
+                            client_sender = core.run(client_sender.send(ETHSendMessage {
+                                node: RLPxNode::Peer(node),
+                                data: ETHMessage::BlockHeaders(Vec::new()),
+                            })).unwrap();
+                        }
                     },
                     ETHMessage::GetBlockHeadersByHash {
                         hash, max_headers, skip, reverse
@@ -159,7 +175,6 @@ fn main() {
                     }
                     ETHMessage::GetBlockBodies(hash) => {
                         println!("requested body {:?}", hash);
-
                         client_sender = core.run(client_sender.send(ETHSendMessage {
                             node: RLPxNode::Peer(node),
                             data: ETHMessage::BlockBodies(Vec::new()),

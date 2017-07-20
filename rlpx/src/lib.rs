@@ -113,6 +113,7 @@ impl RLPxStream {
         &mut self, addr: &SocketAddr, remote_id: H512
     ) {
         if !self.active_peers.contains(&remote_id) {
+            info!("connecting to peer {}", remote_id);
             let future = PeerStream::connect(addr, &self.handle, self.secret_key.clone(),
                                              remote_id, self.protocol_version,
                                              self.client_version.clone(),

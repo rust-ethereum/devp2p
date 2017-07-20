@@ -74,7 +74,7 @@ pub fn keccak256(data: &[u8]) -> H256 {
 fn main() {
     env_logger::init();
 
-    let addr = "0.0.0.0:60606".parse().unwrap();
+    let addr = "0.0.0.0:30303".parse().unwrap();
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();

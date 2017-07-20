@@ -106,6 +106,8 @@ fn main() {
     let (mut client_sender, mut client_receiver) = client.split();
     let mut client_future = client_receiver.into_future();
 
+    let mut active_peers = 0;
+
     loop {
         let ret = match core.run(
             client_future
@@ -217,10 +219,15 @@ fn main() {
                     },
                 }
             },
-            val => {
-                println!("received {:?}", val);
+            ETHReceiveMessage::Connected { .. } => {
+                active_peers += 1;
+            },
+            ETHReceiveMessage::Disconnected { .. } => {
+                active_peers -= 1;
             },
         }
+
+        println!("current active peers: {}", active_peers);
 
         client_future = new_client_receiver.into_future();
     }

@@ -214,6 +214,7 @@ fn main() {
                                 reverse: false,
                             }
                         })).unwrap();
+                        timeout = Timeout::new(dur, &handle).unwrap().boxed();
                     },
 
                     ETHMessage::BlockBodies(ref bodies) => {

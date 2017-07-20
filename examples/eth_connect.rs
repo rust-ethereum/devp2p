@@ -101,7 +101,7 @@ fn main() {
                     ETHMessage::Transactions(_) => {
                         println!("received new transactions, active {}", client.active_peers().len());
                     },
-                    ETHMessage::GetBlockHeaders {
+                    ETHMessage::GetBlockHeadersByNumber {
                         number, max_headers, skip, reverse
                     } => {
                         println!("requested header {}, active {}", number, client.active_peers().len());
@@ -153,8 +153,8 @@ fn main() {
             println!("request downloading header ...");
             client = core.run(client.send(ETHSendMessage {
                 node: RLPxNode::All,
-                data: ETHMessage::GetBlockHeaders {
-                    number: best_number + U256::one(),
+                data: ETHMessage::GetBlockHeadersByHash {
+                    hash: best_hash,
                     max_headers: 2048,
                     skip: 0,
                     reverse: false,

@@ -14,8 +14,14 @@ pub enum ETHMessage {
     },
     NewBlockHashes(Vec<(H256, U256)>),
     Transactions(Vec<Transaction>),
-    GetBlockHeaders {
+    GetBlockHeadersByNumber {
         number: U256, // TODO: this can also be a hash.
+        max_headers: usize,
+        skip: usize,
+        reverse: bool,
+    },
+    GetBlockHeadersByHash {
+        hash: H256,
         max_headers: usize,
         skip: usize,
         reverse: bool,
@@ -37,7 +43,8 @@ impl ETHMessage {
             &ETHMessage::Status { .. } => 0,
             &ETHMessage::NewBlockHashes(_) => 1,
             &ETHMessage::Transactions(_) => 2,
-            &ETHMessage::GetBlockHeaders { .. } => 3,
+            &ETHMessage::GetBlockHeadersByNumber { .. } => 3,
+            &ETHMessage::GetBlockHeadersByHash { .. } => 3,
             &ETHMessage::BlockHeaders(_) => 4,
             &ETHMessage::GetBlockBodies(_) => 5,
             &ETHMessage::BlockBodies(_) => 6,
@@ -70,11 +77,20 @@ impl ETHMessage {
                 ETHMessage::Transactions(rlp.as_list()?)
             },
             3 => {
-                ETHMessage::GetBlockHeaders {
-                    number: rlp.val_at(0)?,
-                    max_headers: rlp.val_at(1)?,
-                    skip: rlp.val_at(2)?,
-                    reverse: rlp.val_at(3)?,
+                if rlp.at(0)?.size() == 32 {
+                    ETHMessage::GetBlockHeadersByHash {
+                        hash: rlp.val_at(0)?,
+                        max_headers: rlp.val_at(1)?,
+                        skip: rlp.val_at(2)?,
+                        reverse: rlp.val_at(3)?,
+                    }
+                } else {
+                    ETHMessage::GetBlockHeadersByNumber {
+                        number: rlp.val_at(0)?,
+                        max_headers: rlp.val_at(1)?,
+                        skip: rlp.val_at(2)?,
+                        reverse: rlp.val_at(3)?,
+                    }
                 }
             },
             4 => {
@@ -128,12 +144,22 @@ impl Encodable for ETHMessage {
             &ETHMessage::Transactions(ref transactions) => {
                 s.append_list(&transactions);
             },
-            &ETHMessage::GetBlockHeaders {
+            &ETHMessage::GetBlockHeadersByNumber {
                 number,
                 max_headers, skip, reverse
             } => {
                 s.begin_list(4);
                 s.append(&number);
+                s.append(&max_headers);
+                s.append(&skip);
+                s.append(&reverse);
+            },
+            &ETHMessage::GetBlockHeadersByHash {
+                hash,
+                max_headers, skip, reverse
+            } => {
+                s.begin_list(4);
+                s.append(&hash);
                 s.append(&max_headers);
                 s.append(&skip);
                 s.append(&reverse);
@@ -166,7 +192,8 @@ impl Encodable for ETHMessage {
 #[cfg(test)]
 mod tests {
     use super::ETHMessage;
-    use rlp::{Encodable, Decodable, RlpStream, DecoderError, UntrustedRlp};
+    use rlp::{self, Encodable, Decodable, RlpStream, DecoderError, UntrustedRlp};
+    use bigint::H256;
 
     #[test]
     fn test_new_block_hashes_message() {
@@ -178,5 +205,14 @@ mod tests {
     fn test_get_block_headers_message() {
         let data: [u8; 8] = [199, 131, 29, 76, 0, 1, 128, 128];
         ETHMessage::decode(&UntrustedRlp::new(&data), 3).unwrap();
+    }
+
+    #[test]
+    fn test_get_block_headers_hash_message() {
+        let hash = H256::random();
+        let message = ETHMessage::GetBlockHeadersByHash {
+            hash, max_headers: 2048, skip: 0, reverse: false,
+        };
+        assert_eq!(message, ETHMessage::decode(&UntrustedRlp::new(&rlp::encode(&message)), 3).unwrap());
     }
 }

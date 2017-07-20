@@ -253,6 +253,7 @@ impl Stream for RLPxStream {
                         false
                     },
                     Ok(Async::Ready(Some((cap, message_id, data)))) => {
+                        debug!("received RLPx data {:?}", data);
                         ret = Some(RLPxReceiveMessage::Normal {
                             node: id,
                             capability: cap,
@@ -311,6 +312,8 @@ impl Sink for RLPxStream {
         } {
             thread_rng().shuffle(streams);
         }
+
+        debug!("sending RLPx data: {:?}", message.data);
 
         retain_mut(streams, |ref mut peer| {
             let id = peer.remote_id();

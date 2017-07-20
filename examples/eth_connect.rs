@@ -16,7 +16,7 @@ extern crate url;
 extern crate sha3;
 
 use etcommon_crypto::SECP256K1;
-use tokio_core::reactor::Core;
+use tokio_core::reactor::{Core, Timeout};
 use secp256k1::key::{PublicKey, SecretKey};
 use rand::os::OsRng;
 use futures::future;
@@ -34,16 +34,24 @@ const GENESIS_HASH: &str = "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec
 const GENESIS_DIFFICULTY: usize = 17179869184;
 const NETWORK_ID: usize = 1;
 
-const BOOTSTRAP_NODES: [&str; 9] = [
-    "enode://e809c4a2fec7daed400e5e28564e23693b23b2cc5a019b612505631bbe7b9ccf709c1796d2a3d29ef2b045f210caf51e3c4f5b6d3587d43ad5d6397526fa6179@174.112.32.157:30303",
-	"enode://6e538e7c1280f0a31ff08b382db5302480f775480b8e68f8febca0ceff81e4b19153c6f8bf60313b93bef2cc34d34e1df41317de0ce613a201d1660a788a03e2@52.206.67.235:30303",
-	"enode://5fbfb426fbb46f8b8c1bd3dd140f5b511da558cd37d60844b525909ab82e13a25ee722293c829e52cb65c2305b1637fa9a2ea4d6634a224d5f400bfe244ac0de@162.243.55.45:30303",
-	"enode://42d8f29d1db5f4b2947cd5c3d76c6d0d3697e6b9b3430c3d41e46b4bb77655433aeedc25d4b4ea9d8214b6a43008ba67199374a9b53633301bca0cd20c6928ab@104.155.176.151:30303",
-	"enode://814920f1ec9510aa9ea1c8f79d8b6e6a462045f09caa2ae4055b0f34f7416fca6facd3dd45f1cf1673c0209e0503f02776b8ff94020e98b6679a0dc561b4eba0@104.154.136.117:30303",
-	"enode://72e445f4e89c0f476d404bc40478b0df83a5b500d2d2e850e08eb1af0cd464ab86db6160d0fde64bd77d5f0d33507ae19035671b3c74fec126d6e28787669740@104.198.71.200:30303",
-	"enode://39abab9d2a41f53298c0c9dc6bbca57b0840c3ba9dccf42aa27316addc1b7e56ade32a0a9f7f52d6c5db4fe74d8824bcedfeaecf1a4e533cacb71cf8100a9442@144.76.238.49:30303",
-    "enode://f50e675a34f471af2438b921914b5f06499c7438f3146f6b8936f1faeb50b8a91d0d0c24fb05a66f05865cd58c24da3e664d0def806172ddd0d4c5bdbf37747e@144.76.238.49:30306",
-    "enode://50372f1556c73671ee6e91d539f8946f059d40114da5aae889686e6874e6f34270c2d7f7f2779d16b9b4078ff9c19c74188d3127f6fd0186eb4a647ce413f73f@35.194.140.8:30303",
+// const BOOTSTRAP_NODES: [&str; 9] = [
+//     "enode://e809c4a2fec7daed400e5e28564e23693b23b2cc5a019b612505631bbe7b9ccf709c1796d2a3d29ef2b045f210caf51e3c4f5b6d3587d43ad5d6397526fa6179@174.112.32.157:30303",
+// 	"enode://6e538e7c1280f0a31ff08b382db5302480f775480b8e68f8febca0ceff81e4b19153c6f8bf60313b93bef2cc34d34e1df41317de0ce613a201d1660a788a03e2@52.206.67.235:30303",
+// 	"enode://5fbfb426fbb46f8b8c1bd3dd140f5b511da558cd37d60844b525909ab82e13a25ee722293c829e52cb65c2305b1637fa9a2ea4d6634a224d5f400bfe244ac0de@162.243.55.45:30303",
+// 	"enode://42d8f29d1db5f4b2947cd5c3d76c6d0d3697e6b9b3430c3d41e46b4bb77655433aeedc25d4b4ea9d8214b6a43008ba67199374a9b53633301bca0cd20c6928ab@104.155.176.151:30303",
+// 	"enode://814920f1ec9510aa9ea1c8f79d8b6e6a462045f09caa2ae4055b0f34f7416fca6facd3dd45f1cf1673c0209e0503f02776b8ff94020e98b6679a0dc561b4eba0@104.154.136.117:30303",
+// 	"enode://72e445f4e89c0f476d404bc40478b0df83a5b500d2d2e850e08eb1af0cd464ab86db6160d0fde64bd77d5f0d33507ae19035671b3c74fec126d6e28787669740@104.198.71.200:30303",
+// 	"enode://39abab9d2a41f53298c0c9dc6bbca57b0840c3ba9dccf42aa27316addc1b7e56ade32a0a9f7f52d6c5db4fe74d8824bcedfeaecf1a4e533cacb71cf8100a9442@144.76.238.49:30303",
+//     "enode://f50e675a34f471af2438b921914b5f06499c7438f3146f6b8936f1faeb50b8a91d0d0c24fb05a66f05865cd58c24da3e664d0def806172ddd0d4c5bdbf37747e@144.76.238.49:30306",
+//     "enode://50372f1556c73671ee6e91d539f8946f059d40114da5aae889686e6874e6f34270c2d7f7f2779d16b9b4078ff9c19c74188d3127f6fd0186eb4a647ce413f73f@35.194.140.8:30303",
+// ];
+
+// const BOOTSTRAP_NODES: [&str; 1] = [
+//     "enode://52656243997655790c1015e4c62e1afefd2f7d6b30c4434ea0a1557523348ad8515d15d0014002bdec80daba786714aa9bc4970ce99afa9e4fd6b94c98782669@35.194.140.8:30303"
+// ];
+
+const BOOTSTRAP_NODES: [&str; 1] = [
+    "enode://d02c7c6d49c668f750cf6c007b4a9cc96be08c335d3e027afa110f86c48192725aa2e8a60c581044c7c489fee45a3d0acbbfe4d10eb1717bc6b3374364bf895d@127.0.0.1:60606"
 ];
 
 pub fn keccak256(data: &[u8]) -> H256 {
@@ -56,7 +64,7 @@ pub fn keccak256(data: &[u8]) -> H256 {
 fn main() {
     env_logger::init();
 
-    let addr = "0.0.0.0:30303".parse().unwrap();
+    let addr = "0.0.0.0:50505".parse().unwrap();
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -81,11 +89,41 @@ fn main() {
     let mut best_hash: H256 = H256::from_str(GENESIS_HASH).unwrap();
     let mut got_bodies_for_current = true;
 
-    let mut when = Instant::now() + Duration::new(1, 0);
+    let dur = Duration::new(10, 0);
+    let req_max_headers = 2048;
+    let mut when = Instant::now() + dur;
+
+    let (mut client_sender, mut client_receiver) = client.split();
+    let mut client_future = client_receiver.into_future();
 
     loop {
-        let (val, new_client) = core.run(client.into_future().map_err(|(e, _)| e)).unwrap();
-        client = new_client;
+        let ret = match core.run(
+            client_future
+                .select2(Timeout::new(dur, &handle).unwrap())
+        ) {
+            Ok(ret) => ret,
+            Err(_) => break,
+        };
+
+        let (val, new_client_receiver) = match ret {
+            future::Either::A(((val, new_client), _)) => (val, new_client),
+            future::Either::B((_, fu)) => {
+                client_future = fu;
+
+                println!("request downloading header ...");
+                client_sender = core.run(client_sender.send(ETHSendMessage {
+                    node: RLPxNode::Any,
+                    data: ETHMessage::GetBlockHeadersByHash {
+                        hash: best_hash,
+                        max_headers: req_max_headers,
+                        skip: 0,
+                        reverse: false,
+                    }
+                })).unwrap();
+
+                continue;
+            }
+        };
 
         if val.is_none() {
             break;
@@ -99,29 +137,37 @@ fn main() {
                 match data {
                     ETHMessage::Status { .. } => (),
                     ETHMessage::Transactions(_) => {
-                        println!("received new transactions, active {}", client.active_peers().len());
+                        println!("received new transactions");
                     },
                     ETHMessage::GetBlockHeadersByNumber {
                         number, max_headers, skip, reverse
                     } => {
-                        println!("requested header {}, active {}", number, client.active_peers().len());
-                        client = core.run(client.send(ETHSendMessage {
+                        println!("requested header {}", number);
+                        client_sender = core.run(client_sender.send(ETHSendMessage {
                             node: RLPxNode::Peer(node),
                             data: ETHMessage::BlockHeaders(Vec::new()),
                         })).unwrap();
                     },
+                    ETHMessage::GetBlockHeadersByHash {
+                        hash, max_headers, skip, reverse
+                    } => {
+                        println!("requested header {}", hash);
+                        client_sender = core.run(client_sender.send(ETHSendMessage {
+                            node: RLPxNode::Peer(node),
+                            data: ETHMessage::BlockHeaders(Vec::new()),
+                        })).unwrap();
+                    }
                     ETHMessage::GetBlockBodies(hash) => {
-                        println!("requested body {:?}, active {}", hash, client.active_peers().len());
+                        println!("requested body {:?}", hash);
 
-                        client = core.run(client.send(ETHSendMessage {
+                        client_sender = core.run(client_sender.send(ETHSendMessage {
                             node: RLPxNode::Peer(node),
                             data: ETHMessage::BlockBodies(Vec::new()),
                         })).unwrap();
                     },
 
                     ETHMessage::BlockHeaders(ref headers) => {
-                        println!("received block headers of len {}, active {}", headers.len(),
-                                 client.active_peers().len());
+                        println!("received block headers of len {}", headers.len());
                         if got_bodies_for_current {
                             for header in headers {
                                 if header.parent_hash == best_hash {
@@ -132,35 +178,31 @@ fn main() {
                                 }
                             }
                         }
+                        client_sender = core.run(client_sender.send(ETHSendMessage {
+                            node: RLPxNode::All,
+                            data: ETHMessage::GetBlockHeadersByHash {
+                                hash: best_hash,
+                                max_headers: req_max_headers,
+                                skip: 0,
+                                reverse: false,
+                            }
+                        })).unwrap();
                     },
 
                     ETHMessage::BlockBodies(ref bodies) => {
-                        println!("received block bodies of len {}, active {}", bodies.len(),
-                                 client.active_peers().len());
+                        println!("received block bodies of len {}", bodies.len());
                     }
 
                     msg => {
-                        println!("received {:?}, active {}", msg, client.active_peers().len());
+                        println!("received {:?}", msg);
                     },
                 }
             },
             val => {
-                // println!("received {:?}, active {}", val, client.active_peers().len());
-            }
+                println!("received {:?}", val);
+            },
         }
 
-        if when <= Instant::now() {
-            println!("request downloading header ...");
-            client = core.run(client.send(ETHSendMessage {
-                node: RLPxNode::All,
-                data: ETHMessage::GetBlockHeadersByHash {
-                    hash: best_hash,
-                    max_headers: 2048,
-                    skip: 0,
-                    reverse: false,
-                }
-            })).unwrap();
-            when = Instant::now() + Duration::new(1, 0);
-        }
+        client_future = new_client_receiver.into_future();
     }
 }

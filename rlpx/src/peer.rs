@@ -232,6 +232,7 @@ impl PeerStream {
                 payload.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
                 debug!("sending pong message payload {:?}", payload);
                 self.stream.start_send(payload)?;
+                self.stream.poll_complete()?;
             },
             0x03 /* pong */ => {
                 debug!("received pong message");
@@ -253,6 +254,7 @@ impl Stream for PeerStream {
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match try_ready!(self.stream.poll()) {
             Some(val) => {
+                debug!("received peer message: {:?}", val);
                 let message_id_rlp = UntrustedRlp::new(&val[0..1]);
                 let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
 

@@ -74,7 +74,7 @@ pub fn keccak256(data: &[u8]) -> H256 {
 fn main() {
     env_logger::init();
 
-    let addr = "0.0.0.0:30303".parse().unwrap();
+    let addr = "0.0.0.0:60606".parse().unwrap();
 
     let mut core = Core::new().unwrap();
     let handle = core.handle();
@@ -154,9 +154,11 @@ fn main() {
             } => {
                 match data {
                     ETHMessage::Status { .. } => (),
+
                     ETHMessage::Transactions(_) => {
                         println!("received new transactions");
                     },
+
                     ETHMessage::GetBlockHeadersByNumber {
                         number, max_headers, skip, reverse
                     } => {
@@ -176,6 +178,7 @@ fn main() {
                             })).unwrap();
                         }
                     },
+
                     ETHMessage::GetBlockHeadersByHash {
                         hash, max_headers, skip, reverse
                     } => {
@@ -184,7 +187,8 @@ fn main() {
                             node: RLPxNode::Peer(node),
                             data: ETHMessage::BlockHeaders(Vec::new()),
                         })).unwrap();
-                    }
+                    },
+
                     ETHMessage::GetBlockBodies(hash) => {
                         println!("requested body {:?}", hash);
                         client_sender = core.run(client_sender.send(ETHSendMessage {
@@ -219,7 +223,7 @@ fn main() {
 
                     ETHMessage::BlockBodies(ref bodies) => {
                         println!("received block bodies of len {}", bodies.len());
-                    }
+                    },
 
                     msg => {
                         println!("received {:?}", msg);

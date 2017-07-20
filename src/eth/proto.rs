@@ -95,8 +95,7 @@ impl ETHMessage {
                 }
             },
             4 => {
-                let block: Header = rlp.val_at(3).unwrap();
-                ETHMessage::BlockHeaders(rlp.as_list().unwrap())
+                ETHMessage::BlockHeaders(rlp.as_list()?)
             },
             5 => {
                 ETHMessage::GetBlockBodies(rlp.as_list()?)

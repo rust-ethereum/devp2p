@@ -105,20 +105,24 @@ fn main() {
 
     let (mut client_sender, mut client_receiver) = client.split();
     let mut client_future = client_receiver.into_future();
+    let mut timeout = Timeout::new(dur, &handle).unwrap().boxed();
 
     let mut active_peers = 0;
 
     loop {
         let ret = match core.run(
             client_future
-                .select2(Timeout::new(dur, &handle).unwrap())
+                .select2(timeout)
         ) {
             Ok(ret) => ret,
             Err(_) => break,
         };
 
         let (val, new_client_receiver) = match ret {
-            future::Either::A(((val, new_client), _)) => (val, new_client),
+            future::Either::A(((val, new_client), t)) => {
+                timeout = t.boxed();
+                (val, new_client)
+            },
             future::Either::B((_, fu)) => {
                 client_future = fu;
 
@@ -132,6 +136,8 @@ fn main() {
                         reverse: false,
                     }
                 })).unwrap();
+
+                timeout = Timeout::new(dur, &handle).unwrap().boxed();
 
                 continue;
             }

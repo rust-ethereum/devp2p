@@ -159,7 +159,7 @@ impl PeerStream {
                 match message_id {
                     Ok(message_id) => {
                         if message_id != 0 {
-                            debug!("hello failed because message id is not 0");
+                            error!("hello failed because message id is not 0 but {}", message_id);
                             return Err(io::Error::new(io::ErrorKind::Other,
                                                       "hello failed (message id)"));
                         }

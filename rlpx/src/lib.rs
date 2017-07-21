@@ -167,7 +167,7 @@ impl RLPxStream {
                     false
                 },
                 Err(e) => {
-                    debug!("peer disconnected with error {:?}", e);
+                    error!("peer disconnected with error {}", e);
                     active_peers.retain(|peer_id| {
                         *peer_id != remote_id
                     });

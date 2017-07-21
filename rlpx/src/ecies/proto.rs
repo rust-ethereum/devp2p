@@ -174,6 +174,7 @@ impl ECIESStream {
                         sending_body: None,
                     })
                 } else {
+                    error!("expected ack, got {:?} instead", ack);
                     Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"))
                 }
             });

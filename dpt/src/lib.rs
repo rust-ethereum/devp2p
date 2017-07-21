@@ -380,7 +380,10 @@ impl Sink for DPTStream {
                             true
                         },
                         Ok(AsyncSink::NotReady(_)) => true,
-                        Err(_) => false,
+                        Err(_) => {
+                            debug!("send peer error");
+                            false
+                        },
                     }
                 });
                 if any_sent {
@@ -422,7 +425,10 @@ impl Sink for DPTStream {
                             true
                         },
                         Ok(AsyncSink::NotReady(_)) => true,
-                        Err(_) => false,
+                        Err(_) => {
+                            debug!("ping peer error");
+                            false
+                        },
                     }
                 });
                 if any_sent {

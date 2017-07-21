@@ -95,14 +95,14 @@ impl Decodable for Endpoint {
 
 pub struct FindNeighboursMessage {
     pub id: H512,
-    pub timestamp: u64,
+    pub expire: u64,
 }
 
 impl Encodable for FindNeighboursMessage {
     fn rlp_append(&self, s: &mut RlpStream) {
         s.begin_list(2);
         s.append(&self.id);
-        s.append(&self.timestamp);
+        s.append(&self.expire);
     }
 }
 
@@ -110,21 +110,21 @@ impl Decodable for FindNeighboursMessage {
     fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
         Ok(Self {
             id: rlp.val_at(0)?,
-            timestamp: rlp.val_at(1)?,
+            expire: rlp.val_at(1)?,
         })
     }
 }
 
 pub struct NeighboursMessage {
     pub nodes: Vec<Neighbour>,
-    pub timestamp: u64,
+    pub expire: u64,
 }
 
 impl Encodable for NeighboursMessage {
     fn rlp_append(&self, s: &mut RlpStream) {
         s.begin_list(2);
         s.append_list(&self.nodes);
-        s.append(&self.timestamp);
+        s.append(&self.expire);
     }
 }
 
@@ -132,43 +132,43 @@ impl Decodable for NeighboursMessage {
     fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
         Ok(Self {
             nodes: rlp.list_at(0)?,
-            timestamp: rlp.val_at(1)?,
+            expire: rlp.val_at(1)?,
         })
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PingMessage {
-    pub version: H256,
     pub from: Endpoint,
     pub to: Endpoint,
-    pub timestamp: u64,
+    pub expire: u64,
 }
 
 impl Encodable for PingMessage {
     fn rlp_append(&self, s: &mut RlpStream) {
         s.begin_list(4);
-        s.append(&self.version);
+        s.append(&4u32); // Version 4
         s.append(&self.from);
         s.append(&self.to);
-        s.append(&self.timestamp);
+        s.append(&self.expire);
     }
 }
 
 impl Decodable for PingMessage {
     fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
         Ok(Self {
-            version: rlp.val_at(0)?,
             from: rlp.val_at(1)?,
             to: rlp.val_at(2)?,
-            timestamp: rlp.val_at(3)?,
+            expire: rlp.val_at(3)?,
         })
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PongMessage {
     pub to: Endpoint,
     pub echo: H256,
-    pub timestamp: u64,
+    pub expire: u64,
 }
 
 impl Encodable for PongMessage {
@@ -176,7 +176,7 @@ impl Encodable for PongMessage {
         s.begin_list(3);
         s.append(&self.to);
         s.append(&self.echo);
-        s.append(&self.timestamp);
+        s.append(&self.expire);
     }
 }
 
@@ -185,7 +185,7 @@ impl Decodable for PongMessage {
         Ok(Self {
             to: rlp.val_at(0)?,
             echo: rlp.val_at(1)?,
-            timestamp: rlp.val_at(2)?,
+            expire: rlp.val_at(2)?,
         })
     }
 }

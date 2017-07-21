@@ -34,7 +34,7 @@ use bigint::{H256, H512};
 use rlp::UntrustedRlp;
 use hash::SECP256K1;
 use secp256k1::key::{PublicKey, SecretKey};
-use util::pk2id;
+use util::{keccak256, pk2id};
 use rand::{Rng, thread_rng};
 use url::{Host, Url};
 
@@ -70,6 +70,8 @@ pub struct DPTStream {
     stream: UdpFramed<DPTCodec>,
     id: H512,
     connected: Vec<DPTNode>,
+    pingponged: Vec<DPTNode>,
+    bootstrapped: bool,
     timeout: Option<(Timeout, Vec<H512>)>,
     incoming: Vec<DPTNode>,
     address: IpAddr,
@@ -77,7 +79,7 @@ pub struct DPTStream {
     tcp_port: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// DPT node used by a DPT stream
 pub struct DPTNode {
     pub address: IpAddr,
@@ -131,27 +133,33 @@ impl DPTStream {
     pub fn new(addr: &SocketAddr, handle: &Handle,
                secret_key: SecretKey,
                bootstrap_nodes: Vec<DPTNode>,
-               tcp_port: u16) -> Result<Self, io::Error> {
+               public_address: &IpAddr, tcp_port: u16) -> Result<Self, io::Error> {
         let id = pk2id(&match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
             Ok(val) => val,
             Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "converting pub key failed")),
         });
+        debug!("self id: {:x}", id);
         Ok(Self {
             stream: UdpSocket::bind(addr, handle)?.framed(DPTCodec::new(secret_key)),
-            id, connected: bootstrap_nodes, incoming: Vec::new(),
+            id, connected: bootstrap_nodes.clone(), incoming: bootstrap_nodes,
+            pingponged: Vec::new(),
+            bootstrapped: false,
             timeout: None,
-            address: addr.ip(), udp_port: addr.port(), tcp_port
+            address: public_address.clone(), udp_port: addr.port(), tcp_port
         })
     }
 
     /// Get all connected peers
     pub fn connected_peers(&self) -> &[DPTNode] {
-        &self.connected
+        &self.pingponged
     }
 
     /// Disconnect from a node
     pub fn disconnect_peer(&mut self, remote_id: H512) {
         self.connected.retain(|node| {
+            node.id != remote_id
+        });
+        self.pingponged.retain(|node| {
             node.id != remote_id
         });
     }
@@ -165,6 +173,107 @@ impl DPTStream {
         }
         return None;
     }
+
+    fn default_expire(&self) -> u64 {
+        time::now_utc().to_timespec().sec as u64 + 60
+    }
+
+    fn send_ping(&mut self, addr: SocketAddr, to: DPTNode) -> Poll<(), io::Error> {
+        let typ = 0x01u8;
+        let message = PingMessage {
+            from: Endpoint {
+                address: self.address,
+                udp_port: self.udp_port,
+                tcp_port: self.tcp_port,
+            },
+            to: Endpoint {
+                address: to.address,
+                udp_port: to.udp_port,
+                tcp_port: to.tcp_port,
+            },
+            expire: self.default_expire(),
+        };
+        let data = rlp::encode(&message).to_vec();
+
+        self.stream.start_send(DPTCodecMessage {
+            typ, data, addr
+        })?;
+        self.stream.poll_complete()?;
+
+        Ok(Async::Ready(()))
+    }
+
+    fn send_pong(&mut self, addr: SocketAddr, echo: H256, to: Endpoint) -> Poll<(), io::Error> {
+        let typ = 0x02u8;
+        let message = PongMessage {
+            echo, to,
+            expire: self.default_expire(),
+        };
+        let data = rlp::encode(&message).to_vec();
+
+        self.stream.start_send(DPTCodecMessage {
+            typ, data, addr
+        })?;
+        self.stream.poll_complete()?;
+
+        Ok(Async::Ready(()))
+    }
+
+    fn send_find_neighbours(&mut self, addr: SocketAddr) -> Poll<(), io::Error> {
+        let typ = 0x03u8;
+        let message = FindNeighboursMessage {
+            id: self.id,
+            expire: self.default_expire(),
+        };
+        let data = rlp::encode(&message).to_vec();
+
+        self.stream.start_send(DPTCodecMessage {
+            typ, data, addr
+        })?;
+        self.stream.poll_complete()?;
+
+        Ok(Async::Ready(()))
+    }
+
+    fn send_neighbours(&mut self, addr: SocketAddr) -> Poll<(), io::Error> {
+        let typ = 0x04u8;
+        // Return at most 3 nodes at a time.
+        let mut nodes = Vec::new();
+        for i in 0..self.connected.len() {
+            if nodes.len() >= 3 {
+                break;
+            }
+
+            let address = self.connected[i].address;
+            let udp_port = self.connected[i].udp_port;
+            let tcp_port = self.connected[i].tcp_port;
+            let id = self.connected[i].id;
+
+            nodes.push(Neighbour {
+                address, udp_port, tcp_port, id,
+            });
+        }
+        let message = NeighboursMessage {
+            nodes,
+            expire: self.default_expire(),
+        };
+        let data = rlp::encode(&message).to_vec();
+
+        self.stream.start_send(DPTCodecMessage {
+            typ, data, addr
+        })?;
+        self.stream.poll_complete()?;
+
+        Ok(Async::Ready(()))
+    }
+
+    fn handle_incoming(&mut self) -> Poll<Option<DPTNode>, io::Error> {
+        if self.incoming.len() > 0 {
+            return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+        } else {
+            return Ok(Async::NotReady);
+        }
+    }
 }
 
 impl Stream for DPTStream {
@@ -172,6 +281,15 @@ impl Stream for DPTStream {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        self.poll_complete()?; // TODO: does this belongs to here?
+
+        if !self.bootstrapped {
+            for node in self.connected.clone() {
+                self.send_ping(node.udp_addr(), node)?;
+            }
+            self.bootstrapped = true;
+        }
+
         let mut timeoutted = false;
         if self.timeout.is_some() {
             let &mut (ref mut timeout, ref hs) = self.timeout.as_mut().unwrap();
@@ -195,13 +313,7 @@ impl Stream for DPTStream {
         let (message, remote_id, hash) = match try!(self.stream.poll()) {
             Async::Ready(Some(Some(val))) => val,
             Async::Ready(Some(None)) | Async::NotReady => {
-                if self.incoming.len() > 0 {
-                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                } else if self.connected.len() == 0 {
-                    return Err(io::Error::new(io::ErrorKind::Other, "no reachable DPT endpoint"));
-                } else {
-                    return Ok(Async::NotReady);
-                }
+                return self.handle_incoming();
             },
             Async::Ready(None) => return Ok(Async::Ready(None)),
         };
@@ -209,139 +321,79 @@ impl Stream for DPTStream {
         match message.typ {
             0x01 /* ping */ => {
                 debug!("got ping message");
-                let incoming_message: PingMessage = match UntrustedRlp::new(&message.data).as_val() {
+                let ping_message: PingMessage = match UntrustedRlp::new(&message.data).as_val() {
                     Ok(val) => val,
-                    Err(_) =>
-                        if self.incoming.len() > 0 {
-                            return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                        } else {
-                            return Ok(Async::NotReady);
-                        },
+                    Err(_) => return self.handle_incoming(),
                 };
-                let typ = 0x02u8;
-                let echo = hash;
-                let to = incoming_message.from;
-                let outgoing_message = PongMessage {
-                    echo, to, timestamp: time::now_utc().to_timespec().sec as u64,
-                };
-                let data = rlp::encode(&outgoing_message).to_vec();
 
-                // If sending pong is not available, drop.
-                self.stream.start_send(DPTCodecMessage {
-                    typ, data, addr: message.addr
-                });
+                self.send_pong(message.addr, hash, ping_message.to)?;
 
-                if self.incoming.len() > 0 {
-                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                } else {
-                    return Ok(Async::NotReady);
+                let v = self.connected.iter().find(|v| v.id == remote_id).map(|v| v.clone());
+                if v.is_some() {
+                    self.pingponged.push(v.unwrap());
                 }
+
+                return self.handle_incoming();
             },
             0x02 /* pong */ => {
                 debug!("got pong message");
-                let incoming_message: PongMessage = match UntrustedRlp::new(&message.data).as_val() {
+                let pong_message: PongMessage = match UntrustedRlp::new(&message.data).as_val() {
                     Ok(val) => val,
-                    Err(_) =>
-                        if self.incoming.len() > 0 {
-                            return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                        } else {
-                            return Ok(Async::NotReady);
-                        },
+                    Err(_) => return self.handle_incoming(),
                 };
+
                 if self.timeout.is_some() {
                     self.timeout.as_mut().unwrap().1.retain(|v| {
                         *v != remote_id
                     });
                 }
 
-                if self.incoming.len() > 0 {
-                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                } else {
-                    return Ok(Async::NotReady);
+                let v = self.connected.iter().find(|v| v.id == remote_id).map(|v| v.clone());
+                if v.is_some() {
+                    self.pingponged.push(v.unwrap());
                 }
+
+                return self.handle_incoming();
             },
             0x03 /* find neighbours */ => {
                 debug!("got find neighbours message");
-                // Return at most 3 nodes at a time.
-                let mut nodes = Vec::new();
-                for i in 0..self.connected.len() {
-                    if nodes.len() >= 3 {
-                        break;
-                    }
+                self.send_neighbours(message.addr)?;
 
-                    let address = self.connected[i].address;
-                    let udp_port = self.connected[i].udp_port;
-                    let tcp_port = self.connected[i].tcp_port;
-                    let id = self.connected[i].id;
-
-                    nodes.push(Neighbour {
-                        address, udp_port, tcp_port, id,
-                    });
-                }
-                let typ = 0x04u8;
-                let outgoing_message = NeighboursMessage {
-                    nodes, timestamp: time::now_utc().to_timespec().sec as u64,
-                };
-                let data = rlp::encode(&outgoing_message).to_vec();
-
-                self.stream.start_send(DPTCodecMessage {
-                    typ, data, addr: message.addr
-                });
-
-                if self.incoming.len() > 0 {
-                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                } else {
-                    return Ok(Async::NotReady);
-                }
+                return self.handle_incoming();
             },
             0x04 /* neighbours */ => {
                 debug!("got neighbours message");
-                let incoming_message: NeighboursMessage = match UntrustedRlp::new(&message.data).as_val() {
-                    Ok(val) => val,
-                    Err(_) => {
-                        debug!("neighbours parsing error");
-                        if self.incoming.len() > 0 {
-                            return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                        } else {
-                            return Ok(Async::NotReady);
+                let incoming_message: NeighboursMessage =
+                    match UntrustedRlp::new(&message.data).as_val() {
+                        Ok(val) => val,
+                        Err(_) => {
+                            debug!("neighbours parsing error");
+                            return self.handle_incoming();
                         }
-                    }
-                };
+                    };
                 debug!("neighbouts message len {}", incoming_message.nodes.len());
-                for i in 0..incoming_message.nodes.len() {
-                    if self.connected.iter()
-                        .all(|node| node.id != incoming_message.nodes[i].id)
-                    {
-                        let ip = incoming_message.nodes[i].address;
-                        let tcp_port = incoming_message.nodes[i].tcp_port;
-                        let udp_port = incoming_message.nodes[i].udp_port;
-                        let remote_id = incoming_message.nodes[i].id;
-                        let addr = SocketAddr::new(ip, udp_port);
-                        let node = DPTNode {
-                            address: ip,
-                            udp_port, tcp_port,
-                            id: remote_id
-                        };
+                for node in incoming_message.nodes {
+                    let node = DPTNode {
+                        address: node.address,
+                        udp_port: node.udp_port,
+                        tcp_port: node.tcp_port,
+                        id: node.id,
+                    };
+                    if !self.connected.contains(&node) {
+                        self.send_ping(node.udp_addr(), node.clone())?;
+
                         debug!("pushing new node {:?}", node);
                         self.connected.push(node.clone());
-                        self.incoming.push(node);
+                        self.incoming.push(node.clone());
                         debug!("connected {}", self.connected.len());
-                    } else {
-                        // debug!("already connected {:x}", incoming_message.nodes[i].id);
                     }
                 }
-                if self.incoming.len() > 0 {
-                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                } else {
-                    return Ok(Async::NotReady);
-                }
+
+                return self.handle_incoming();
             },
             _ => {
-                if self.incoming.len() > 0 {
-                    return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                } else {
-                    return Ok(Async::NotReady);
-                }
+
+                return self.handle_incoming();
             }
         }
     }
@@ -359,84 +411,33 @@ impl Sink for DPTStream {
         match message {
 
             DPTMessage::RequestNewPeer => {
-                let mut any_sent = false;
-                let typ = 0x03u8;
-                let message = FindNeighboursMessage {
-                    id: self.id,
-                    timestamp: time::now_utc().to_timespec().sec as u64,
-                };
-                let data = rlp::encode(&message).to_vec();
+                debug!("randomly selecting one peer from {}", self.pingponged.len());
+                thread_rng().shuffle(&mut self.pingponged);
 
-                let ref mut connected = self.connected;
-                let ref mut stream = self.stream;
-                thread_rng().shuffle(connected);
-
-                retain_mut(connected, |node| {
-                    match stream.start_send(DPTCodecMessage {
-                        addr: node.udp_addr(), typ, data: data.clone()
-                    }) {
-                        Ok(AsyncSink::Ready) => {
-                            any_sent = true;
-                            true
-                        },
-                        Ok(AsyncSink::NotReady(_)) => true,
-                        Err(_) => {
-                            debug!("send peer error");
-                            false
-                        },
+                if self.pingponged.len() == 0 {
+                    debug!("no peers available to find node");
+                    for node in self.connected.clone() {
+                        self.send_ping(node.udp_addr(), node)?;
                     }
-                });
-                if any_sent {
                     return Ok(AsyncSink::Ready);
-                } else {
-                    return Ok(AsyncSink::NotReady(DPTMessage::RequestNewPeer));
                 }
+
+                let addr = self.pingponged[0].udp_addr();
+                self.send_find_neighbours(addr)?;
+
+                return Ok(AsyncSink::Ready);
             },
 
             DPTMessage::Ping(timeout) => {
-                let mut any_sent = false;
-                let mut timeouting = Vec::new();
-                let from_endpoint = Endpoint {
-                    address: self.address.clone(),
-                    udp_port: self.udp_port,
-                    tcp_port: self.tcp_port,
-                };
-                let ref mut connected = self.connected;
-                let ref mut stream = self.stream;
-                retain_mut(connected, |node| {
-                    let typ = 0x01u8;
-                    let (address, tcp_port, udp_port, remote_id) =
-                        (node.address, node.tcp_port, node.udp_port, node.id);
-                    let message = PingMessage {
-                        version: H256::from(0x3),
-                        from: from_endpoint.clone(),
-                        to: Endpoint {
-                            address, udp_port, tcp_port
-                        },
-                        timestamp: time::now_utc().to_timespec().sec as u64,
-                    };
-                    let data = rlp::encode(&message).to_vec();
-                    match stream.start_send(DPTCodecMessage {
-                        addr: node.udp_addr(), typ, data
-                    }) {
-                        Ok(AsyncSink::Ready) => {
-                            any_sent = true;
-                            timeouting.push(remote_id);
-                            true
-                        },
-                        Ok(AsyncSink::NotReady(_)) => true,
-                        Err(_) => {
-                            debug!("ping peer error");
-                            false
-                        },
-                    }
-                });
-                if any_sent {
-                    self.timeout = Some((timeout, timeouting));
-                    return Ok(AsyncSink::Ready);
-                } else {
-                    return Ok(AsyncSink::NotReady(DPTMessage::Ping(timeout)));
+                let mut timeoutting = Vec::new();
+                for node in self.connected.clone() {
+                    self.send_ping(node.udp_addr(), node.clone())?;
+                    timeoutting.push(node.id);
                 }
+
+                self.timeout = Some((timeout, timeoutting));
+
+                return Ok(AsyncSink::Ready);
             }
 
         }

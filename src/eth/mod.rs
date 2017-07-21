@@ -9,7 +9,7 @@ use secp256k1::key::SecretKey;
 use tokio_core::reactor::Handle;
 use std::io;
 use std::time::Duration;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use super::{DevP2PStream, DevP2PConfig};
 
@@ -50,7 +50,7 @@ pub struct ETHStream {
 
 impl ETHStream {
     /// Create a new ETH stream
-    pub fn new(addr: &SocketAddr,
+    pub fn new(addr: &SocketAddr, public_addr: &IpAddr,
                handle: &Handle, secret_key: SecretKey,
                client_version: String, network_id: usize,
                genesis_hash: H256, best_hash: H256,
@@ -59,7 +59,7 @@ impl ETHStream {
                config: DevP2PConfig,
     ) -> Result<Self, io::Error> {
         Ok(ETHStream {
-            stream: DevP2PStream::new(addr, handle, secret_key,
+            stream: DevP2PStream::new(addr, public_addr, handle, secret_key,
                                       4, client_version,
                                       vec![CapabilityInfo { name: "eth", version: 62, length: 8 },
                                            // CapabilityInfo { name: "eth", version: 63, length: 17 },

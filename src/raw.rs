@@ -2,7 +2,7 @@ use dpt::{DPTNode, DPTStream, DPTMessage};
 use rlpx::{RLPxSendMessage, RLPxReceiveMessage, CapabilityInfo, RLPxStream};
 use tokio_core::reactor::{Handle, Timeout};
 use std::time::Duration;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::cmp::min;
 use std::io;
 use secp256k1::key::SecretKey;
@@ -33,7 +33,7 @@ pub struct DevP2PStream {
 
 impl DevP2PStream {
     /// Create a new DevP2P stream
-    pub fn new(addr: &SocketAddr,
+    pub fn new(addr: &SocketAddr, public_addr: &IpAddr,
                handle: &Handle, secret_key: SecretKey,
                protocol_version: usize, client_version: String,
                capabilities: Vec<CapabilityInfo>,
@@ -46,12 +46,8 @@ impl DevP2PStream {
                                        protocol_version, client_version,
                                        capabilities, port);
 
-        for node in &bootstrap_nodes {
-            rlpx.add_peer(&SocketAddr::new(node.address, node.tcp_port), node.id);
-        }
-
         let dpt = DPTStream::new(addr, handle, secret_key.clone(),
-                                 bootstrap_nodes, port)?;
+                                 bootstrap_nodes, public_addr, port)?;
 
         let ping_timeout = Timeout::new(config.ping_interval, handle)?;
         let optimal_peers_timeout = Timeout::new(config.optimal_peers_interval, handle)?;

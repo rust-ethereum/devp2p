@@ -211,6 +211,7 @@ impl DPTStream {
         };
         let data = rlp::encode(&message).to_vec();
 
+        debug!("sending pong ...");
         self.stream.start_send(DPTCodecMessage {
             typ, data, addr
         })?;
@@ -266,14 +267,6 @@ impl DPTStream {
 
         Ok(Async::Ready(()))
     }
-
-    fn handle_incoming(&mut self) -> Poll<Option<DPTNode>, io::Error> {
-        if self.incoming.len() > 0 {
-            return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-        } else {
-            return Ok(Async::NotReady);
-        }
-    }
 }
 
 impl Stream for DPTStream {
@@ -281,8 +274,6 @@ impl Stream for DPTStream {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.poll_complete()?; // TODO: does this belongs to here?
-
         if !self.bootstrapped {
             for node in self.connected.clone() {
                 self.send_ping(node.udp_addr(), node)?;
@@ -310,90 +301,94 @@ impl Stream for DPTStream {
             self.timeout = None;
         }
 
-        let (message, remote_id, hash) = match try!(self.stream.poll()) {
-            Async::Ready(Some(Some(val))) => val,
-            Async::Ready(Some(None)) | Async::NotReady => {
-                return self.handle_incoming();
-            },
-            Async::Ready(None) => return Ok(Async::Ready(None)),
-        };
-
-        match message.typ {
-            0x01 /* ping */ => {
-                debug!("got ping message");
-                let ping_message: PingMessage = match UntrustedRlp::new(&message.data).as_val() {
-                    Ok(val) => val,
-                    Err(_) => return self.handle_incoming(),
-                };
-
-                self.send_pong(message.addr, hash, ping_message.to)?;
-
-                let v = self.connected.iter().find(|v| v.id == remote_id).map(|v| v.clone());
-                if v.is_some() {
-                    self.pingponged.push(v.unwrap());
-                }
-
-                return self.handle_incoming();
-            },
-            0x02 /* pong */ => {
-                debug!("got pong message");
-                let pong_message: PongMessage = match UntrustedRlp::new(&message.data).as_val() {
-                    Ok(val) => val,
-                    Err(_) => return self.handle_incoming(),
-                };
-
-                if self.timeout.is_some() {
-                    self.timeout.as_mut().unwrap().1.retain(|v| {
-                        *v != remote_id
-                    });
-                }
-
-                let v = self.connected.iter().find(|v| v.id == remote_id).map(|v| v.clone());
-                if v.is_some() {
-                    self.pingponged.push(v.unwrap());
-                }
-
-                return self.handle_incoming();
-            },
-            0x03 /* find neighbours */ => {
-                debug!("got find neighbours message");
-                self.send_neighbours(message.addr)?;
-
-                return self.handle_incoming();
-            },
-            0x04 /* neighbours */ => {
-                debug!("got neighbours message");
-                let incoming_message: NeighboursMessage =
-                    match UntrustedRlp::new(&message.data).as_val() {
-                        Ok(val) => val,
-                        Err(_) => {
-                            debug!("neighbours parsing error");
-                            return self.handle_incoming();
-                        }
-                    };
-                debug!("neighbouts message len {}", incoming_message.nodes.len());
-                for node in incoming_message.nodes {
-                    let node = DPTNode {
-                        address: node.address,
-                        udp_port: node.udp_port,
-                        tcp_port: node.tcp_port,
-                        id: node.id,
-                    };
-                    if !self.connected.contains(&node) {
-                        self.send_ping(node.udp_addr(), node.clone())?;
-
-                        debug!("pushing new node {:?}", node);
-                        self.connected.push(node.clone());
-                        self.incoming.push(node.clone());
-                        debug!("connected {}", self.connected.len());
+        loop {
+            let (message, remote_id, hash) = match self.stream.poll()? {
+                Async::Ready(Some(Some(val))) => val,
+                Async::Ready(Some(None)) => continue,
+                Async::NotReady => {
+                    if self.incoming.len() > 0 {
+                        return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
+                    } else {
+                        return Ok(Async::NotReady);
                     }
-                }
+                },
+                Async::Ready(None) => return Ok(Async::Ready(None)),
+            };
 
-                return self.handle_incoming();
-            },
-            _ => {
+            match message.typ {
+                0x01 /* ping */ => {
+                    debug!("got ping message");
+                    let ping_message: PingMessage = match UntrustedRlp::new(&message.data).as_val() {
+                    Ok(val) => val,
+                        Err(_) => continue,
+                    };
 
-                return self.handle_incoming();
+                    self.send_pong(message.addr, hash, ping_message.to)?;
+
+                    let v = self.connected.iter().find(|v| v.id == remote_id).map(|v| v.clone());
+                    if v.is_some() {
+                        let v = v.unwrap();
+                        if !self.pingponged.contains(&v) {
+                            self.pingponged.push(v);
+                        }
+                    }
+                },
+                0x02 /* pong */ => {
+                    debug!("got pong message");
+                    let pong_message: PongMessage = match UntrustedRlp::new(&message.data).as_val() {
+                        Ok(val) => val,
+                        Err(_) => continue,
+                    };
+
+                    if self.timeout.is_some() {
+                        self.timeout.as_mut().unwrap().1.retain(|v| {
+                            *v != remote_id
+                        });
+                    }
+
+                    let v = self.connected.iter().find(|v| v.id == remote_id).map(|v| v.clone());
+                    if v.is_some() {
+                        let v = v.unwrap();
+                        if !self.pingponged.contains(&v) {
+                            debug!("pushing pingponged: {:?}", v);
+                            self.pingponged.push(v);
+                        }
+                    }
+                },
+                0x03 /* find neighbours */ => {
+                    debug!("got find neighbours message");
+                    self.send_neighbours(message.addr)?;
+                },
+                0x04 /* neighbours */ => {
+                    debug!("got neighbours message");
+                    let incoming_message: NeighboursMessage =
+                        match UntrustedRlp::new(&message.data).as_val() {
+                            Ok(val) => val,
+                            Err(_) => continue,
+                        };
+                    debug!("neighbouts message len {}", incoming_message.nodes.len());
+                    for node in incoming_message.nodes {
+                        let node = DPTNode {
+                            address: node.address,
+                            udp_port: node.udp_port,
+                            tcp_port: node.tcp_port,
+                            id: node.id,
+                    };
+                        if !self.connected.contains(&node) {
+                            self.send_ping(node.udp_addr(), node.clone())?;
+
+                            debug!("pushing new node {:?}", node);
+                            self.connected.push(node.clone());
+                            self.incoming.push(node.clone());
+                            debug!("connected {}", self.connected.len());
+                        }
+                    }
+                },
+                _ => { }
+            }
+
+            if self.incoming.len() > 0 {
+                return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
             }
         }
     }

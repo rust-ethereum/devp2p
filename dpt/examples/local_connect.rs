@@ -10,6 +10,7 @@ extern crate url;
 extern crate futures;
 extern crate tokio_io;
 extern crate tokio_core;
+extern crate tokio_timer;
 
 #[macro_use]
 extern crate log;
@@ -18,14 +19,16 @@ extern crate env_logger;
 use etcommon_bigint::H512;
 use etcommon_crypto::SECP256K1;
 use tokio_core::reactor::{Core, Timeout};
+use tokio_timer::{wheel, TimeoutStream, TimeoutError};
 use secp256k1::key::{PublicKey, SecretKey};
 use rand::os::OsRng;
-use futures::future;
+use futures::future::{self, Loop};
 use futures::{Stream, Sink, Future};
 use std::str::FromStr;
 use dpt::{DPTMessage, DPTNode, DPTStream};
 use url::Url;
 use std::time::{Instant, Duration};
+use std::io;
 
 // const BOOTSTRAP_NODES: [&str; 10] = [
 //     "enode://e809c4a2fec7daed400e5e28564e23693b23b2cc5a019b612505631bbe7b9ccf709c1796d2a3d29ef2b045f210caf51e3c4f5b6d3587d43ad5d6397526fa6179@174.112.32.157:30303",
@@ -70,47 +73,45 @@ fn main() {
     let addr = "0.0.0.0:50505".parse().unwrap();
     let mut core = Core::new().unwrap();
     let handle = core.handle();
-    let mut client = DPTStream::new(
+    let client = DPTStream::new(
         &addr, &handle,
         SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap()),
         BOOTSTRAP_NODES.iter().map(|v| DPTNode::from_url(&Url::parse(v).unwrap()).unwrap()).collect(),
-        "127.0.0.1".parse().unwrap(), 50505).unwrap();
+        &"127.0.0.1".parse().unwrap(), 50505).unwrap();
 
-    let dur = Duration::new(1, 0);
+    const sec: u64 = 5;
+    const dur: u32 = 500;
 
-    let (mut client_sender, mut client_receiver) = client.split();
-    let mut client_future = client_receiver.into_future();
-    let mut timeout = Timeout::new(dur, &handle).unwrap().boxed();
-
-    loop {
-        let ret = match core.run(
-            client_future
-                .select2(timeout)
-        ) {
-            Ok(ret) => ret,
-            Err(_) => break,
-        };
-
-        let (val, new_client_receiver) = match ret {
-            future::Either::A(((val, new_client), t)) => {
-                timeout = t.boxed();
-                (val, new_client)
-            },
-            future::Either::B((_, fu)) => {
-                client_future = fu;
-                client_sender = core.run(client_sender.send(DPTMessage::RequestNewPeer)).unwrap();
-                timeout = Timeout::new(dur, &handle).unwrap().boxed();
-
-                continue;
+    let cycle = future::loop_fn(wheel().build().timeout_stream(client, Duration::new(sec, dur)), |client| {
+        client.into_future().then(|val| {
+            match val {
+                Ok((peer, timeout_client)) => {
+                    println!("new peer: {:?}", peer);
+                    future::ok(
+                        Loop::Continue(wheel().build().timeout_stream(timeout_client.into_inner(), Duration::new(sec, dur))))
+                        .boxed()
+                },
+                Err((TimeoutError::TimedOut(client), s)) => {
+                    println!("timed out, requesting new peer ...");
+                    client
+                        .send(DPTMessage::RequestNewPeer)
+                        .and_then(|client| {
+                            Ok(Loop::Continue(wheel().build().timeout_stream(client, Duration::new(sec, dur))))
+                        }).boxed()
+                },
+                Err((TimeoutError::Inner(err), s)) => {
+                    println!("{:?}", err);
+                    future::ok(
+                        Loop::Break(TimeoutError::Inner(err))).boxed()
+                },
+                Err((err, s)) => {
+                    println!("{:?}", err);
+                    future::ok(
+                        Loop::Break(err)).boxed()
+                },
             }
-        };
+        })
+    });
 
-        if val.is_none() {
-            break;
-        }
-        let val = val.unwrap();
-
-        println!("new peer: {:?}", val);
-        client_future = new_client_receiver.into_future();
-    }
+    core.run(cycle).unwrap();
 }

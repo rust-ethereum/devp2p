@@ -216,7 +216,7 @@ fn main() {
                             }
                         }
                         client_sender = core.run(client_sender.send(ETHSendMessage {
-                            node: RLPxNode::All,
+                            node: RLPxNode::Any,
                             data: ETHMessage::GetBlockHeadersByHash {
                                 hash: best_hash,
                                 max_headers: req_max_headers,

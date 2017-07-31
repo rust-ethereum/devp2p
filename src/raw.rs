@@ -92,7 +92,7 @@ impl DevP2PStream {
                 Async::NotReady => return Ok(Async::Ready(())),
                 Async::Ready(()) => {
                     if self.rlpx.active_peers().len() < self.config.optimal_peers_len {
-                        debug!("not enough peers, requesting new ...");
+                        error!("not enough peers (only {}), requesting new ...", self.rlpx.active_peers().len());
                         self.dpt.start_send(DPTMessage::RequestNewPeer)?;
                         self.dpt.poll_complete()?;
 

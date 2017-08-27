@@ -1,8 +1,8 @@
 //! Ethereum DPT protocol implementation
 
-extern crate etcommon_bigint as bigint;
-extern crate etcommon_crypto as hash;
-extern crate etcommon_rlp as rlp;
+extern crate bigint;
+extern crate rlp;
+extern crate hexutil;
 extern crate sha3;
 extern crate secp256k1;
 #[macro_use]
@@ -32,7 +32,7 @@ use std::io;
 use std::str::FromStr;
 use bigint::{H256, H512};
 use rlp::UntrustedRlp;
-use hash::SECP256K1;
+use secp256k1::SECP256K1;
 use secp256k1::key::{PublicKey, SecretKey};
 use util::{keccak256, pk2id};
 use rand::{Rng, thread_rng};

@@ -1,8 +1,7 @@
 use util::{keccak256, pk2id, id2pk};
-use hash::SECP256K1;
 use std::net::SocketAddr;
 use secp256k1::key::SecretKey;
-use secp256k1::{RecoverableSignature, Message, RecoveryId};
+use secp256k1::{SECP256K1, RecoverableSignature, Message, RecoveryId};
 use bigint::{H256, H512};
 use tokio_core::net::UdpCodec;
 use std::io;

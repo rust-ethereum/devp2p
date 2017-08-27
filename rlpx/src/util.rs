@@ -51,7 +51,7 @@ pub fn id2pk(id: H512) -> Result<PublicKey, secp256k1::Error> {
 #[cfg(test)]
 mod tests {
     use rand::os::OsRng;
-    use hash::SECP256K1;
+    use secp256k1::SECP256K1;
     use secp256k1::key::{SecretKey, PublicKey};
     use util::*;
 

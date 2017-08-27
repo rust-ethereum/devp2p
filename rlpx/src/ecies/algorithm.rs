@@ -423,10 +423,9 @@ impl ECIES {
 #[cfg(test)]
 mod tests {
     use util::{keccak256, pk2id, id2pk};
-    use secp256k1::Message;
+    use secp256k1::{SECP256K1, Message};
     use secp256k1::ecdh::SharedSecret;
     use secp256k1::key::{PublicKey, SecretKey};
-    use hash::SECP256K1;
     use bigint::{H512, H256};
     use rand::os::OsRng;
     use super::ECIES;

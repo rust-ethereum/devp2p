@@ -1,11 +1,10 @@
 extern crate devp2p;
 extern crate rand;
 extern crate secp256k1;
-extern crate etcommon_crypto;
-extern crate etcommon_bigint as bigint;
-extern crate etcommon_rlp as rlp;
-extern crate etcommon_block as block;
-extern crate etcommon_util;
+extern crate bigint;
+extern crate rlp;
+extern crate block;
+extern crate hexutil;
 
 #[macro_use]
 extern crate log;
@@ -17,8 +16,8 @@ extern crate env_logger;
 extern crate url;
 extern crate sha3;
 
-use etcommon_crypto::SECP256K1;
 use tokio_core::reactor::{Core, Timeout};
+use secp256k1::SECP256K1;
 use secp256k1::key::{PublicKey, SecretKey};
 use rand::os::OsRng;
 use futures::future;
@@ -32,7 +31,7 @@ use bigint::{H256, U256, H512};
 use url::Url;
 use sha3::{Digest, Keccak256};
 use block::{Header, Block};
-use etcommon_util::read_hex;
+use hexutil::*;
 
 const GENESIS_HASH: &str = "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3";
 const GENESIS_DIFFICULTY: usize = 17179869184;

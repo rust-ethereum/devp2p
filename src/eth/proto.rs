@@ -1,5 +1,5 @@
 use rlp::{Encodable, Decodable, RlpStream, DecoderError, UntrustedRlp};
-use bigint::{Address, LogsBloom, Gas, H256, U256, B256};
+use bigint::{Address, Gas, H256, U256, B256};
 use block::{Header, Transaction, Block};
 
 /// ETH message version 62 and 63

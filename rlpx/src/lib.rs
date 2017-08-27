@@ -7,10 +7,9 @@ extern crate sha3;
 extern crate sha2;
 extern crate byteorder;
 extern crate crypto;
-extern crate etcommon_bigint as bigint;
-extern crate etcommon_crypto as hash;
-extern crate etcommon_rlp as rlp;
-extern crate etcommon_util;
+extern crate bigint;
+extern crate rlp;
+extern crate hexutil;
 extern crate bytes;
 #[macro_use]
 extern crate log;
@@ -29,7 +28,7 @@ pub use peer::{PeerStream, CapabilityInfo};
 
 use bigint::H512;
 use util::pk2id;
-use hash::SECP256K1;
+use secp256k1::SECP256K1;
 use secp256k1::key::{PublicKey, SecretKey};
 use futures::future;
 use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};

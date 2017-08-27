@@ -1,9 +1,8 @@
 use util::{keccak256, pk2id, id2pk, hmac_sha256, sha256};
 use mac::MAC;
-use secp256k1::{Message, RecoverableSignature, RecoveryId};
+use secp256k1::{SECP256K1, Message, RecoverableSignature, RecoveryId};
 use secp256k1::ecdh::SharedSecret;
 use secp256k1::key::{PublicKey, SecretKey};
-use hash::SECP256K1;
 use sha3::Keccak256;
 use sha2::{Digest, Sha256};
 use bigint::{H512, H256, H128};

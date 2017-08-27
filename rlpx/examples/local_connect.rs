@@ -1,18 +1,18 @@
 extern crate rlpx;
 extern crate rand;
 extern crate secp256k1;
-extern crate etcommon_crypto;
-extern crate etcommon_bigint;
-extern crate etcommon_rlp as rlp;
+extern crate bigint;
+extern crate rlp;
+extern crate hexutil;
 
 #[macro_use]
 extern crate futures;
 extern crate tokio_io;
 extern crate tokio_core;
 
-use etcommon_bigint::H512;
-use etcommon_crypto::SECP256K1;
+use bigint::H512;
 use tokio_core::reactor::Core;
+use secp256k1::SECP256K1;
 use secp256k1::key::{PublicKey, SecretKey};
 use rand::os::OsRng;
 use futures::future;

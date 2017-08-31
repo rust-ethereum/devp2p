@@ -36,6 +36,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::collections::HashMap;
 use tokio_core::reactor::Handle;
+use tokio_core::net::{TcpListener, Incoming};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::{Framed, Encoder, Decoder};
 use rand::{Rng, thread_rng};
@@ -79,6 +80,7 @@ pub enum RLPxReceiveMessage {
 pub struct RLPxStream {
     streams: Vec<PeerStream>,
     futures: Vec<(H512, Box<Future<Item = PeerStream, Error = io::Error>>)>,
+    incoming_futures: Vec<Box<Future<Item = PeerStream, Error = io::Error>>>,
     newly_connected: Vec<(H512, Vec<CapabilityInfo>)>,
     newly_disconnected: Vec<H512>,
     active_peers: Vec<H512>,
@@ -87,6 +89,7 @@ pub struct RLPxStream {
     client_version: String,
     capabilities: Vec<CapabilityInfo>,
     port: u16,
+    tcp_incoming: Option<Incoming>,
     handle: Handle,
 }
 
@@ -94,17 +97,23 @@ impl RLPxStream {
     /// Create a new RLPx stream
     pub fn new(handle: &Handle, secret_key: SecretKey, protocol_version: usize,
                client_version: String, capabilities: Vec<CapabilityInfo>,
-               port: u16) -> RLPxStream {
-        RLPxStream {
+               listen: Option<&SocketAddr>) -> Result<RLPxStream, io::Error> {
+        Ok(RLPxStream {
             streams: Vec::new(),
             futures: Vec::new(),
             secret_key, protocol_version, client_version,
-            capabilities, port,
+            capabilities,
             handle: handle.clone(),
             active_peers: Vec::new(),
             newly_connected: Vec::new(),
             newly_disconnected: Vec::new(),
-        }
+            port: listen.map(|addr| addr.port()).unwrap_or(0),
+            tcp_incoming: match listen {
+                Some(addr) => Some(TcpListener::bind(addr, handle)?.incoming()),
+                None => None,
+            },
+            incoming_futures: Vec::new(),
+        })
     }
 
     /// Append a new peer to this RLPx stream if it does not exist
@@ -147,6 +156,7 @@ impl RLPxStream {
     /// Poll over new peers to resolve them to TCP streams
     pub fn poll_new_peers(&mut self) -> Poll<(), io::Error> {
         let ref mut futures = self.futures;
+        let ref mut incoming_futures = self.incoming_futures;
         let ref mut streams = self.streams;
         let ref mut active_peers = self.active_peers;
         let ref mut newly_connected = self.newly_connected;
@@ -176,6 +186,40 @@ impl RLPxStream {
         });
 
         debug!("streams {} futures {}", streams.len(), futures.len());
+
+        if let Some(tcp_incoming) = self.tcp_incoming.as_mut() {
+            loop {
+                match tcp_incoming.poll()? {
+                    Async::Ready(Some((stream, addr))) => {
+                        incoming_futures.push(PeerStream::incoming(
+                            stream, self.secret_key.clone(),
+                            self.protocol_version,
+                            self.client_version.clone(),
+                            self.capabilities.clone(), self.port));
+                    },
+                    _ => break,
+                }
+            }
+        }
+
+        retain_mut(incoming_futures, |ref mut future| {
+            match future.poll() {
+                Ok(Async::NotReady) => {
+                    all_ready = false;
+                    true
+                },
+                Ok(Async::Ready(peer)) => {
+                    debug!("new peer connected");
+                    newly_connected.push((peer.remote_id(), peer.capabilities().into()));
+                    streams.push(peer);
+                    false
+                },
+                Err(e) => {
+                    error!("peer disconnected with error {}", e);
+                    false
+                },
+            }
+        });
 
         if all_ready {
             Ok(Async::Ready(()))

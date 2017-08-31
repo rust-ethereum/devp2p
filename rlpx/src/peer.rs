@@ -116,8 +116,7 @@ impl PeerStream {
 
     /// Incoming peer stream over TCP
     pub fn incoming(
-        stream: TcpStream,
-        secret_key: SecretKey, remote_id: H512,
+        stream: TcpStream, secret_key: SecretKey,
         protocol_version: usize, client_version: String,
         capabilities: Vec<CapabilityInfo>, port: u16
     ) -> Box<Future<Item = PeerStream, Error = io::Error>> {

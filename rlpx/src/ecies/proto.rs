@@ -181,6 +181,43 @@ impl ECIESStream {
 
         Box::new(stream)
     }
+
+    /// Listen on a just connected ECIES clinet
+    pub fn incoming(
+        stream: TcpStream, secret_key: SecretKey
+    ) -> Box<Future<Item = ECIESStream, Error = io::Error>> {
+        let ecies = match ECIESCodec::new_server(secret_key) {
+            Ok(val) => val,
+            Err(e) => return Box::new(future::err(
+                io::Error::new(io::ErrorKind::Other, "invalid handshake")))
+                as Box<Future<Item = ECIESStream, Error = io::Error>>,
+        };
+
+        debug!("incoming ecies stream ...");
+        let stream = stream.framed(ecies).into_future().map_err(|(e, _)| e)
+            .and_then(move |(ack, transport)| {
+                debug!("receiving ecies auth");
+                if ack == Some(ECIESValue::Auth) {
+                    Ok(transport)
+                } else {
+                    error!("expected auth, got {:?} instead", ack);
+                    Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"))
+                }
+            })
+            .and_then(|socket| {
+                debug!("sending ecies ack ...");
+                socket.send(ECIESValue::Ack)
+            })
+            .and_then(|socket| {
+                Ok(ECIESStream {
+                    stream: socket,
+                    polled_header: false,
+                    sending_body: None,
+                })
+            });
+
+        Box::new(stream)
+    }
 }
 
 impl Stream for ECIESStream {

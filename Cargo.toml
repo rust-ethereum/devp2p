@@ -1,6 +1,6 @@
 [package]
 name = "devp2p"
-version = "0.2.2"
+version = "0.3.0"
 license = "Apache-2.0"
 authors = ["Wei Tang <hi@that.world>"]
 description = "Ethereum's devp2p protocol implementation in Rust."
@@ -9,7 +9,7 @@ repository = "https://github.com/sorpaas/devp2p-rs"
 [dependencies]
 dpt = { version = "0.2", path = "./dpt" }
 rand = "0.3.12"
-rlpx = { version = "0.2", path = "./rlpx" }
+rlpx = { version = "0.3", path = "./rlpx" }
 futures = "0.1"
 tokio-io = "0.1"
 tokio-core = "0.1"

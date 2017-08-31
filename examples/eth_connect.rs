@@ -98,6 +98,7 @@ fn main() {
             optimal_peers_len: 25,
             optimal_peers_interval: Duration::new(5, 0),
             reconnect_dividend: 5,
+            listen: false,
         }).unwrap();
 
     let mut best_number: U256 = U256::zero();

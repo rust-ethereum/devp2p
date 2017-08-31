@@ -33,7 +33,7 @@ fn main() {
         4, "etclient Rust/0.1.0".to_string(),
         vec![CapabilityInfo { name: "eth", version: 62, length: 8 },
              CapabilityInfo { name: "eth", version: 63, length: 17 }],
-        0);
+        None).unwrap();
 
     client.add_peer(&addr, H512::from_str(REMOTE_ID).unwrap());
 

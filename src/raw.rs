@@ -17,6 +17,7 @@ pub struct DevP2PConfig {
     pub optimal_peers_len: usize,
     pub optimal_peers_interval: Duration,
     pub reconnect_dividend: usize,
+    pub listen: bool,
 }
 
 /// An Ethereum DevP2P stream that handles peers management
@@ -44,7 +45,12 @@ impl DevP2PStream {
 
         let mut rlpx = RLPxStream::new(handle, secret_key.clone(),
                                        protocol_version, client_version,
-                                       capabilities, port);
+                                       capabilities,
+                                       if config.listen {
+                                           Some(addr)
+                                       } else {
+                                           None
+                                       })?;
 
         let dpt = DPTStream::new(addr, handle, secret_key.clone(),
                                  bootstrap_nodes, public_addr, port)?;

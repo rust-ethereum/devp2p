@@ -49,6 +49,8 @@ pub struct ECIES {
     public_key: PublicKey,
     remote_public_key: Option<PublicKey>,
 
+    remote_id: Option<H512>,
+
     ephemeral_secret_key: SecretKey,
     ephemeral_public_key: PublicKey,
     ephemeral_shared_secret: Option<H256>,
@@ -87,6 +89,8 @@ impl ECIES {
             ephemeral_shared_secret: None,
             init_msg: None, remote_init_msg: None,
 
+            remote_id: Some(remote_id),
+
             body_size: None, egress_aes: None, ingress_aes: None,
             egress_mac: None, ingress_mac: None,
         })
@@ -109,9 +113,15 @@ impl ECIES {
             ephemeral_shared_secret: None,
             init_msg: None, remote_init_msg: None,
 
+            remote_id: None,
+
             body_size: None, egress_aes: None, ingress_aes: None,
             egress_mac: None, ingress_mac: None,
         })
+    }
+
+    pub fn remote_id(&self) -> H512 {
+        self.remote_id.unwrap()
     }
 
     fn encrypt_message(&self, data: &[u8]) -> Result<Vec<u8>, ECIESError> {
@@ -193,6 +203,7 @@ impl ECIES {
         let sig_rec = RecoverableSignature::from_compact(
             &SECP256K1, &data[0..64], RecoveryId::from_i32(data[64] as i32)?)?;
         let heid = H256::from(&data[65..97]);
+        self.remote_id = Some(H512::from(&data[97..161]));
         self.remote_public_key = Some(id2pk(H512::from(&data[97..161]))?);
         self.remote_nonce = Some(H256::from(&data[161..193]));
         if data[193] != 0u8 {

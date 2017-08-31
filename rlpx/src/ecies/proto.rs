@@ -21,7 +21,8 @@ pub enum ECIESState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Raw values for an ECIES protocol
 pub enum ECIESValue {
-    Auth, Ack, Header(usize), Body(Vec<u8>)
+    Auth, Ack, Header(usize), Body(Vec<u8>),
+    AuthReceive(H512),
 }
 
 /// Tokio codec for ECIES
@@ -63,7 +64,7 @@ impl Decoder for ECIESCodec {
                 self.ecies.parse_auth(&data)?;
 
                 self.state = ECIESState::Header;
-                Ok(Some(ECIESValue::Auth))
+                Ok(Some(ECIESValue::AuthReceive(self.ecies.remote_id())))
             },
             ECIESState::Ack => {
                 if buf.len() < self.ecies.ack_len() {
@@ -108,6 +109,7 @@ impl Encoder for ECIESCodec {
 
     fn encode(&mut self, msg: ECIESValue, buf: &mut BytesMut) -> Result<(), io::Error> {
         match msg {
+            ECIESValue::AuthReceive(_) => panic!(),
             ECIESValue::Auth => {
                 let data = self.ecies.create_auth()?;
                 self.state = ECIESState::Ack;
@@ -143,6 +145,7 @@ pub struct ECIESStream {
     stream: Framed<TcpStream, ECIESCodec>,
     polled_header: bool,
     sending_body: Option<Vec<u8>>,
+    remote_id: H512,
 }
 
 impl ECIESStream {
@@ -172,6 +175,7 @@ impl ECIESStream {
                         stream: transport,
                         polled_header: false,
                         sending_body: None,
+                        remote_id: remote_id,
                     })
                 } else {
                     error!("expected ack, got {:?} instead", ack);
@@ -197,26 +201,36 @@ impl ECIESStream {
         let stream = stream.framed(ecies).into_future().map_err(|(e, _)| e)
             .and_then(move |(ack, transport)| {
                 debug!("receiving ecies auth");
-                if ack == Some(ECIESValue::Auth) {
-                    Ok(transport)
-                } else {
-                    error!("expected auth, got {:?} instead", ack);
-                    Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"))
+                match ack {
+                    Some(ECIESValue::AuthReceive(remote_id)) =>
+                        Ok((remote_id, transport)),
+                    ack => {
+                        error!("expected auth, got {:?} instead", ack);
+                        Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"))
+                    }
                 }
             })
-            .and_then(|socket| {
+            .and_then(|(remote_id, socket)| {
                 debug!("sending ecies ack ...");
-                socket.send(ECIESValue::Ack)
+                socket.send(ECIESValue::Ack).and_then(move |socket| {
+                    Ok((remote_id, socket))
+                })
             })
-            .and_then(|socket| {
+            .and_then(|(remote_id, socket)| {
                 Ok(ECIESStream {
                     stream: socket,
                     polled_header: false,
                     sending_body: None,
+                    remote_id
                 })
             });
 
         Box::new(stream)
+    }
+
+    /// Get the remote id
+    pub fn remote_id(&self) -> H512 {
+        self.remote_id
     }
 }
 

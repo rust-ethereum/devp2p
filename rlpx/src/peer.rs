@@ -4,6 +4,7 @@ use std::io;
 use std::net::SocketAddr;
 use ecies::ECIESStream;
 use tokio_core::reactor::Handle;
+use tokio_core::net::TcpStream;
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_io::codec::{Framed, Encoder, Decoder};
 use secp256k1::{self, SECP256K1};
@@ -105,6 +106,35 @@ impl PeerStream {
         protocol_version: usize, client_version: String,
         capabilities: Vec<CapabilityInfo>, port: u16
     ) -> Box<Future<Item = PeerStream, Error = io::Error>> {
+        Box::new(
+            ECIESStream::connect(addr, handle, secret_key.clone(), remote_id)
+                .and_then(move |socket| {
+                    PeerStream::new(socket, secret_key, protocol_version,
+                                    client_version, capabilities, port)
+                }))
+    }
+
+    /// Incoming peer stream over TCP
+    pub fn incoming(
+        stream: TcpStream,
+        secret_key: SecretKey, remote_id: H512,
+        protocol_version: usize, client_version: String,
+        capabilities: Vec<CapabilityInfo>, port: u16
+    ) -> Box<Future<Item = PeerStream, Error = io::Error>> {
+        Box::new(
+            ECIESStream::incoming(stream, secret_key.clone())
+                .and_then(move |socket| {
+                    PeerStream::new(socket, secret_key, protocol_version,
+                                    client_version, capabilities, port)
+                }))
+    }
+
+    /// Create a new peer stream
+    pub fn new(
+        ecies_stream: ECIESStream, secret_key: SecretKey,
+        protocol_version: usize, client_version: String,
+        capabilities: Vec<CapabilityInfo>, port: u16
+    ) -> Box<Future<Item = PeerStream, Error = io::Error>> {
         let public_key = match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
             Ok(key) => key,
             Err(_) => return Box::new(future::err(
@@ -117,7 +147,7 @@ impl PeerStream {
 
         debug!("connecting to rlpx peer {:x}", id);
 
-        let stream = ECIESStream::connect(addr, handle, secret_key.clone(), remote_id)
+        let stream = future::ok(ecies_stream)
             .and_then(move |socket| {
                 debug!("sending hello message ...");
                 let hello = rlp::encode(&HelloMessage {
@@ -200,10 +230,11 @@ impl PeerStream {
                         shared_capabilities.sort_by_key(|v| v.name.clone());
 
                         Ok(PeerStream {
+                            remote_id: transport.remote_id(),
                             stream: transport,
                             client_version: nonhello_client_version,
-                            protocol_version, port, id, remote_id,
-                            shared_capabilities
+                            protocol_version, port, id,
+                            shared_capabilities,
                         })
                     },
                     Err(_) => {

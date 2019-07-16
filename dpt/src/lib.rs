@@ -106,19 +106,16 @@ impl DPTNode {
     }
 
     pub fn from_url(url: &Url) -> Result<DPTNode, DPTNodeParseError> {
-        println!("{:?}",url.host());
         let address = match url.host() {
             Some(Host::Ipv4(ip)) => IpAddr::V4(ip),
             Some(Host::Ipv6(ip)) => IpAddr::V6(ip),
             Some(Host::Domain(ip)) => IpAddr::V4(Ipv4Addr::from_str(ip).unwrap()),
             _ => return Err(DPTNodeParseError::UrlError),
         };
-        println!("{}",url);
         let port = match url.port() {
             Some(port) => port,
             _ => return Err(DPTNodeParseError::UrlError),
         };
-        println!("{}",url);
         let id = match H512::from_str(url.username()) {
             Ok(id) => id,
             _ => return Err(DPTNodeParseError::HexError),

@@ -109,6 +109,7 @@ impl DPTNode {
         let address = match url.host() {
             Some(Host::Ipv4(ip)) => IpAddr::V4(ip),
             Some(Host::Ipv6(ip)) => IpAddr::V6(ip),
+            Some(Host::Domain(ip)) => IpAddr::V4(Ipv4Addr::from_str(ip).unwrap()),
             _ => return Err(DPTNodeParseError::UrlError),
         };
         let port = match url.port() {

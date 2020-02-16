@@ -1,10 +1,10 @@
-use util::{keccak256, pk2id, id2pk};
-use std::net::SocketAddr;
-use secp256k1::key::SecretKey;
-use secp256k1::{SECP256K1, RecoverableSignature, Message, RecoveryId};
 use bigint::{H256, H512};
-use tokio_core::net::UdpCodec;
+use secp256k1::key::SecretKey;
+use secp256k1::{Message, RecoverableSignature, RecoveryId, SECP256K1};
 use std::io;
+use std::net::SocketAddr;
+use tokio_core::net::UdpCodec;
+use util::{id2pk, keccak256, pk2id};
 
 macro_rules! try_none {
     ( $ex:expr ) => {
@@ -12,7 +12,7 @@ macro_rules! try_none {
             Ok(val) => val,
             Err(_) => return Ok(None),
         }
-    }
+    };
 }
 
 pub struct DPTCodec {
@@ -22,14 +22,12 @@ pub struct DPTCodec {
 pub struct DPTCodecMessage {
     pub addr: SocketAddr,
     pub typ: u8,
-    pub data: Vec<u8>
+    pub data: Vec<u8>,
 }
 
 impl DPTCodec {
     pub fn new(secret_key: SecretKey) -> Self {
-        DPTCodec {
-            secret_key
-        }
+        DPTCodec { secret_key }
     }
 }
 
@@ -51,7 +49,9 @@ impl UdpCodec for DPTCodec {
         let sighash = keccak256(&buf[97..]);
         let rec_id = try_none!(RecoveryId::from_i32(buf[96] as i32));
         let rec_sig = try_none!(RecoverableSignature::from_compact(
-            &SECP256K1, &buf[32..96], rec_id
+            &SECP256K1,
+            &buf[32..96],
+            rec_id
         ));
         let message = try_none!(Message::from_slice(&sighash));
         let public_key = try_none!(SECP256K1.recover(&message, &rec_sig));
@@ -63,7 +63,15 @@ impl UdpCodec for DPTCodec {
             data.push(buf[i]);
         }
 
-        Ok(Some((DPTCodecMessage { addr: src.clone(), typ, data }, remote_id, hash)))
+        Ok(Some((
+            DPTCodecMessage {
+                addr: src.clone(),
+                typ,
+                data,
+            },
+            remote_id,
+            hash,
+        )))
     }
 
     fn encode(&mut self, mut msg: DPTCodecMessage, buf: &mut Vec<u8>) -> SocketAddr {
@@ -73,7 +81,9 @@ impl UdpCodec for DPTCodec {
 
         let sighash = keccak256(&typdata);
         let message = Message::from_slice(&sighash).unwrap();
-        let rec_sig = &SECP256K1.sign_recoverable(&message, &self.secret_key).unwrap();
+        let rec_sig = &SECP256K1
+            .sign_recoverable(&message, &self.secret_key)
+            .unwrap();
         let (rec, sig) = rec_sig.serialize_compact(&SECP256K1);
 
         let mut hashdata = Vec::new();

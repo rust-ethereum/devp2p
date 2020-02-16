@@ -1,6 +1,6 @@
+use crypto::symmetriccipher::SymmetricCipherError;
 use secp256k1;
 use std::io;
-use crypto::symmetriccipher::SymmetricCipherError;
 
 #[derive(Debug)]
 pub enum ECIESError {

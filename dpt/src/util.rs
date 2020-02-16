@@ -1,7 +1,7 @@
-use sha3::{Digest, Keccak256};
-use secp256k1::{self, SECP256K1};
-use secp256k1::key::PublicKey;
 use bigint::{H256, H512};
+use secp256k1::key::PublicKey;
+use secp256k1::{self, SECP256K1};
+use sha3::{Digest, Keccak256};
 
 pub fn keccak256(data: &[u8]) -> H256 {
     let mut hasher = Keccak256::new();

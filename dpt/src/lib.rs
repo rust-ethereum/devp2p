@@ -1,45 +1,46 @@
 //! Ethereum DPT protocol implementation
 
 extern crate bigint;
-extern crate rlp;
 extern crate hexutil;
-extern crate sha3;
+extern crate rlp;
 extern crate secp256k1;
+extern crate sha3;
 #[macro_use]
 extern crate log;
 #[macro_use]
 extern crate futures;
-extern crate tokio_io;
-extern crate tokio_core;
-extern crate time;
 extern crate rand;
+extern crate time;
+extern crate tokio_core;
+extern crate tokio_io;
 extern crate url;
 
-mod proto;
 mod message;
+mod proto;
 mod util;
 
+use bigint::{H256, H512};
+use futures::future;
+use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use message::*;
 use proto::{DPTCodec, DPTCodecMessage};
-use futures::future;
-use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_io::codec::{Framed, Encoder, Decoder};
-use tokio_core::reactor::{Timeout, Handle};
-use tokio_core::net::{UdpSocket, UdpFramed};
-use std::net::{IpAddr, SocketAddr, Ipv4Addr, Ipv6Addr};
-use std::io;
-use std::str::FromStr;
-use bigint::{H256, H512};
+use rand::{thread_rng, Rng};
 use rlp::UntrustedRlp;
-use secp256k1::SECP256K1;
 use secp256k1::key::{PublicKey, SecretKey};
-use util::{keccak256, pk2id};
-use rand::{Rng, thread_rng};
+use secp256k1::SECP256K1;
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::str::FromStr;
+use tokio_core::net::{UdpFramed, UdpSocket};
+use tokio_core::reactor::{Handle, Timeout};
+use tokio_io::codec::{Decoder, Encoder, Framed};
+use tokio_io::{AsyncRead, AsyncWrite};
 use url::{Host, Url};
+use util::{keccak256, pk2id};
 
 fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)
-    where F: FnMut(&mut T) -> bool
+where
+    F: FnMut(&mut T) -> bool,
 {
     let len = vec.len();
     let mut del = 0;
@@ -122,7 +123,8 @@ impl DPTNode {
         };
 
         Ok(DPTNode {
-            address, id,
+            address,
+            id,
             tcp_port: port,
             udp_port: port,
         })
@@ -131,22 +133,35 @@ impl DPTNode {
 
 impl DPTStream {
     /// Create a new DPT stream
-    pub fn new(addr: &SocketAddr, handle: &Handle,
-               secret_key: SecretKey,
-               bootstrap_nodes: Vec<DPTNode>,
-               public_address: &IpAddr, tcp_port: u16) -> Result<Self, io::Error> {
+    pub fn new(
+        addr: &SocketAddr,
+        handle: &Handle,
+        secret_key: SecretKey,
+        bootstrap_nodes: Vec<DPTNode>,
+        public_address: &IpAddr,
+        tcp_port: u16,
+    ) -> Result<Self, io::Error> {
         let id = pk2id(&match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
             Ok(val) => val,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "converting pub key failed")),
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "converting pub key failed",
+                ))
+            }
         });
         debug!("self id: {:x}", id);
         Ok(Self {
             stream: UdpSocket::bind(addr, handle)?.framed(DPTCodec::new(secret_key)),
-            id, connected: bootstrap_nodes.clone(), incoming: bootstrap_nodes,
+            id,
+            connected: bootstrap_nodes.clone(),
+            incoming: bootstrap_nodes,
             pingponged: Vec::new(),
             bootstrapped: false,
             timeout: None,
-            address: public_address.clone(), udp_port: addr.port(), tcp_port
+            address: public_address.clone(),
+            udp_port: addr.port(),
+            tcp_port,
         })
     }
 
@@ -157,12 +172,8 @@ impl DPTStream {
 
     /// Disconnect from a node
     pub fn disconnect_peer(&mut self, remote_id: H512) {
-        self.connected.retain(|node| {
-            node.id != remote_id
-        });
-        self.pingponged.retain(|node| {
-            node.id != remote_id
-        });
+        self.connected.retain(|node| node.id != remote_id);
+        self.pingponged.retain(|node| node.id != remote_id);
     }
 
     /// Get the peer by its id
@@ -196,9 +207,8 @@ impl DPTStream {
         };
         let data = rlp::encode(&message).to_vec();
 
-        self.stream.start_send(DPTCodecMessage {
-            typ, data, addr
-        })?;
+        self.stream
+            .start_send(DPTCodecMessage { typ, data, addr })?;
         self.stream.poll_complete()?;
 
         Ok(Async::Ready(()))
@@ -207,15 +217,15 @@ impl DPTStream {
     fn send_pong(&mut self, addr: SocketAddr, echo: H256, to: Endpoint) -> Poll<(), io::Error> {
         let typ = 0x02u8;
         let message = PongMessage {
-            echo, to,
+            echo,
+            to,
             expire: self.default_expire(),
         };
         let data = rlp::encode(&message).to_vec();
 
         debug!("sending pong ...");
-        self.stream.start_send(DPTCodecMessage {
-            typ, data, addr
-        })?;
+        self.stream
+            .start_send(DPTCodecMessage { typ, data, addr })?;
         self.stream.poll_complete()?;
 
         Ok(Async::Ready(()))
@@ -229,9 +239,8 @@ impl DPTStream {
         };
         let data = rlp::encode(&message).to_vec();
 
-        self.stream.start_send(DPTCodecMessage {
-            typ, data, addr
-        })?;
+        self.stream
+            .start_send(DPTCodecMessage { typ, data, addr })?;
         self.stream.poll_complete()?;
 
         Ok(Async::Ready(()))
@@ -252,7 +261,10 @@ impl DPTStream {
             let id = self.connected[i].id;
 
             nodes.push(Neighbour {
-                address, udp_port, tcp_port, id,
+                address,
+                udp_port,
+                tcp_port,
+                id,
             });
         }
         let message = NeighboursMessage {
@@ -261,9 +273,8 @@ impl DPTStream {
         };
         let data = rlp::encode(&message).to_vec();
 
-        self.stream.start_send(DPTCodecMessage {
-            typ, data, addr
-        })?;
+        self.stream
+            .start_send(DPTCodecMessage { typ, data, addr })?;
         self.stream.poll_complete()?;
 
         Ok(Async::Ready(()))
@@ -312,7 +323,7 @@ impl Stream for DPTStream {
                     } else {
                         return Ok(Async::NotReady);
                     }
-                },
+                }
                 Async::Ready(None) => return Ok(Async::Ready(None)),
             };
 
@@ -405,7 +416,6 @@ impl Sink for DPTStream {
 
     fn start_send(&mut self, message: DPTMessage) -> StartSend<Self::SinkItem, Self::SinkError> {
         match message {
-
             DPTMessage::RequestNewPeer => {
                 debug!("randomly selecting one peer from {}", self.pingponged.len());
                 thread_rng().shuffle(&mut self.pingponged);
@@ -422,7 +432,7 @@ impl Sink for DPTStream {
                 self.send_find_neighbours(addr)?;
 
                 return Ok(AsyncSink::Ready);
-            },
+            }
 
             DPTMessage::Ping(timeout) => {
                 let mut timeoutting = Vec::new();
@@ -435,7 +445,6 @@ impl Sink for DPTStream {
 
                 return Ok(AsyncSink::Ready);
             }
-
         }
     }
 }
@@ -443,6 +452,5 @@ impl Sink for DPTStream {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn it_works() {
-    }
+    fn it_works() {}
 }

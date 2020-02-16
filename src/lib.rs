@@ -7,16 +7,16 @@ pub extern crate rlpx;
 extern crate log;
 #[macro_use]
 extern crate futures;
-extern crate tokio_core;
-extern crate tokio_io;
-extern crate secp256k1;
 extern crate bigint;
-extern crate rlp;
 extern crate block;
 extern crate rand;
+extern crate rlp;
+extern crate secp256k1;
+extern crate tokio_core;
+extern crate tokio_io;
 
-mod raw;
 mod eth;
+mod raw;
 
-pub use raw::{DevP2PStream, DevP2PConfig};
-pub use eth::{ETHStream, ETHSendMessage, ETHReceiveMessage, ETHMessage};
+pub use eth::{ETHMessage, ETHReceiveMessage, ETHSendMessage, ETHStream};
+pub use raw::{DevP2PConfig, DevP2PStream};

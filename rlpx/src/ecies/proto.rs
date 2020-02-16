@@ -1,27 +1,33 @@
-use futures::future;
-use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_io::codec::{Framed, Encoder, Decoder};
-use tokio_core::reactor::{Handle, Core};
-use tokio_core::net::TcpStream;
-use bytes::{BytesMut, BufMut};
-use errors::ECIESError;
-use secp256k1::key::SecretKey;
+use super::algorithm::ECIES;
 use bigint::H512;
+use bytes::{BufMut, BytesMut};
+use errors::ECIESError;
+use futures::future;
+use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use secp256k1::key::SecretKey;
 use std::io;
 use std::net::SocketAddr;
-use super::algorithm::ECIES;
+use tokio_core::net::TcpStream;
+use tokio_core::reactor::{Core, Handle};
+use tokio_io::codec::{Decoder, Encoder, Framed};
+use tokio_io::{AsyncRead, AsyncWrite};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Current ECIES state of a connection
 pub enum ECIESState {
-    Auth, Ack, Header, Body
+    Auth,
+    Ack,
+    Header,
+    Body,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Raw values for an ECIES protocol
 pub enum ECIESValue {
-    Auth, Ack, Header(usize), Body(Vec<u8>),
+    Auth,
+    Ack,
+    Header(usize),
+    Body(Vec<u8>),
     AuthReceive(H512),
 }
 
@@ -36,7 +42,7 @@ impl ECIESCodec {
     pub fn new_server(secret_key: SecretKey) -> Result<Self, ECIESError> {
         Ok(Self {
             ecies: ECIES::new_server(secret_key)?,
-            state: ECIESState::Auth
+            state: ECIESState::Auth,
         })
     }
 
@@ -44,7 +50,7 @@ impl ECIESCodec {
     pub fn new_client(secret_key: SecretKey, remote_id: H512) -> Result<Self, ECIESError> {
         Ok(Self {
             ecies: ECIES::new_client(secret_key, remote_id)?,
-            state: ECIESState::Auth
+            state: ECIESState::Auth,
         })
     }
 }
@@ -65,7 +71,7 @@ impl Decoder for ECIESCodec {
 
                 self.state = ECIESState::Header;
                 Ok(Some(ECIESValue::AuthReceive(self.ecies.remote_id())))
-            },
+            }
             ECIESState::Ack => {
                 if buf.len() < self.ecies.ack_len() {
                     return Ok(None);
@@ -76,7 +82,7 @@ impl Decoder for ECIESCodec {
 
                 self.state = ECIESState::Header;
                 Ok(Some(ECIESValue::Ack))
-            },
+            }
             ECIESState::Header => {
                 if buf.len() < self.ecies.header_len() {
                     return Ok(None);
@@ -87,7 +93,7 @@ impl Decoder for ECIESCodec {
 
                 self.state = ECIESState::Body;
                 Ok(Some(ECIESValue::Header(size)))
-            },
+            }
             ECIESState::Body => {
                 if buf.len() < self.ecies.body_len() {
                     return Ok(None);
@@ -98,7 +104,7 @@ impl Decoder for ECIESCodec {
 
                 self.state = ECIESState::Header;
                 Ok(Some(ECIESValue::Body(ret)))
-            },
+            }
         }
     }
 }
@@ -116,20 +122,20 @@ impl Encoder for ECIESCodec {
                 buf.reserve(data.len());
                 buf.extend(data);
                 Ok(())
-            },
+            }
             ECIESValue::Ack => {
                 let data = self.ecies.create_ack()?;
                 self.state = ECIESState::Header;
                 buf.reserve(data.len());
                 buf.extend(data);
                 Ok(())
-            },
+            }
             ECIESValue::Header(size) => {
                 let data = self.ecies.create_header(size);
                 buf.reserve(data.len());
                 buf.extend(data);
                 Ok(())
-            },
+            }
             ECIESValue::Body(val) => {
                 let data = self.ecies.create_body(val.as_ref());
                 buf.reserve(data.len());
@@ -151,14 +157,19 @@ pub struct ECIESStream {
 impl ECIESStream {
     /// Connect to an ECIES server
     pub fn connect(
-        addr: &SocketAddr, handle: &Handle,
-        secret_key: SecretKey, remote_id: H512
+        addr: &SocketAddr,
+        handle: &Handle,
+        secret_key: SecretKey,
+        remote_id: H512,
     ) -> Box<Future<Item = ECIESStream, Error = io::Error>> {
         let ecies = match ECIESCodec::new_client(secret_key, remote_id) {
             Ok(val) => val,
-            Err(e) => return Box::new(future::err(
-                io::Error::new(io::ErrorKind::Other, "invalid handshake")))
-                as Box<Future<Item = ECIESStream, Error = io::Error>>,
+            Err(e) => {
+                return Box::new(future::err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "invalid handshake",
+                ))) as Box<Future<Item = ECIESStream, Error = io::Error>>
+            }
         };
 
         debug!("connecting to ecies stream ...");
@@ -188,22 +199,28 @@ impl ECIESStream {
 
     /// Listen on a just connected ECIES clinet
     pub fn incoming(
-        stream: TcpStream, secret_key: SecretKey
+        stream: TcpStream,
+        secret_key: SecretKey,
     ) -> Box<Future<Item = ECIESStream, Error = io::Error>> {
         let ecies = match ECIESCodec::new_server(secret_key) {
             Ok(val) => val,
-            Err(e) => return Box::new(future::err(
-                io::Error::new(io::ErrorKind::Other, "invalid handshake")))
-                as Box<Future<Item = ECIESStream, Error = io::Error>>,
+            Err(e) => {
+                return Box::new(future::err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "invalid handshake",
+                ))) as Box<Future<Item = ECIESStream, Error = io::Error>>
+            }
         };
 
         debug!("incoming ecies stream ...");
-        let stream = stream.framed(ecies).into_future().map_err(|(e, _)| e)
+        let stream = stream
+            .framed(ecies)
+            .into_future()
+            .map_err(|(e, _)| e)
             .and_then(move |(ack, transport)| {
                 debug!("receiving ecies auth");
                 match ack {
-                    Some(ECIESValue::AuthReceive(remote_id)) =>
-                        Ok((remote_id, transport)),
+                    Some(ECIESValue::AuthReceive(remote_id)) => Ok((remote_id, transport)),
                     ack => {
                         error!("expected auth, got {:?} instead", ack);
                         Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"))
@@ -212,16 +229,16 @@ impl ECIESStream {
             })
             .and_then(|(remote_id, socket)| {
                 debug!("sending ecies ack ...");
-                socket.send(ECIESValue::Ack).and_then(move |socket| {
-                    Ok((remote_id, socket))
-                })
+                socket
+                    .send(ECIESValue::Ack)
+                    .and_then(move |socket| Ok((remote_id, socket)))
             })
             .and_then(|(remote_id, socket)| {
                 Ok(ECIESStream {
                     stream: socket,
                     polled_header: false,
                     sending_body: None,
-                    remote_id
+                    remote_id,
                 })
             });
 
@@ -242,16 +259,24 @@ impl Stream for ECIESStream {
         if !self.polled_header {
             match try_ready!(self.stream.poll()) {
                 Some(ECIESValue::Header(_)) => (),
-                Some(_) =>
-                    return Err(io::Error::new(io::ErrorKind::Other, "ECIES stream protocol error")),
+                Some(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "ECIES stream protocol error",
+                    ))
+                }
                 None => return Ok(Async::Ready(None)),
             };
             self.polled_header = true;
         }
         let body = match try_ready!(self.stream.poll()) {
             Some(ECIESValue::Body(val)) => val,
-            Some(_) =>
-                return Err(io::Error::new(io::ErrorKind::Other, "ECIES stream protocol error")),
+            Some(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "ECIES stream protocol error",
+                ))
+            }
             None => return Ok(Async::Ready(None)),
         };
         self.polled_header = false;
@@ -271,7 +296,7 @@ impl Sink for ECIESStream {
                 AsyncSink::NotReady(ECIESValue::Body(sending_body)) => {
                     self.sending_body = Some(sending_body);
                     return Ok(AsyncSink::NotReady(item));
-                },
+                }
                 _ => panic!(),
             }
         }
@@ -285,7 +310,7 @@ impl Sink for ECIESStream {
             AsyncSink::Ready => (),
             AsyncSink::NotReady(ECIESValue::Body(item)) => {
                 self.sending_body = Some(item);
-            },
+            }
             _ => panic!(),
         }
 
@@ -300,7 +325,7 @@ impl Sink for ECIESStream {
                 AsyncSink::NotReady(ECIESValue::Body(sending_body)) => {
                     self.sending_body = Some(sending_body);
                     return Ok(Async::NotReady);
-                },
+                }
                 _ => panic!(),
             }
         }

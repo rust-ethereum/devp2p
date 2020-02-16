@@ -1,45 +1,45 @@
 //! RLPx protocol implementation in Rust
 
-extern crate secp256k1;
 extern crate rand;
+extern crate secp256k1;
 
-extern crate sha3;
-extern crate sha2;
-extern crate byteorder;
-extern crate crypto;
 extern crate bigint;
-extern crate rlp;
-extern crate hexutil;
+extern crate byteorder;
 extern crate bytes;
+extern crate crypto;
+extern crate hexutil;
+extern crate rlp;
+extern crate sha2;
+extern crate sha3;
 #[macro_use]
 extern crate log;
 #[macro_use]
 extern crate futures;
-extern crate tokio_io;
 extern crate tokio_core;
+extern crate tokio_io;
 
-mod util;
 pub mod ecies;
-mod peer;
-mod mac;
 mod errors;
+mod mac;
+mod peer;
+mod util;
 
-pub use peer::{PeerStream, CapabilityInfo};
+pub use peer::{CapabilityInfo, PeerStream};
 
 use bigint::H512;
-use util::pk2id;
-use secp256k1::SECP256K1;
-use secp256k1::key::{PublicKey, SecretKey};
 use futures::future;
-use futures::{Poll, Async, StartSend, AsyncSink, Future, Stream, Sink};
+use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use rand::{thread_rng, Rng};
+use secp256k1::key::{PublicKey, SecretKey};
+use secp256k1::SECP256K1;
+use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::collections::HashMap;
+use tokio_core::net::{Incoming, TcpListener};
 use tokio_core::reactor::Handle;
-use tokio_core::net::{TcpListener, Incoming};
+use tokio_io::codec::{Decoder, Encoder, Framed};
 use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_io::codec::{Framed, Encoder, Decoder};
-use rand::{Rng, thread_rng};
+use util::pk2id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Sending node type specifying either all, any or a particular peer
@@ -66,14 +66,14 @@ pub enum RLPxReceiveMessage {
         capabilities: Vec<CapabilityInfo>,
     },
     Disconnected {
-        node: H512
+        node: H512,
     },
     Normal {
         node: H512,
         capability: CapabilityInfo,
         id: usize,
         data: Vec<u8>,
-    }
+    },
 }
 
 /// A RLPx stream and sink
@@ -95,13 +95,20 @@ pub struct RLPxStream {
 
 impl RLPxStream {
     /// Create a new RLPx stream
-    pub fn new(handle: &Handle, secret_key: SecretKey, protocol_version: usize,
-               client_version: String, capabilities: Vec<CapabilityInfo>,
-               listen: Option<&SocketAddr>) -> Result<RLPxStream, io::Error> {
+    pub fn new(
+        handle: &Handle,
+        secret_key: SecretKey,
+        protocol_version: usize,
+        client_version: String,
+        capabilities: Vec<CapabilityInfo>,
+        listen: Option<&SocketAddr>,
+    ) -> Result<RLPxStream, io::Error> {
         Ok(RLPxStream {
             streams: Vec::new(),
             futures: Vec::new(),
-            secret_key, protocol_version, client_version,
+            secret_key,
+            protocol_version,
+            client_version,
             capabilities,
             handle: handle.clone(),
             active_peers: Vec::new(),
@@ -117,15 +124,19 @@ impl RLPxStream {
     }
 
     /// Append a new peer to this RLPx stream if it does not exist
-    pub fn add_peer(
-        &mut self, addr: &SocketAddr, remote_id: H512
-    ) {
+    pub fn add_peer(&mut self, addr: &SocketAddr, remote_id: H512) {
         if !self.active_peers.contains(&remote_id) {
             info!("connecting to peer {}", remote_id);
-            let future = PeerStream::connect(addr, &self.handle, self.secret_key.clone(),
-                                             remote_id, self.protocol_version,
-                                             self.client_version.clone(),
-                                             self.capabilities.clone(), self.port);
+            let future = PeerStream::connect(
+                addr,
+                &self.handle,
+                self.secret_key.clone(),
+                remote_id,
+                self.protocol_version,
+                self.client_version.clone(),
+                self.capabilities.clone(),
+                self.port,
+            );
             self.futures.push((remote_id, future));
             self.active_peers.push(remote_id);
         }
@@ -148,9 +159,7 @@ impl RLPxStream {
             }
         });
 
-        retain_mut(futures, |&mut (peer_id, _)| {
-            peer_id != remote_id
-        });
+        retain_mut(futures, |&mut (peer_id, _)| peer_id != remote_id);
     }
 
     /// Poll over new peers to resolve them to TCP streams
@@ -168,20 +177,18 @@ impl RLPxStream {
                 Ok(Async::NotReady) => {
                     all_ready = false;
                     true
-                },
+                }
                 Ok(Async::Ready(peer)) => {
                     debug!("new peer connected");
                     newly_connected.push((remote_id, peer.capabilities().into()));
                     streams.push(peer);
                     false
-                },
+                }
                 Err(e) => {
                     error!("peer disconnected with error {}", e);
-                    active_peers.retain(|peer_id| {
-                        *peer_id != remote_id
-                    });
+                    active_peers.retain(|peer_id| *peer_id != remote_id);
                     false
-                },
+                }
             }
         });
 
@@ -192,32 +199,33 @@ impl RLPxStream {
                 match tcp_incoming.poll()? {
                     Async::Ready(Some((stream, addr))) => {
                         incoming_futures.push(PeerStream::incoming(
-                            stream, self.secret_key.clone(),
+                            stream,
+                            self.secret_key.clone(),
                             self.protocol_version,
                             self.client_version.clone(),
-                            self.capabilities.clone(), self.port));
-                    },
+                            self.capabilities.clone(),
+                            self.port,
+                        ));
+                    }
                     _ => break,
                 }
             }
         }
 
-        retain_mut(incoming_futures, |ref mut future| {
-            match future.poll() {
-                Ok(Async::NotReady) => {
-                    all_ready = false;
-                    true
-                },
-                Ok(Async::Ready(peer)) => {
-                    debug!("new peer connected");
-                    newly_connected.push((peer.remote_id(), peer.capabilities().into()));
-                    streams.push(peer);
-                    false
-                },
-                Err(e) => {
-                    error!("peer disconnected with error {}", e);
-                    false
-                },
+        retain_mut(incoming_futures, |ref mut future| match future.poll() {
+            Ok(Async::NotReady) => {
+                all_ready = false;
+                true
+            }
+            Ok(Async::Ready(peer)) => {
+                debug!("new peer connected");
+                newly_connected.push((peer.remote_id(), peer.capabilities().into()));
+                streams.push(peer);
+                false
+            }
+            Err(e) => {
+                error!("peer disconnected with error {}", e);
+                false
             }
         });
 
@@ -235,7 +243,8 @@ impl RLPxStream {
 }
 
 fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)
-    where F: FnMut(&mut T) -> bool
+where
+    F: FnMut(&mut T) -> bool,
 {
     let len = vec.len();
     let mut del = 0;
@@ -271,7 +280,7 @@ impl Stream for RLPxStream {
         }
         if self.newly_disconnected.len() > 0 {
             return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected {
-                node: self.newly_disconnected.pop().unwrap()
+                node: self.newly_disconnected.pop().unwrap(),
             })));
         }
 
@@ -295,25 +304,23 @@ impl Stream for RLPxStream {
                         debug!("peer disconnected no error");
                         newly_disconnected.push(id);
                         false
-                    },
+                    }
                     Ok(Async::Ready(Some((cap, message_id, data)))) => {
                         debug!("received RLPx data {:?}", data);
                         ret = Some(RLPxReceiveMessage::Normal {
                             node: id,
                             capability: cap,
                             id: message_id,
-                            data
+                            data,
                         });
                         true
-                    },
+                    }
                     Err(e) => {
                         debug!("peer disconnected with error {:?}", e);
-                        active_peers.retain(|peer_id| {
-                            *peer_id != id
-                        });
+                        active_peers.retain(|peer_id| *peer_id != id);
                         newly_disconnected.push(id);
                         false
-                    },
+                    }
                 }
             });
         }
@@ -330,7 +337,7 @@ impl Stream for RLPxStream {
             }
             if self.newly_disconnected.len() > 0 {
                 return Ok(Async::Ready(Some(RLPxReceiveMessage::Disconnected {
-                    node: self.newly_disconnected.pop().unwrap()
+                    node: self.newly_disconnected.pop().unwrap(),
                 })));
             }
             Ok(Async::NotReady)
@@ -342,7 +349,10 @@ impl Sink for RLPxStream {
     type SinkItem = RLPxSendMessage;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, message: RLPxSendMessage) -> StartSend<Self::SinkItem, Self::SinkError> {
+    fn start_send(
+        &mut self,
+        message: RLPxSendMessage,
+    ) -> StartSend<Self::SinkItem, Self::SinkError> {
         self.poll_new_peers()?;
 
         let ref mut streams = self.streams;
@@ -372,16 +382,14 @@ impl Sink for RLPxStream {
                     Ok(AsyncSink::Ready) => {
                         any_ready = true;
                         true
-                    },
+                    }
                     Ok(AsyncSink::NotReady(_)) => true,
                     Err(e) => {
                         debug!("peer disconnected with error {:?}", e);
-                        active_peers.retain(|peer_id| {
-                            *peer_id != remote_id
-                        });
+                        active_peers.retain(|peer_id| *peer_id != remote_id);
                         newly_disconnected.push(remote_id);
                         false
-                    },
+                    }
                 }
             } else {
                 true
@@ -409,15 +417,13 @@ impl Sink for RLPxStream {
                 Ok(Async::NotReady) => {
                     all_ready = false;
                     true
-                },
+                }
                 Err(e) => {
                     debug!("peer disconnected with error: {:?}", e);
-                    active_peers.retain(|peer_id| {
-                        *peer_id != remote_id
-                    });
+                    active_peers.retain(|peer_id| *peer_id != remote_id);
                     newly_disconnected.push(remote_id);
                     false
-                },
+                }
             }
         });
 
@@ -432,6 +438,5 @@ impl Sink for RLPxStream {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn it_works() {
-    }
+    fn it_works() {}
 }

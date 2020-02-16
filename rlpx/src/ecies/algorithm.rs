@@ -1,26 +1,24 @@
-use util::{keccak256, pk2id, id2pk, hmac_sha256, sha256};
+use bigint::{H128, H256, H512};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use crypto::aessafe::{AesSafe128Encryptor, AesSafe256Encryptor};
+use crypto::blockmodes::CtrMode;
+use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
+use crypto::symmetriccipher::{Decryptor, Encryptor};
+use errors::ECIESError;
 use mac::MAC;
-use secp256k1::{SECP256K1, Message, RecoverableSignature, RecoveryId};
+use rand::os::OsRng;
+use rlp;
 use secp256k1::ecdh::SharedSecret;
 use secp256k1::key::{PublicKey, SecretKey};
-use sha3::Keccak256;
+use secp256k1::{Message, RecoverableSignature, RecoveryId, SECP256K1};
 use sha2::{Digest, Sha256};
-use bigint::{H512, H256, H128};
-use rand::os::OsRng;
-use byteorder::{BigEndian, WriteBytesExt, ReadBytesExt};
-use crypto::blockmodes::CtrMode;
-use crypto::aessafe::{AesSafe256Encryptor, AesSafe128Encryptor};
-use crypto::symmetriccipher::{Decryptor, Encryptor};
-use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
-use errors::ECIESError;
-use rlp;
+use sha3::Keccak256;
+use util::{hmac_sha256, id2pk, keccak256, pk2id, sha256};
 
-const AUTH_LEN: usize =
-    65 /* signature with recovery */ + 32 /* keccak256 ephemeral */ +
+const AUTH_LEN: usize = 65 /* signature with recovery */ + 32 /* keccak256 ephemeral */ +
     64 /* public key */ + 32 /* nonce */ + 1;
 
-const ACK_LEN: usize =
-    64 /* public key */ + 32 /* nonce */ + 1;
+const ACK_LEN: usize = 64 /* public key */ + 32 /* nonce */ + 1;
 
 fn ecdh_x(public_key: &PublicKey, secret_key: &SecretKey) -> H256 {
     let shared = SharedSecret::new_raw(&SECP256K1, public_key, secret_key);
@@ -32,7 +30,7 @@ fn concat_kdf(key_material: H256) -> H256 {
     const reps: usize = (32 + 7) * 8 / (SHA256BlockSize * 8);
 
     let mut buffers: Vec<u8> = Vec::new();
-    for counter in 0..(reps+1) {
+    for counter in 0..(reps + 1) {
         let mut sha256 = Sha256::new();
         let mut tmp: Vec<u8> = Vec::new();
         tmp.write_u32::<BigEndian>((counter + 1) as u32).unwrap();
@@ -72,51 +70,63 @@ pub struct ECIES {
 
 impl ECIES {
     pub fn new_client(secret_key: SecretKey, remote_id: H512) -> Result<Self, ECIESError> {
-        let public_key = PublicKey::from_secret_key(
-            &SECP256K1, &secret_key)?;
+        let public_key = PublicKey::from_secret_key(&SECP256K1, &secret_key)?;
         let remote_public_key = id2pk(remote_id)?;
         let nonce = H256::random();
         let (ephemeral_secret_key, ephemeral_public_key) =
             SECP256K1.generate_keypair(&mut OsRng::new()?)?;
 
         Ok(ECIES {
-            secret_key, public_key, ephemeral_secret_key,
-            ephemeral_public_key, nonce,
+            secret_key,
+            public_key,
+            ephemeral_secret_key,
+            ephemeral_public_key,
+            nonce,
 
             remote_public_key: Some(remote_public_key),
             remote_ephemeral_public_key: None,
             remote_nonce: None,
             ephemeral_shared_secret: None,
-            init_msg: None, remote_init_msg: None,
+            init_msg: None,
+            remote_init_msg: None,
 
             remote_id: Some(remote_id),
 
-            body_size: None, egress_aes: None, ingress_aes: None,
-            egress_mac: None, ingress_mac: None,
+            body_size: None,
+            egress_aes: None,
+            ingress_aes: None,
+            egress_mac: None,
+            ingress_mac: None,
         })
     }
 
     pub fn new_server(secret_key: SecretKey) -> Result<Self, ECIESError> {
-        let public_key = PublicKey::from_secret_key(
-            &SECP256K1, &secret_key)?;
+        let public_key = PublicKey::from_secret_key(&SECP256K1, &secret_key)?;
         let nonce = H256::random();
         let (ephemeral_secret_key, ephemeral_public_key) =
             SECP256K1.generate_keypair(&mut OsRng::new()?)?;
 
         Ok(ECIES {
-            secret_key, public_key, ephemeral_secret_key,
-            ephemeral_public_key, nonce,
+            secret_key,
+            public_key,
+            ephemeral_secret_key,
+            ephemeral_public_key,
+            nonce,
 
             remote_public_key: None,
             remote_ephemeral_public_key: None,
             remote_nonce: None,
             ephemeral_shared_secret: None,
-            init_msg: None, remote_init_msg: None,
+            init_msg: None,
+            remote_init_msg: None,
 
             remote_id: None,
 
-            body_size: None, egress_aes: None, ingress_aes: None,
-            egress_mac: None, ingress_mac: None,
+            body_size: None,
+            egress_aes: None,
+            ingress_aes: None,
+            egress_mac: None,
+            ingress_mac: None,
         })
     }
 
@@ -135,13 +145,16 @@ impl ECIES {
         let mut iv_encrypted = vec![0u8; 16 + data.len()];
         iv_encrypted[0..16].copy_from_slice(iv.as_ref());
 
-        let mut encryptor = CtrMode::new(AesSafe128Encryptor::new(ekey.as_ref()), iv.as_ref().into());
-        encryptor.encrypt(&mut RefReadBuffer::new(data),
-                          &mut RefWriteBuffer::new(&mut iv_encrypted[16..]), true)?;
+        let mut encryptor =
+            CtrMode::new(AesSafe128Encryptor::new(ekey.as_ref()), iv.as_ref().into());
+        encryptor.encrypt(
+            &mut RefReadBuffer::new(data),
+            &mut RefWriteBuffer::new(&mut iv_encrypted[16..]),
+            true,
+        )?;
 
         let tag = hmac_sha256(mkey.as_ref(), iv_encrypted.as_ref());
-        let public_key = PublicKey::from_secret_key(
-            &SECP256K1, &secret_key)?;
+        let public_key = PublicKey::from_secret_key(&SECP256K1, &secret_key)?;
 
         let mut ret = vec![0u8; 65 + 16 + data.len() + 32];
         ret[0..65].copy_from_slice(&public_key.serialize_vec(&SECP256K1, false));
@@ -171,8 +184,11 @@ impl ECIES {
         let mut decrypted_data = vec![0u8; encrypted_data.len()];
 
         let mut encryptor = CtrMode::new(AesSafe128Encryptor::new(ekey.as_ref()), iv.into());
-        encryptor.decrypt(&mut RefReadBuffer::new(&encrypted_data),
-                          &mut RefWriteBuffer::new(&mut decrypted_data), true)?;
+        encryptor.decrypt(
+            &mut RefReadBuffer::new(&encrypted_data),
+            &mut RefWriteBuffer::new(&mut decrypted_data),
+            true,
+        )?;
 
         Ok(decrypted_data)
     }
@@ -201,7 +217,10 @@ impl ECIES {
 
     fn parse_auth_unencrypted(&mut self, data: [u8; AUTH_LEN]) -> Result<(), ECIESError> {
         let sig_rec = RecoverableSignature::from_compact(
-            &SECP256K1, &data[0..64], RecoveryId::from_i32(data[64] as i32)?)?;
+            &SECP256K1,
+            &data[0..64],
+            RecoveryId::from_i32(data[64] as i32)?,
+        )?;
         let heid = H256::from(&data[65..97]);
         self.remote_id = Some(H512::from(&data[97..161]));
         self.remote_public_key = Some(id2pk(H512::from(&data[97..161]))?);
@@ -213,10 +232,13 @@ impl ECIES {
         let x = ecdh_x(self.remote_public_key.as_ref().unwrap(), &self.secret_key);
         let msg = Message::from_slice((x ^ self.remote_nonce.unwrap()).as_ref())?;
         self.remote_ephemeral_public_key = Some(SECP256K1.recover(&msg, &sig_rec)?);
-        self.ephemeral_shared_secret = Some(
-            ecdh_x(self.remote_ephemeral_public_key.as_ref().unwrap(), &self.ephemeral_secret_key));
+        self.ephemeral_shared_secret = Some(ecdh_x(
+            self.remote_ephemeral_public_key.as_ref().unwrap(),
+            &self.ephemeral_secret_key,
+        ));
 
-        let check_heid = keccak256(pk2id(self.remote_ephemeral_public_key.as_ref().unwrap()).as_ref());
+        let check_heid =
+            keccak256(pk2id(self.remote_ephemeral_public_key.as_ref().unwrap()).as_ref());
         if check_heid != heid {
             return Err(ECIESError::TagCheckFailed);
         }
@@ -259,8 +281,10 @@ impl ECIES {
             return Err(ECIESError::InvalidAckData);
         }
 
-        self.ephemeral_shared_secret = Some(
-            ecdh_x(self.remote_ephemeral_public_key.as_ref().unwrap(), &self.ephemeral_secret_key));
+        self.ephemeral_shared_secret = Some(ecdh_x(
+            self.remote_ephemeral_public_key.as_ref().unwrap(),
+            &self.ephemeral_secret_key,
+        ));
         Ok(())
     }
 
@@ -306,8 +330,14 @@ impl ECIES {
             hasher.input(shared_secret.as_ref());
             H256::from(hasher.result().as_ref())
         };
-        self.ingress_aes = Some(CtrMode::new(AesSafe256Encryptor::new(aes_secret.as_ref()), iv.as_ref().into()));
-        self.egress_aes = Some(CtrMode::new(AesSafe256Encryptor::new(aes_secret.as_ref()), iv.as_ref().into()));
+        self.ingress_aes = Some(CtrMode::new(
+            AesSafe256Encryptor::new(aes_secret.as_ref()),
+            iv.as_ref().into(),
+        ));
+        self.egress_aes = Some(CtrMode::new(
+            AesSafe256Encryptor::new(aes_secret.as_ref()),
+            iv.as_ref().into(),
+        ));
 
         let mac_secret: H256 = {
             let mut hasher = Keccak256::new();
@@ -316,11 +346,23 @@ impl ECIES {
             H256::from(hasher.result().as_ref())
         };
         self.ingress_mac = Some(MAC::new(mac_secret));
-        self.ingress_mac.as_mut().unwrap().update((mac_secret ^ self.nonce).as_ref());
-        self.ingress_mac.as_mut().unwrap().update(self.remote_init_msg.as_ref().unwrap());
+        self.ingress_mac
+            .as_mut()
+            .unwrap()
+            .update((mac_secret ^ self.nonce).as_ref());
+        self.ingress_mac
+            .as_mut()
+            .unwrap()
+            .update(self.remote_init_msg.as_ref().unwrap());
         self.egress_mac = Some(MAC::new(mac_secret));
-        self.egress_mac.as_mut().unwrap().update((mac_secret ^ self.remote_nonce.unwrap()).as_ref());
-        self.egress_mac.as_mut().unwrap().update(self.init_msg.as_ref().unwrap());
+        self.egress_mac
+            .as_mut()
+            .unwrap()
+            .update((mac_secret ^ self.remote_nonce.unwrap()).as_ref());
+        self.egress_mac
+            .as_mut()
+            .unwrap()
+            .update(self.init_msg.as_ref().unwrap());
     }
 
     pub fn create_header(&mut self, size: usize) -> Vec<u8> {
@@ -333,8 +375,13 @@ impl ECIES {
         let mut encrypted = [0u8; 16];
         self.egress_aes.as_mut().unwrap().encrypt(
             &mut RefReadBuffer::new(&header),
-            &mut RefWriteBuffer::new(&mut encrypted), false);
-        self.egress_mac.as_mut().unwrap().update_header(encrypted.as_ref());
+            &mut RefWriteBuffer::new(&mut encrypted),
+            false,
+        );
+        self.egress_mac
+            .as_mut()
+            .unwrap()
+            .update_header(encrypted.as_ref());
         let tag = self.egress_mac.as_mut().unwrap().digest();
 
         let mut ret = Vec::new();
@@ -360,7 +407,9 @@ impl ECIES {
         let mut decrypted = [0u8; 16];
         self.ingress_aes.as_mut().unwrap().decrypt(
             &mut RefReadBuffer::new(&header),
-            &mut RefWriteBuffer::new(&mut decrypted), false);
+            &mut RefWriteBuffer::new(&mut decrypted),
+            false,
+        );
         self.body_size = Some(decrypted.as_ref().read_uint::<BigEndian>(3)? as usize);
 
         Ok(self.body_size.unwrap())
@@ -400,8 +449,13 @@ impl ECIES {
         let mut encrypted = vec![0u8; len];
         self.egress_aes.as_mut().unwrap().encrypt(
             &mut RefReadBuffer::new(&data_padded),
-            &mut RefWriteBuffer::new(&mut encrypted), false);
-        self.egress_mac.as_mut().unwrap().update_body(encrypted.as_ref());
+            &mut RefWriteBuffer::new(&mut encrypted),
+            false,
+        );
+        self.egress_mac
+            .as_mut()
+            .unwrap()
+            .update_body(encrypted.as_ref());
         let tag = self.egress_mac.as_mut().unwrap().digest();
         let mut ret = vec![0u8; len + 16];
         ret[0..len].copy_from_slice(encrypted.as_ref());
@@ -410,8 +464,8 @@ impl ECIES {
     }
 
     pub fn parse_body(&mut self, data: &[u8]) -> Result<Vec<u8>, ECIESError> {
-        let body = &data[0..data.len()-16];
-        let mac = H128::from(&data[data.len()-16..]);
+        let body = &data[0..data.len() - 16];
+        let mac = H128::from(&data[data.len() - 16..]);
         self.ingress_mac.as_mut().unwrap().update_body(body);
         let check_mac = self.ingress_mac.as_mut().unwrap().digest();
         if check_mac != mac {
@@ -420,10 +474,12 @@ impl ECIES {
 
         let size = self.body_size.unwrap();
         self.body_size = None;
-        let mut ret = vec![0u8; data.len()-16];
+        let mut ret = vec![0u8; data.len() - 16];
         self.ingress_aes.as_mut().unwrap().decrypt(
             &mut RefReadBuffer::new(&body),
-            &mut RefWriteBuffer::new(&mut ret), false);
+            &mut RefWriteBuffer::new(&mut ret),
+            false,
+        );
         while ret.len() > size {
             ret.pop();
         }
@@ -433,25 +489,24 @@ impl ECIES {
 
 #[cfg(test)]
 mod tests {
-    use util::{keccak256, pk2id, id2pk};
-    use secp256k1::{SECP256K1, Message};
+    use super::ECIES;
+    use bigint::{H256, H512};
+    use rand::os::OsRng;
     use secp256k1::ecdh::SharedSecret;
     use secp256k1::key::{PublicKey, SecretKey};
-    use bigint::{H512, H256};
-    use rand::os::OsRng;
-    use super::ECIES;
+    use secp256k1::{Message, SECP256K1};
+    use util::{id2pk, keccak256, pk2id};
 
     #[test]
     fn communicate() {
         let server_secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
-        let server_public_key = PublicKey::from_secret_key(
-            &SECP256K1, &server_secret_key).unwrap();
+        let server_public_key = PublicKey::from_secret_key(&SECP256K1, &server_secret_key).unwrap();
         let client_secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
-        let client_public_key = PublicKey::from_secret_key(
-            &SECP256K1, &client_secret_key).unwrap();
+        let client_public_key = PublicKey::from_secret_key(&SECP256K1, &client_secret_key).unwrap();
 
         let mut server_ecies = ECIES::new_server(server_secret_key).unwrap();
-        let mut client_ecies = ECIES::new_client(client_secret_key, pk2id(&server_public_key)).unwrap();
+        let mut client_ecies =
+            ECIES::new_client(client_secret_key, pk2id(&server_public_key)).unwrap();
 
         // Handshake
         let auth = client_ecies.create_auth().unwrap();
@@ -474,38 +529,68 @@ mod tests {
         assert_eq!(ret, server_to_client_data);
 
         // Test client to server 1
-        server_ecies.parse_header(
-            client_ecies.create_header(client_to_server_data.len()).as_ref()).unwrap();
-        let ret = server_ecies.parse_body(
-            client_ecies.create_body(&client_to_server_data).as_ref()).unwrap();
+        server_ecies
+            .parse_header(
+                client_ecies
+                    .create_header(client_to_server_data.len())
+                    .as_ref(),
+            )
+            .unwrap();
+        let ret = server_ecies
+            .parse_body(client_ecies.create_body(&client_to_server_data).as_ref())
+            .unwrap();
         assert_eq!(ret, client_to_server_data);
 
         // Test server to client 2
-        client_ecies.parse_header(
-            server_ecies.create_header(server_to_client_data.len()).as_ref()).unwrap();
-        let ret = client_ecies.parse_body(
-            server_ecies.create_body(&server_to_client_data).as_ref()).unwrap();
+        client_ecies
+            .parse_header(
+                server_ecies
+                    .create_header(server_to_client_data.len())
+                    .as_ref(),
+            )
+            .unwrap();
+        let ret = client_ecies
+            .parse_body(server_ecies.create_body(&server_to_client_data).as_ref())
+            .unwrap();
         assert_eq!(ret, server_to_client_data);
 
         // Test server to client 3
-        client_ecies.parse_header(
-            server_ecies.create_header(server_to_client_data.len()).as_ref()).unwrap();
-        let ret = client_ecies.parse_body(
-            server_ecies.create_body(&server_to_client_data).as_ref()).unwrap();
+        client_ecies
+            .parse_header(
+                server_ecies
+                    .create_header(server_to_client_data.len())
+                    .as_ref(),
+            )
+            .unwrap();
+        let ret = client_ecies
+            .parse_body(server_ecies.create_body(&server_to_client_data).as_ref())
+            .unwrap();
         assert_eq!(ret, server_to_client_data);
 
         // Test client to server 2
-        server_ecies.parse_header(
-            client_ecies.create_header(client_to_server_data.len()).as_ref()).unwrap();
-        let ret = server_ecies.parse_body(
-            client_ecies.create_body(&client_to_server_data).as_ref()).unwrap();
+        server_ecies
+            .parse_header(
+                client_ecies
+                    .create_header(client_to_server_data.len())
+                    .as_ref(),
+            )
+            .unwrap();
+        let ret = server_ecies
+            .parse_body(client_ecies.create_body(&client_to_server_data).as_ref())
+            .unwrap();
         assert_eq!(ret, client_to_server_data);
 
         // Test client to server 3
-        server_ecies.parse_header(
-            client_ecies.create_header(client_to_server_data.len()).as_ref()).unwrap();
-        let ret = server_ecies.parse_body(
-            client_ecies.create_body(&client_to_server_data).as_ref()).unwrap();
+        server_ecies
+            .parse_header(
+                client_ecies
+                    .create_header(client_to_server_data.len())
+                    .as_ref(),
+            )
+            .unwrap();
+        let ret = server_ecies
+            .parse_body(client_ecies.create_body(&client_to_server_data).as_ref())
+            .unwrap();
         assert_eq!(ret, client_to_server_data);
     }
 }

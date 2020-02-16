@@ -1,15 +1,15 @@
-extern crate dpt;
-extern crate rand;
-extern crate secp256k1;
-extern crate hexutil;
 extern crate bigint;
+extern crate dpt;
+extern crate hexutil;
+extern crate rand;
 extern crate rlp;
+extern crate secp256k1;
 extern crate url;
 
 #[macro_use]
 extern crate futures;
-extern crate tokio_io;
 extern crate tokio_core;
+extern crate tokio_io;
 extern crate tokio_timer;
 
 #[macro_use]
@@ -17,18 +17,18 @@ extern crate log;
 extern crate env_logger;
 
 use bigint::H512;
-use tokio_core::reactor::{Core, Timeout};
-use tokio_timer::{wheel, TimeoutStream, TimeoutError};
-use secp256k1::SECP256K1;
-use secp256k1::key::{PublicKey, SecretKey};
-use rand::os::OsRng;
-use futures::future::{self, Loop};
-use futures::{Stream, Sink, Future};
-use std::str::FromStr;
 use dpt::{DPTMessage, DPTNode, DPTStream};
-use url::Url;
-use std::time::{Instant, Duration};
+use futures::future::{self, Loop};
+use futures::{Future, Sink, Stream};
+use rand::os::OsRng;
+use secp256k1::key::{PublicKey, SecretKey};
+use secp256k1::SECP256K1;
 use std::io;
+use std::str::FromStr;
+use std::time::{Duration, Instant};
+use tokio_core::reactor::{Core, Timeout};
+use tokio_timer::{wheel, TimeoutError, TimeoutStream};
+use url::Url;
 
 // const BOOTSTRAP_NODES: [&str; 10] = [
 //     "enode://e809c4a2fec7daed400e5e28564e23693b23b2cc5a019b612505631bbe7b9ccf709c1796d2a3d29ef2b045f210caf51e3c4f5b6d3587d43ad5d6397526fa6179@174.112.32.157:30303",
@@ -74,44 +74,59 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let client = DPTStream::new(
-        &addr, &handle,
+        &addr,
+        &handle,
         SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap()),
-        BOOTSTRAP_NODES.iter().map(|v| DPTNode::from_url(&Url::parse(v).unwrap()).unwrap()).collect(),
-        &"127.0.0.1".parse().unwrap(), 50505).unwrap();
+        BOOTSTRAP_NODES
+            .iter()
+            .map(|v| DPTNode::from_url(&Url::parse(v).unwrap()).unwrap())
+            .collect(),
+        &"127.0.0.1".parse().unwrap(),
+        50505,
+    )
+    .unwrap();
 
     const sec: u64 = 5;
     const dur: u32 = 500;
 
-    let cycle = future::loop_fn(wheel().build().timeout_stream(client, Duration::new(sec, dur)), |client| {
-        client.into_future().then(|val| {
-            match val {
+    let cycle = future::loop_fn(
+        wheel()
+            .build()
+            .timeout_stream(client, Duration::new(sec, dur)),
+        |client| {
+            client.into_future().then(|val| match val {
                 Ok((peer, timeout_client)) => {
                     println!("new peer: {:?}", peer);
-                    future::ok(
-                        Loop::Continue(wheel().build().timeout_stream(timeout_client.into_inner(), Duration::new(sec, dur))))
-                        .boxed()
-                },
+                    future::ok(Loop::Continue(wheel().build().timeout_stream(
+                        timeout_client.into_inner(),
+                        Duration::new(sec, dur),
+                    )))
+                    .boxed()
+                }
                 Err((TimeoutError::TimedOut(client), s)) => {
                     println!("timed out, requesting new peer ...");
                     client
                         .send(DPTMessage::RequestNewPeer)
                         .and_then(|client| {
-                            Ok(Loop::Continue(wheel().build().timeout_stream(client, Duration::new(sec, dur))))
-                        }).boxed()
-                },
+                            Ok(Loop::Continue(
+                                wheel()
+                                    .build()
+                                    .timeout_stream(client, Duration::new(sec, dur)),
+                            ))
+                        })
+                        .boxed()
+                }
                 Err((TimeoutError::Inner(err), s)) => {
                     println!("{:?}", err);
-                    future::ok(
-                        Loop::Break(TimeoutError::Inner(err))).boxed()
-                },
+                    future::ok(Loop::Break(TimeoutError::Inner(err))).boxed()
+                }
                 Err((err, s)) => {
                     println!("{:?}", err);
-                    future::ok(
-                        Loop::Break(err)).boxed()
-                },
-            }
-        })
-    });
+                    future::ok(Loop::Break(err)).boxed()
+                }
+            })
+        },
+    );
 
     core.run(cycle).unwrap();
 }

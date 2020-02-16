@@ -1,12 +1,12 @@
-use sha3::{Digest, Keccak256};
-use secp256k1::{self, SECP256K1};
-use secp256k1::key::PublicKey;
 use bigint::{H256, H512};
+use crypto::aessafe::AesSafe128Encryptor;
+use crypto::blockmodes::CtrMode;
+use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
 use crypto::hmac::Hmac;
 use crypto::mac::Mac;
-use crypto::blockmodes::CtrMode;
-use crypto::aessafe::AesSafe128Encryptor;
-use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
+use secp256k1::key::PublicKey;
+use secp256k1::{self, SECP256K1};
+use sha3::{Digest, Keccak256};
 
 pub fn keccak256(data: &[u8]) -> H256 {
     let mut hasher = Keccak256::new();
@@ -51,8 +51,8 @@ pub fn id2pk(id: H512) -> Result<PublicKey, secp256k1::Error> {
 #[cfg(test)]
 mod tests {
     use rand::os::OsRng;
+    use secp256k1::key::{PublicKey, SecretKey};
     use secp256k1::SECP256K1;
-    use secp256k1::key::{SecretKey, PublicKey};
     use util::*;
 
     #[test]

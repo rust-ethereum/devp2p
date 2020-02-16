@@ -1,37 +1,37 @@
-extern crate devp2p;
-extern crate rand;
-extern crate secp256k1;
 extern crate bigint;
-extern crate rlp;
 extern crate block;
+extern crate devp2p;
 extern crate hexutil;
+extern crate rand;
+extern crate rlp;
+extern crate secp256k1;
 
 #[macro_use]
 extern crate log;
 #[macro_use]
 extern crate futures;
-extern crate tokio_io;
-extern crate tokio_core;
 extern crate env_logger;
-extern crate url;
 extern crate sha3;
+extern crate tokio_core;
+extern crate tokio_io;
+extern crate url;
 
-use tokio_core::reactor::{Core, Timeout};
-use secp256k1::SECP256K1;
-use secp256k1::key::{PublicKey, SecretKey};
-use rand::os::OsRng;
-use futures::future;
-use futures::{Stream, Sink, Future};
-use std::str::FromStr;
-use std::time::{Instant, Duration};
-use devp2p::{ETHSendMessage, ETHReceiveMessage, ETHMessage, ETHStream, DevP2PConfig};
-use devp2p::rlpx::RLPxNode;
+use bigint::{H256, H512, U256};
+use block::{Block, Header};
 use devp2p::dpt::DPTNode;
-use bigint::{H256, U256, H512};
-use url::Url;
-use sha3::{Digest, Keccak256};
-use block::{Header, Block};
+use devp2p::rlpx::RLPxNode;
+use devp2p::{DevP2PConfig, ETHMessage, ETHReceiveMessage, ETHSendMessage, ETHStream};
+use futures::future;
+use futures::{Future, Sink, Stream};
 use hexutil::*;
+use rand::os::OsRng;
+use secp256k1::key::{PublicKey, SecretKey};
+use secp256k1::SECP256K1;
+use sha3::{Digest, Keccak256};
+use std::str::FromStr;
+use std::time::{Duration, Instant};
+use tokio_core::reactor::{Core, Timeout};
+use url::Url;
 
 const GENESIS_HASH: &str = "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3";
 const GENESIS_DIFFICULTY: usize = 17179869184;
@@ -64,13 +64,19 @@ fn main() {
     let handle = core.handle();
 
     let mut client = ETHStream::new(
-        &addr, &public_addr, &handle,
+        &addr,
+        &public_addr,
+        &handle,
         SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap()),
-        "etclient Rust/0.1.0".to_string(), 1,
+        "etclient Rust/0.1.0".to_string(),
+        1,
         H256::from_str(GENESIS_HASH).unwrap(),
         H256::from_str(GENESIS_HASH).unwrap(),
         U256::from(GENESIS_DIFFICULTY),
-        BOOTSTRAP_NODES.iter().map(|v| DPTNode::from_url(&Url::parse(v).unwrap()).unwrap()).collect(),
+        BOOTSTRAP_NODES
+            .iter()
+            .map(|v| DPTNode::from_url(&Url::parse(v).unwrap()).unwrap())
+            .collect(),
         DevP2PConfig {
             ping_interval: Duration::new(600, 0),
             ping_timeout_interval: Duration::new(700, 0),
@@ -78,7 +84,9 @@ fn main() {
             optimal_peers_interval: Duration::new(5, 0),
             reconnect_dividend: 5,
             listen: false,
-        }).unwrap();
+        },
+    )
+    .unwrap();
 
     let mut best_number: U256 = U256::zero();
     let mut best_hash: H256 = H256::from_str(GENESIS_HASH).unwrap();
@@ -95,10 +103,7 @@ fn main() {
     let mut active_peers = 0;
 
     loop {
-        let ret = match core.run(
-            client_future
-                .select2(timeout)
-        ) {
+        let ret = match core.run(client_future.select2(timeout)) {
             Ok(ret) => ret,
             Err(_) => break,
         };
@@ -107,20 +112,22 @@ fn main() {
             future::Either::A(((val, new_client), t)) => {
                 timeout = t.boxed();
                 (val, new_client)
-            },
+            }
             future::Either::B((_, fu)) => {
                 client_future = fu;
 
                 println!("request downloading header ...");
-                client_sender = core.run(client_sender.send(ETHSendMessage {
-                    node: RLPxNode::Any,
-                    data: ETHMessage::GetBlockHeadersByHash {
-                        hash: best_hash,
-                        max_headers: req_max_headers,
-                        skip: 0,
-                        reverse: false,
-                    }
-                })).unwrap();
+                client_sender = core
+                    .run(client_sender.send(ETHSendMessage {
+                        node: RLPxNode::Any,
+                        data: ETHMessage::GetBlockHeadersByHash {
+                            hash: best_hash,
+                            max_headers: req_max_headers,
+                            skip: 0,
+                            reverse: false,
+                        },
+                    }))
+                    .unwrap();
 
                 timeout = Timeout::new(dur, &handle).unwrap().boxed();
 
@@ -135,92 +142,108 @@ fn main() {
 
         match val {
             ETHReceiveMessage::Normal {
-                node, data, version
-            } => {
-                match data {
-                    ETHMessage::Status { .. } => (),
+                node,
+                data,
+                version,
+            } => match data {
+                ETHMessage::Status { .. } => (),
 
-                    ETHMessage::Transactions(_) => {
-                        println!("received new transactions");
-                    },
+                ETHMessage::Transactions(_) => {
+                    println!("received new transactions");
+                }
 
-                    ETHMessage::GetBlockHeadersByNumber {
-                        number, max_headers, skip, reverse
-                    } => {
-                        if number == U256::from(1920000) {
-                            println!("requested DAO header");
-                            let block_raw = read_hex(ETC_DAO_BLOCK).unwrap();
-                            let block: Block = rlp::decode(&block_raw);
-                            client_sender = core.run(client_sender.send(ETHSendMessage {
+                ETHMessage::GetBlockHeadersByNumber {
+                    number,
+                    max_headers,
+                    skip,
+                    reverse,
+                } => {
+                    if number == U256::from(1920000) {
+                        println!("requested DAO header");
+                        let block_raw = read_hex(ETC_DAO_BLOCK).unwrap();
+                        let block: Block = rlp::decode(&block_raw);
+                        client_sender = core
+                            .run(client_sender.send(ETHSendMessage {
                                 node: RLPxNode::Peer(node),
-                                data: ETHMessage::BlockHeaders(vec![ block.header ]),
-                            })).unwrap();
-                        } else {
-                            println!("requested header {}", number);
-                            client_sender = core.run(client_sender.send(ETHSendMessage {
+                                data: ETHMessage::BlockHeaders(vec![block.header]),
+                            }))
+                            .unwrap();
+                    } else {
+                        println!("requested header {}", number);
+                        client_sender = core
+                            .run(client_sender.send(ETHSendMessage {
                                 node: RLPxNode::Peer(node),
                                 data: ETHMessage::BlockHeaders(Vec::new()),
-                            })).unwrap();
-                        }
-                    },
+                            }))
+                            .unwrap();
+                    }
+                }
 
-                    ETHMessage::GetBlockHeadersByHash {
-                        hash, max_headers, skip, reverse
-                    } => {
-                        println!("requested header {}", hash);
-                        client_sender = core.run(client_sender.send(ETHSendMessage {
+                ETHMessage::GetBlockHeadersByHash {
+                    hash,
+                    max_headers,
+                    skip,
+                    reverse,
+                } => {
+                    println!("requested header {}", hash);
+                    client_sender = core
+                        .run(client_sender.send(ETHSendMessage {
                             node: RLPxNode::Peer(node),
                             data: ETHMessage::BlockHeaders(Vec::new()),
-                        })).unwrap();
-                    },
+                        }))
+                        .unwrap();
+                }
 
-                    ETHMessage::GetBlockBodies(hash) => {
-                        println!("requested body {:?}", hash);
-                        client_sender = core.run(client_sender.send(ETHSendMessage {
+                ETHMessage::GetBlockBodies(hash) => {
+                    println!("requested body {:?}", hash);
+                    client_sender = core
+                        .run(client_sender.send(ETHSendMessage {
                             node: RLPxNode::Peer(node),
                             data: ETHMessage::BlockBodies(Vec::new()),
-                        })).unwrap();
-                    },
+                        }))
+                        .unwrap();
+                }
 
-                    ETHMessage::BlockHeaders(ref headers) => {
-                        println!("received block headers of len {}", headers.len());
-                        if got_bodies_for_current {
-                            for header in headers {
-                                if header.parent_hash == best_hash {
-                                    best_hash = keccak256(&rlp::encode(header).to_vec());
-                                    best_number = header.number;
-                                    println!("updated best number: {}", header.number);
-                                    println!("updated best hash: 0x{:x}", best_hash);
-                                }
+                ETHMessage::BlockHeaders(ref headers) => {
+                    println!("received block headers of len {}", headers.len());
+                    if got_bodies_for_current {
+                        for header in headers {
+                            if header.parent_hash == best_hash {
+                                best_hash = keccak256(&rlp::encode(header).to_vec());
+                                best_number = header.number;
+                                println!("updated best number: {}", header.number);
+                                println!("updated best hash: 0x{:x}", best_hash);
                             }
                         }
-                        client_sender = core.run(client_sender.send(ETHSendMessage {
+                    }
+                    client_sender = core
+                        .run(client_sender.send(ETHSendMessage {
                             node: RLPxNode::Any,
                             data: ETHMessage::GetBlockHeadersByHash {
                                 hash: best_hash,
                                 max_headers: req_max_headers,
                                 skip: 0,
                                 reverse: false,
-                            }
-                        })).unwrap();
-                        timeout = Timeout::new(dur, &handle).unwrap().boxed();
-                    },
+                            },
+                        }))
+                        .unwrap();
+                    timeout = Timeout::new(dur, &handle).unwrap().boxed();
+                }
 
-                    ETHMessage::BlockBodies(ref bodies) => {
-                        println!("received block bodies of len {}", bodies.len());
-                    },
+                ETHMessage::BlockBodies(ref bodies) => {
+                    println!("received block bodies of len {}", bodies.len());
+                }
 
-                    msg => {
-                        println!("received {:?}", msg);
-                    },
+                msg => {
+                    println!("received {:?}", msg);
                 }
             },
             ETHReceiveMessage::Connected { .. } => {
                 active_peers += 1;
-            },
+            }
             ETHReceiveMessage::Disconnected { .. } => {
                 active_peers -= 1;
-            },
+            }
         }
 
         println!("current active peers: {}", active_peers);

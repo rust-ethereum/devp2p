@@ -1,14 +1,14 @@
-use dpt::{DPTNode, DPTStream, DPTMessage};
-use rlpx::{RLPxSendMessage, RLPxReceiveMessage, CapabilityInfo, RLPxStream};
-use tokio_core::reactor::{Handle, Timeout};
-use std::time::Duration;
-use std::net::{IpAddr, SocketAddr};
+use bigint::H512;
+use dpt::{DPTMessage, DPTNode, DPTStream};
+use futures::{future, Async, Future, Poll, Sink, StartSend, Stream};
+use rand::{thread_rng, Rng};
+use rlpx::{CapabilityInfo, RLPxReceiveMessage, RLPxSendMessage, RLPxStream};
+use secp256k1::key::SecretKey;
 use std::cmp::min;
 use std::io;
-use secp256k1::key::SecretKey;
-use futures::{StartSend, Async, Poll, Stream, Sink, Future, future};
-use bigint::H512;
-use rand::{thread_rng, Rng};
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
+use tokio_core::reactor::{Handle, Timeout};
 
 /// Config for DevP2P
 pub struct DevP2PConfig {
@@ -34,35 +34,47 @@ pub struct DevP2PStream {
 
 impl DevP2PStream {
     /// Create a new DevP2P stream
-    pub fn new(addr: &SocketAddr, public_addr: &IpAddr,
-               handle: &Handle, secret_key: SecretKey,
-               protocol_version: usize, client_version: String,
-               capabilities: Vec<CapabilityInfo>,
-               bootstrap_nodes: Vec<DPTNode>,
-               config: DevP2PConfig,
+    pub fn new(
+        addr: &SocketAddr,
+        public_addr: &IpAddr,
+        handle: &Handle,
+        secret_key: SecretKey,
+        protocol_version: usize,
+        client_version: String,
+        capabilities: Vec<CapabilityInfo>,
+        bootstrap_nodes: Vec<DPTNode>,
+        config: DevP2PConfig,
     ) -> Result<Self, io::Error> {
         let port = addr.port();
 
-        let mut rlpx = RLPxStream::new(handle, secret_key.clone(),
-                                       protocol_version, client_version,
-                                       capabilities,
-                                       if config.listen {
-                                           Some(addr)
-                                       } else {
-                                           None
-                                       })?;
+        let mut rlpx = RLPxStream::new(
+            handle,
+            secret_key.clone(),
+            protocol_version,
+            client_version,
+            capabilities,
+            if config.listen { Some(addr) } else { None },
+        )?;
 
-        let dpt = DPTStream::new(addr, handle, secret_key.clone(),
-                                 bootstrap_nodes, public_addr, port)?;
+        let dpt = DPTStream::new(
+            addr,
+            handle,
+            secret_key.clone(),
+            bootstrap_nodes,
+            public_addr,
+            port,
+        )?;
 
         let ping_timeout = Timeout::new(config.ping_interval, handle)?;
         let optimal_peers_timeout = Timeout::new(config.optimal_peers_interval, handle)?;
 
         Ok(DevP2PStream {
-            dpt, rlpx, ping_timeout,
+            dpt,
+            rlpx,
+            ping_timeout,
             optimal_peers_timeout,
             config,
-            handle: handle.clone()
+            handle: handle.clone(),
         })
     }
 
@@ -86,7 +98,8 @@ impl DevP2PStream {
                 Ok(_) => return Ok(Async::Ready(())),
                 Err(e) => return Err(e),
             };
-            self.rlpx.add_peer(&SocketAddr::new(node.address, node.tcp_port), node.id);
+            self.rlpx
+                .add_peer(&SocketAddr::new(node.address, node.tcp_port), node.id);
         }
     }
 
@@ -98,29 +111,34 @@ impl DevP2PStream {
                 Async::NotReady => return Ok(Async::Ready(())),
                 Async::Ready(()) => {
                     if self.rlpx.active_peers().len() < self.config.optimal_peers_len {
-                        error!("not enough peers (only {}), requesting new ...", self.rlpx.active_peers().len());
+                        error!(
+                            "not enough peers (only {}), requesting new ...",
+                            self.rlpx.active_peers().len()
+                        );
                         self.dpt.start_send(DPTMessage::RequestNewPeer)?;
                         self.dpt.poll_complete()?;
 
                         debug!("reconnect to old connected peers ...");
                         let mut connected: Vec<DPTNode> = self.dpt.connected_peers().into();
                         thread_rng().shuffle(&mut connected);
-                        for i in 0..min(self.config.optimal_peers_len - self.rlpx.active_peers().len(),
-                                        connected.len() / self.config.reconnect_dividend) {
-                            self.rlpx.add_peer(&SocketAddr::new(connected[i].address,
-                                                                connected[i].tcp_port),
-                                               connected[i].id);
+                        for i in 0..min(
+                            self.config.optimal_peers_len - self.rlpx.active_peers().len(),
+                            connected.len() / self.config.reconnect_dividend,
+                        ) {
+                            self.rlpx.add_peer(
+                                &SocketAddr::new(connected[i].address, connected[i].tcp_port),
+                                connected[i].id,
+                            );
                         }
                     }
 
-                    self.optimal_peers_timeout = Timeout::new(self.config.optimal_peers_interval,
-                                                              &self.handle)?;
+                    self.optimal_peers_timeout =
+                        Timeout::new(self.config.optimal_peers_interval, &self.handle)?;
 
                     result = self.optimal_peers_timeout.poll()?;
                 }
             }
         }
-
 
         Ok(Async::Ready(()))
     }
@@ -133,12 +151,14 @@ impl DevP2PStream {
                 Async::NotReady => return Ok(Async::Ready(())),
                 Async::Ready(()) => {
                     self.dpt.start_send(DPTMessage::Ping(Timeout::new(
-                        self.config.ping_timeout_interval, &self.handle)?))?;
+                        self.config.ping_timeout_interval,
+                        &self.handle,
+                    )?))?;
                     self.dpt.poll_complete()?;
                     self.ping_timeout = Timeout::new(self.config.ping_interval, &self.handle)?;
 
                     result = self.ping_timeout.poll()?;
-                },
+                }
             }
         }
 

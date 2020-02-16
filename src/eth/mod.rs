@@ -1,17 +1,17 @@
 mod proto;
 
-use futures::{StartSend, Async, Poll, Stream, Sink, AsyncSink, Future, future};
-use rlp::{self, UntrustedRlp};
-use bigint::{H512, H256, U256};
-use rlpx::{RLPxSendMessage, RLPxReceiveMessage, RLPxNode, CapabilityInfo};
+use bigint::{H256, H512, U256};
 use dpt::DPTNode;
+use futures::{future, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use rlp::{self, UntrustedRlp};
+use rlpx::{CapabilityInfo, RLPxNode, RLPxReceiveMessage, RLPxSendMessage};
 use secp256k1::key::SecretKey;
-use tokio_core::reactor::Handle;
 use std::io;
-use std::time::Duration;
 use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
+use tokio_core::reactor::Handle;
 
-use super::{DevP2PStream, DevP2PConfig};
+use super::{DevP2PConfig, DevP2PStream};
 
 pub use self::proto::ETHMessage;
 
@@ -23,7 +23,7 @@ pub enum ETHReceiveMessage {
         version: usize,
     },
     Disconnected {
-        node: H512
+        node: H512,
     },
     Normal {
         node: H512,
@@ -50,23 +50,42 @@ pub struct ETHStream {
 
 impl ETHStream {
     /// Create a new ETH stream
-    pub fn new(addr: &SocketAddr, public_addr: &IpAddr,
-               handle: &Handle, secret_key: SecretKey,
-               client_version: String, network_id: usize,
-               genesis_hash: H256, best_hash: H256,
-               total_difficulty: U256,
-               bootstrap_nodes: Vec<DPTNode>,
-               config: DevP2PConfig,
+    pub fn new(
+        addr: &SocketAddr,
+        public_addr: &IpAddr,
+        handle: &Handle,
+        secret_key: SecretKey,
+        client_version: String,
+        network_id: usize,
+        genesis_hash: H256,
+        best_hash: H256,
+        total_difficulty: U256,
+        bootstrap_nodes: Vec<DPTNode>,
+        config: DevP2PConfig,
     ) -> Result<Self, io::Error> {
         Ok(ETHStream {
-            stream: DevP2PStream::new(addr, public_addr, handle, secret_key,
-                                      4, client_version,
-                                      vec![CapabilityInfo { name: "eth", version: 62, length: 8 },
-                                           // CapabilityInfo { name: "eth", version: 63, length: 17 },
-                                      ],
-                                      bootstrap_nodes,
-                                      config)?,
-            genesis_hash, best_hash, total_difficulty, network_id
+            stream: DevP2PStream::new(
+                addr,
+                public_addr,
+                handle,
+                secret_key,
+                4,
+                client_version,
+                vec![
+                    CapabilityInfo {
+                        name: "eth",
+                        version: 62,
+                        length: 8,
+                    },
+                    // CapabilityInfo { name: "eth", version: 63, length: 17 },
+                ],
+                bootstrap_nodes,
+                config,
+            )?,
+            genesis_hash,
+            best_hash,
+            total_difficulty,
+            network_id,
         })
     }
 
@@ -126,35 +145,41 @@ impl Stream for ETHStream {
                         best_hash,
                         genesis_hash,
                         protocol_version: version,
-                    }
+                    },
                 })?;
                 self.poll_complete()?;
 
                 return Ok(Async::Ready(Some(ETHReceiveMessage::Connected {
-                    node, version
-                })))
-            },
+                    node,
+                    version,
+                })));
+            }
             RLPxReceiveMessage::Disconnected { node } => {
-                return Ok(Async::Ready(Some(ETHReceiveMessage::Disconnected {
-                    node
-                })))
-            },
+                return Ok(Async::Ready(Some(ETHReceiveMessage::Disconnected { node })))
+            }
             RLPxReceiveMessage::Normal {
-                node, capability, id, data,
+                node,
+                capability,
+                id,
+                data,
             } => {
                 debug!("got eth message with id {}", id);
                 let message = match ETHMessage::decode(&UntrustedRlp::new(&data), id) {
                     Ok(val) => val,
                     Err(_) => {
-                        debug!("got an ununderstandable message with id {}, data {:?}, ignoring.", id, data);
+                        debug!(
+                            "got an ununderstandable message with id {}, data {:?}, ignoring.",
+                            id, data
+                        );
                         return self.poll();
-                    },
+                    }
                 };
                 return Ok(Async::Ready(Some(ETHReceiveMessage::Normal {
-                    node, version: capability.version,
+                    node,
+                    version: capability.version,
                     data: message,
-                })))
-            },
+                })));
+            }
         }
     }
 }

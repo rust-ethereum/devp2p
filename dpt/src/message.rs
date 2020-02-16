@@ -1,12 +1,12 @@
-use rlp::{Encodable, Decodable, DecoderError, UntrustedRlp, RlpStream};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use bigint::{H256, H512};
+use rlp::{Decodable, DecoderError, Encodable, RlpStream, UntrustedRlp};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub struct Neighbour {
     pub address: IpAddr,
     pub udp_port: u16,
     pub tcp_port: u16,
-    pub id: H512
+    pub id: H512,
 }
 
 impl Encodable for Neighbour {
@@ -74,8 +74,12 @@ impl Decodable for Endpoint {
     fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
         let address_raw: Vec<u8> = rlp.val_at(0)?;
         let address = if address_raw.len() == 4 {
-            IpAddr::V4(Ipv4Addr::new(address_raw[0], address_raw[1],
-                                     address_raw[2], address_raw[3]))
+            IpAddr::V4(Ipv4Addr::new(
+                address_raw[0],
+                address_raw[1],
+                address_raw[2],
+                address_raw[3],
+            ))
         } else if address_raw.len() == 16 {
             let mut raw = [0u8; 16];
             for i in 0..16 {

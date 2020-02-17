@@ -2,20 +2,23 @@ mod proto;
 
 use bigint::{H256, H512, U256};
 use dpt::DPTNode;
-use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
+use futures::{try_ready, Async, AsyncSink, Poll, Sink, StartSend, Stream};
+use log::*;
 use rlp::{self, UntrustedRlp};
 use rlpx::{CapabilityInfo, RLPxNode, RLPxReceiveMessage, RLPxSendMessage};
 use secp256k1::key::SecretKey;
-use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    io,
+    net::{IpAddr, SocketAddr},
+};
 use tokio_core::reactor::Handle;
 
 use super::{DevP2PConfig, DevP2PStream};
 
 pub use self::proto::ETHMessage;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// Receiving message of ETH
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ETHReceiveMessage {
     Connected {
         node: H512,

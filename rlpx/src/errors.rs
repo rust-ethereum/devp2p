@@ -1,5 +1,4 @@
 use crypto::symmetriccipher::SymmetricCipherError;
-use secp256k1;
 use std::io;
 
 #[derive(Debug)]

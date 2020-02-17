@@ -1,31 +1,15 @@
-extern crate bigint;
-extern crate block;
-extern crate devp2p;
-extern crate env_logger;
-extern crate futures;
-extern crate hexutil;
-extern crate rand;
-extern crate rlp;
-extern crate secp256k1;
-extern crate sha3;
-extern crate tokio_core;
-extern crate tokio_io;
-extern crate url;
-
 use bigint::{H256, U256};
 use block::Block;
-use devp2p::dpt::DPTNode;
-use devp2p::rlpx::RLPxNode;
-use devp2p::{DevP2PConfig, ETHMessage, ETHReceiveMessage, ETHSendMessage, ETHStream};
-use futures::future;
-use futures::{Future, Sink, Stream};
+use devp2p::{
+    dpt::DPTNode, rlpx::RLPxNode, DevP2PConfig, ETHMessage, ETHReceiveMessage, ETHSendMessage,
+    ETHStream,
+};
+use futures::{future, Future, Sink, Stream};
 use hexutil::*;
 use rand::os::OsRng;
-use secp256k1::key::SecretKey;
-use secp256k1::SECP256K1;
+use secp256k1::{key::SecretKey, SECP256K1};
 use sha3::{Digest, Keccak256};
-use std::str::FromStr;
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 use tokio_core::reactor::{Core, Timeout};
 use url::Url;
 

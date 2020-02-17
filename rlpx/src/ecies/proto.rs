@@ -1,15 +1,13 @@
 use super::algorithm::ECIES;
+use crate::errors::ECIESError;
 use bigint::H512;
 use bytes::BytesMut;
-use errors::ECIESError;
-use futures::future;
-use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use futures::{future, try_ready, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use log::*;
 use secp256k1::key::SecretKey;
-use std::io;
-use std::net::SocketAddr;
+use std::{io, net::SocketAddr};
 use tokio_codec::{Decoder, Encoder, Framed};
-use tokio_core::net::TcpStream;
-use tokio_core::reactor::Handle;
+use tokio_core::{net::TcpStream, reactor::Handle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Current ECIES state of a connection
@@ -167,8 +165,7 @@ impl ECIESStream {
                 return Box::new(future::err(io::Error::new(
                     io::ErrorKind::Other,
                     "invalid handshake",
-                )))
-                    as Box<dyn Future<Item = ECIESStream, Error = io::Error>>
+                ))) as Box<dyn Future<Item = _, Error = _>>
             }
         };
 
@@ -208,8 +205,7 @@ impl ECIESStream {
                 return Box::new(future::err(io::Error::new(
                     io::ErrorKind::Other,
                     "invalid handshake",
-                )))
-                    as Box<dyn Future<Item = ECIESStream, Error = io::Error>>
+                ))) as Box<dyn Future<Item = _, Error = _>>
             }
         };
 

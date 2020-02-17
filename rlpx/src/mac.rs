@@ -1,9 +1,10 @@
 use bigint::{H128, H256};
-use crypto::aessafe::AesSafe256Encryptor;
-use crypto::blockmodes::EcbEncryptor;
-use crypto::blockmodes::NoPadding;
-use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
-use crypto::symmetriccipher::Encryptor;
+use crypto::{
+    aessafe::AesSafe256Encryptor,
+    blockmodes::{EcbEncryptor, NoPadding},
+    buffer::{RefReadBuffer, RefWriteBuffer},
+    symmetriccipher::Encryptor,
+};
 use sha3::{Digest, Keccak256};
 
 pub struct MAC {

@@ -1,10 +1,8 @@
+use crate::util::{keccak256, pk2id};
 use bigint::{H256, H512};
-use secp256k1::key::SecretKey;
-use secp256k1::{Message, RecoverableSignature, RecoveryId, SECP256K1};
-use std::io;
-use std::net::SocketAddr;
+use secp256k1::{key::SecretKey, Message, RecoverableSignature, RecoveryId, SECP256K1};
+use std::{io, net::SocketAddr};
 use tokio_core::net::UdpCodec;
-use util::{keccak256, pk2id};
 
 macro_rules! try_none {
     ( $ex:expr ) => {

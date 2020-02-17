@@ -1,13 +1,16 @@
 use bigint::H512;
 use dpt::{DPTMessage, DPTNode, DPTStream};
-use futures::{Async, Future, Poll, Sink, StartSend, Stream};
+use futures::{try_ready, Async, Future, Poll, Sink, StartSend, Stream};
+use log::*;
 use rand::{thread_rng, Rng};
 use rlpx::{CapabilityInfo, RLPxReceiveMessage, RLPxSendMessage, RLPxStream};
 use secp256k1::key::SecretKey;
-use std::cmp::min;
-use std::io;
-use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
+use std::{
+    cmp::min,
+    io,
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 use tokio_core::reactor::{Handle, Timeout};
 
 /// Config for DevP2P

@@ -1,18 +1,14 @@
+use crate::{ecies::ECIESStream, util::pk2id};
 use bigint::H512;
-use ecies::ECIESStream;
-use futures::future;
-use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
-use rlp;
+use futures::{future, try_ready, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use log::*;
 use rlp::{Decodable, DecoderError, Encodable, RlpStream, UntrustedRlp};
 use secp256k1::{
     key::{PublicKey, SecretKey},
     SECP256K1,
 };
-use std::io;
-use std::net::SocketAddr;
-use tokio_core::net::TcpStream;
-use tokio_core::reactor::Handle;
-use util::pk2id;
+use std::{io, net::SocketAddr};
+use tokio_core::{net::TcpStream, reactor::Handle};
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 /// Capability information

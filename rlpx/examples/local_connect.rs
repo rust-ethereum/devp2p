@@ -1,22 +1,18 @@
 extern crate bigint;
+extern crate futures;
 extern crate hexutil;
 extern crate rand;
 extern crate rlp;
 extern crate rlpx;
 extern crate secp256k1;
-
-#[macro_use]
-extern crate futures;
 extern crate tokio_core;
-extern crate tokio_io;
 
 use bigint::H512;
 use futures::future;
-use futures::{Future, Sink, Stream};
+use futures::{Future, Stream};
 use rand::os::OsRng;
-use rlpx::ecies::ECIESStream;
 use rlpx::{CapabilityInfo, RLPxStream};
-use secp256k1::key::{PublicKey, SecretKey};
+use secp256k1::key::SecretKey;
 use secp256k1::SECP256K1;
 use std::str::FromStr;
 use tokio_core::reactor::Core;

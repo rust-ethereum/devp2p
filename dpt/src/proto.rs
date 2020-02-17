@@ -4,7 +4,7 @@ use secp256k1::{Message, RecoverableSignature, RecoveryId, SECP256K1};
 use std::io;
 use std::net::SocketAddr;
 use tokio_core::net::UdpCodec;
-use util::{id2pk, keccak256, pk2id};
+use util::{keccak256, pk2id};
 
 macro_rules! try_none {
     ( $ex:expr ) => {

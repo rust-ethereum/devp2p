@@ -7,7 +7,6 @@ extern crate secp256k1;
 extern crate sha3;
 #[macro_use]
 extern crate log;
-#[macro_use]
 extern crate futures;
 extern crate rand;
 extern crate time;
@@ -20,7 +19,6 @@ mod proto;
 mod util;
 
 use bigint::{H256, H512};
-use futures::future;
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use message::*;
 use proto::{DPTCodec, DPTCodecMessage};
@@ -29,36 +27,12 @@ use rlp::UntrustedRlp;
 use secp256k1::key::{PublicKey, SecretKey};
 use secp256k1::SECP256K1;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use tokio_core::net::{UdpFramed, UdpSocket};
 use tokio_core::reactor::{Handle, Timeout};
-use tokio_io::codec::{Decoder, Encoder, Framed};
-use tokio_io::{AsyncRead, AsyncWrite};
 use url::{Host, Url};
-use util::{keccak256, pk2id};
-
-fn retain_mut<T, F>(vec: &mut Vec<T>, mut f: F)
-where
-    F: FnMut(&mut T) -> bool,
-{
-    let len = vec.len();
-    let mut del = 0;
-    {
-        let v = &mut **vec;
-
-        for i in 0..len {
-            if !f(&mut v[i]) {
-                del += 1;
-            } else if del > 0 {
-                v.swap(i - del, i);
-            }
-        }
-    }
-    if del > 0 {
-        vec.truncate(len - del);
-    }
-}
+use util::pk2id;
 
 /// DPT message for requesting new peers or ping with timeout
 pub enum DPTMessage {
@@ -347,10 +321,9 @@ impl Stream for DPTStream {
                 },
                 0x02 /* pong */ => {
                     debug!("got pong message");
-                    let pong_message: PongMessage = match UntrustedRlp::new(&message.data).as_val() {
-                        Ok(val) => val,
-                        Err(_) => continue,
-                    };
+                    if UntrustedRlp::new(&message.data).as_val::<PongMessage>().is_err() {
+                        continue
+                    }
 
                     if self.timeout.is_some() {
                         self.timeout.as_mut().unwrap().1.retain(|v| {

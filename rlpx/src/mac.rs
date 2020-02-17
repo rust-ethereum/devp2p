@@ -30,7 +30,8 @@ impl MAC {
             &mut RefReadBuffer::new(self.digest().as_ref()),
             &mut RefWriteBuffer::new(encrypted.as_mut()),
             true,
-        );
+        )
+        .unwrap();
         for i in 0..data.len() {
             encrypted[i] = encrypted[i] ^ data[i];
         }
@@ -46,7 +47,8 @@ impl MAC {
             &mut RefReadBuffer::new(self.digest().as_ref()),
             &mut RefWriteBuffer::new(encrypted.as_mut()),
             true,
-        );
+        )
+        .unwrap();
         for i in 0..16 {
             encrypted[i] = encrypted[i] ^ prev[i];
         }

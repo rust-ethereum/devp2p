@@ -4,14 +4,14 @@ use futures::future;
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use rlp;
 use rlp::{Decodable, DecoderError, Encodable, RlpStream, UntrustedRlp};
-use secp256k1::key::{PublicKey, SecretKey};
-use secp256k1::{self, SECP256K1};
+use secp256k1::{
+    key::{PublicKey, SecretKey},
+    SECP256K1,
+};
 use std::io;
 use std::net::SocketAddr;
 use tokio_core::net::TcpStream;
 use tokio_core::reactor::Handle;
-use tokio_io::codec::{Decoder, Encoder, Framed};
-use tokio_io::{AsyncRead, AsyncWrite};
 use util::pk2id;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -78,6 +78,7 @@ impl Decodable for HelloMessage {
 }
 
 /// Peer stream of a RLPx
+#[allow(dead_code)]
 pub struct PeerStream {
     stream: ECIESStream,
     protocol_version: usize,
@@ -109,7 +110,7 @@ impl PeerStream {
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Box<Future<Item = PeerStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = PeerStream, Error = io::Error>> {
         Box::new(
             ECIESStream::connect(addr, handle, secret_key.clone(), remote_id).and_then(
                 move |socket| {
@@ -134,7 +135,7 @@ impl PeerStream {
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Box<Future<Item = PeerStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = PeerStream, Error = io::Error>> {
         Box::new(
             ECIESStream::incoming(stream, secret_key.clone()).and_then(move |socket| {
                 PeerStream::new(
@@ -157,14 +158,14 @@ impl PeerStream {
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Box<Future<Item = PeerStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = PeerStream, Error = io::Error>> {
         let public_key = match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
             Ok(key) => key,
             Err(_) => {
                 return Box::new(future::err(io::Error::new(
                     io::ErrorKind::Other,
                     "SECP256K1 public key error",
-                ))) as Box<Future<Item = PeerStream, Error = io::Error>>
+                )))
             }
         };
         let id = pk2id(&public_key);
@@ -261,7 +262,7 @@ impl PeerStream {
                             }
                         }
 
-                        let mut shared_caps_original = shared_capabilities.clone();
+                        let shared_caps_original = shared_capabilities.clone();
 
                         for cap_info in shared_caps_original {
                             shared_capabilities.retain(|v| {

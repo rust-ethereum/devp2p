@@ -7,7 +7,6 @@ use crypto::symmetriccipher::{Decryptor, Encryptor};
 use errors::ECIESError;
 use mac::MAC;
 use rand::os::OsRng;
-use rlp;
 use secp256k1::ecdh::SharedSecret;
 use secp256k1::key::{PublicKey, SecretKey};
 use secp256k1::{Message, RecoverableSignature, RecoveryId, SECP256K1};
@@ -26,11 +25,11 @@ fn ecdh_x(public_key: &PublicKey, secret_key: &SecretKey) -> H256 {
 }
 
 fn concat_kdf(key_material: H256) -> H256 {
-    const SHA256BlockSize: usize = 64;
-    const reps: usize = (32 + 7) * 8 / (SHA256BlockSize * 8);
+    const SHA256_BLOCK_SIZE: usize = 64;
+    const REPS: usize = (32 + 7) * 8 / (SHA256_BLOCK_SIZE * 8);
 
     let mut buffers: Vec<u8> = Vec::new();
-    for counter in 0..(reps + 1) {
+    for counter in 0..(REPS + 1) {
         let mut sha256 = Sha256::new();
         let mut tmp: Vec<u8> = Vec::new();
         tmp.write_u32::<BigEndian>((counter + 1) as u32).unwrap();
@@ -298,7 +297,7 @@ impl ECIES {
         for i in 0..ACK_LEN {
             data[i] = unencrypted[i];
         }
-        self.parse_ack_unencrypted(data);
+        self.parse_ack_unencrypted(data)?;
         self.setup_frame(false);
         Ok(())
     }
@@ -367,17 +366,21 @@ impl ECIES {
 
     pub fn create_header(&mut self, size: usize) -> Vec<u8> {
         let mut buffer = Vec::new();
-        buffer.write_uint::<BigEndian>(size as u64, 3);
+        buffer.write_uint::<BigEndian>(size as u64, 3).unwrap();
         let mut header = [0u8; 16];
         header[0..3].copy_from_slice(buffer.as_ref());
         header[3..6].copy_from_slice(&[194u8, 128u8, 128u8].as_ref());
 
         let mut encrypted = [0u8; 16];
-        self.egress_aes.as_mut().unwrap().encrypt(
-            &mut RefReadBuffer::new(&header),
-            &mut RefWriteBuffer::new(&mut encrypted),
-            false,
-        );
+        self.egress_aes
+            .as_mut()
+            .unwrap()
+            .encrypt(
+                &mut RefReadBuffer::new(&header),
+                &mut RefWriteBuffer::new(&mut encrypted),
+                false,
+            )
+            .unwrap();
         self.egress_mac
             .as_mut()
             .unwrap()
@@ -405,11 +408,15 @@ impl ECIES {
         }
 
         let mut decrypted = [0u8; 16];
-        self.ingress_aes.as_mut().unwrap().decrypt(
-            &mut RefReadBuffer::new(&header),
-            &mut RefWriteBuffer::new(&mut decrypted),
-            false,
-        );
+        self.ingress_aes
+            .as_mut()
+            .unwrap()
+            .decrypt(
+                &mut RefReadBuffer::new(&header),
+                &mut RefWriteBuffer::new(&mut decrypted),
+                false,
+            )
+            .unwrap();
         self.body_size = Some(decrypted.as_ref().read_uint::<BigEndian>(3)? as usize);
 
         Ok(self.body_size.unwrap())
@@ -447,11 +454,15 @@ impl ECIES {
             data_padded[i] = data[i];
         }
         let mut encrypted = vec![0u8; len];
-        self.egress_aes.as_mut().unwrap().encrypt(
-            &mut RefReadBuffer::new(&data_padded),
-            &mut RefWriteBuffer::new(&mut encrypted),
-            false,
-        );
+        self.egress_aes
+            .as_mut()
+            .unwrap()
+            .encrypt(
+                &mut RefReadBuffer::new(&data_padded),
+                &mut RefWriteBuffer::new(&mut encrypted),
+                false,
+            )
+            .unwrap();
         self.egress_mac
             .as_mut()
             .unwrap()
@@ -475,11 +486,15 @@ impl ECIES {
         let size = self.body_size.unwrap();
         self.body_size = None;
         let mut ret = vec![0u8; data.len() - 16];
-        self.ingress_aes.as_mut().unwrap().decrypt(
-            &mut RefReadBuffer::new(&body),
-            &mut RefWriteBuffer::new(&mut ret),
-            false,
-        );
+        self.ingress_aes
+            .as_mut()
+            .unwrap()
+            .decrypt(
+                &mut RefReadBuffer::new(&body),
+                &mut RefWriteBuffer::new(&mut ret),
+                false,
+            )
+            .unwrap();
         while ret.len() > size {
             ret.pop();
         }
@@ -490,19 +505,18 @@ impl ECIES {
 #[cfg(test)]
 mod tests {
     use super::ECIES;
-    use bigint::{H256, H512};
     use rand::os::OsRng;
-    use secp256k1::ecdh::SharedSecret;
-    use secp256k1::key::{PublicKey, SecretKey};
-    use secp256k1::{Message, SECP256K1};
-    use util::{id2pk, keccak256, pk2id};
+    use secp256k1::{
+        key::{PublicKey, SecretKey},
+        SECP256K1,
+    };
+    use util::pk2id;
 
     #[test]
     fn communicate() {
         let server_secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
         let server_public_key = PublicKey::from_secret_key(&SECP256K1, &server_secret_key).unwrap();
         let client_secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap());
-        let client_public_key = PublicKey::from_secret_key(&SECP256K1, &client_secret_key).unwrap();
 
         let mut server_ecies = ECIES::new_server(server_secret_key).unwrap();
         let mut client_ecies =

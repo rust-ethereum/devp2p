@@ -1,6 +1,6 @@
 use bigint::{H256, H512};
 use rlp::{Decodable, DecoderError, Encodable, RlpStream, UntrustedRlp};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
 pub struct Neighbour {
     pub address: IpAddr,

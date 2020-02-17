@@ -1,6 +1,6 @@
-use bigint::{Address, Gas, B256, H256, U256};
+use bigint::{H256, U256};
 use block::{Block, Header, Transaction};
-use rlp::{Decodable, DecoderError, Encodable, RlpStream, UntrustedRlp};
+use rlp::{DecoderError, Encodable, RlpStream, UntrustedRlp};
 
 /// ETH message version 62 and 63
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +193,7 @@ impl Encodable for ETHMessage {
 mod tests {
     use super::ETHMessage;
     use bigint::H256;
-    use rlp::{self, Decodable, DecoderError, Encodable, RlpStream, UntrustedRlp};
+    use rlp::{self, UntrustedRlp};
 
     #[test]
     fn test_new_block_hashes_message() {

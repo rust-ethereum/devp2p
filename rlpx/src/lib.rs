@@ -15,8 +15,8 @@ extern crate sha3;
 extern crate log;
 #[macro_use]
 extern crate futures;
+extern crate tokio_codec;
 extern crate tokio_core;
-extern crate tokio_io;
 
 pub mod ecies;
 mod errors;
@@ -27,19 +27,13 @@ mod util;
 pub use peer::{CapabilityInfo, PeerStream};
 
 use bigint::H512;
-use futures::future;
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use rand::{thread_rng, Rng};
-use secp256k1::key::{PublicKey, SecretKey};
-use secp256k1::SECP256K1;
-use std::collections::HashMap;
+use secp256k1::key::SecretKey;
 use std::io;
 use std::net::SocketAddr;
 use tokio_core::net::{Incoming, TcpListener};
 use tokio_core::reactor::Handle;
-use tokio_io::codec::{Decoder, Encoder, Framed};
-use tokio_io::{AsyncRead, AsyncWrite};
-use util::pk2id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Sending node type specifying either all, any or a particular peer
@@ -79,8 +73,8 @@ pub enum RLPxReceiveMessage {
 /// A RLPx stream and sink
 pub struct RLPxStream {
     streams: Vec<PeerStream>,
-    futures: Vec<(H512, Box<Future<Item = PeerStream, Error = io::Error>>)>,
-    incoming_futures: Vec<Box<Future<Item = PeerStream, Error = io::Error>>>,
+    futures: Vec<(H512, Box<dyn Future<Item = PeerStream, Error = io::Error>>)>,
+    incoming_futures: Vec<Box<dyn Future<Item = PeerStream, Error = io::Error>>>,
     newly_connected: Vec<(H512, Vec<CapabilityInfo>)>,
     newly_disconnected: Vec<H512>,
     active_peers: Vec<H512>,
@@ -197,7 +191,7 @@ impl RLPxStream {
         if let Some(tcp_incoming) = self.tcp_incoming.as_mut() {
             loop {
                 match tcp_incoming.poll()? {
-                    Async::Ready(Some((stream, addr))) => {
+                    Async::Ready(Some((stream, _))) => {
                         incoming_futures.push(PeerStream::incoming(
                             stream,
                             self.secret_key.clone(),
@@ -289,7 +283,6 @@ impl Stream for RLPxStream {
         {
             let ref mut streams = self.streams;
             let ref mut active_peers = self.active_peers;
-            let ref mut newly_connected = self.newly_connected;
             let ref mut newly_disconnected = self.newly_disconnected;
 
             retain_mut(streams, |ref mut peer| {

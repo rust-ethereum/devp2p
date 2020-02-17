@@ -2,13 +2,12 @@ mod proto;
 
 use bigint::{H256, H512, U256};
 use dpt::DPTNode;
-use futures::{future, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
 use rlp::{self, UntrustedRlp};
 use rlpx::{CapabilityInfo, RLPxNode, RLPxReceiveMessage, RLPxSendMessage};
 use secp256k1::key::SecretKey;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
 use tokio_core::reactor::Handle;
 
 use super::{DevP2PConfig, DevP2PStream};
@@ -40,6 +39,7 @@ pub struct ETHSendMessage {
 }
 
 /// Represent a ETH stream over DevP2P protocol
+#[allow(dead_code)]
 pub struct ETHStream {
     stream: DevP2PStream,
     genesis_hash: H256,
@@ -196,7 +196,7 @@ impl Sink for ETHStream {
             data: rlp::encode(&val.data).to_vec(),
         }) {
             Ok(AsyncSink::Ready) => Ok(AsyncSink::Ready),
-            Ok(AsyncSink::NotReady(v)) => Ok(AsyncSink::NotReady(val)),
+            Ok(AsyncSink::NotReady(_)) => Ok(AsyncSink::NotReady(val)),
             Err(e) => Err(e),
         }
     }

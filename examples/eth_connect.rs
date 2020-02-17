@@ -1,23 +1,19 @@
 extern crate bigint;
 extern crate block;
 extern crate devp2p;
+extern crate env_logger;
+extern crate futures;
 extern crate hexutil;
 extern crate rand;
 extern crate rlp;
 extern crate secp256k1;
-
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate futures;
-extern crate env_logger;
 extern crate sha3;
 extern crate tokio_core;
 extern crate tokio_io;
 extern crate url;
 
-use bigint::{H256, H512, U256};
-use block::{Block, Header};
+use bigint::{H256, U256};
+use block::Block;
 use devp2p::dpt::DPTNode;
 use devp2p::rlpx::RLPxNode;
 use devp2p::{DevP2PConfig, ETHMessage, ETHReceiveMessage, ETHSendMessage, ETHStream};
@@ -25,17 +21,16 @@ use futures::future;
 use futures::{Future, Sink, Stream};
 use hexutil::*;
 use rand::os::OsRng;
-use secp256k1::key::{PublicKey, SecretKey};
+use secp256k1::key::SecretKey;
 use secp256k1::SECP256K1;
 use sha3::{Digest, Keccak256};
 use std::str::FromStr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio_core::reactor::{Core, Timeout};
 use url::Url;
 
 const GENESIS_HASH: &str = "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3";
 const GENESIS_DIFFICULTY: usize = 17179869184;
-const NETWORK_ID: usize = 1;
 
 const ETC_DAO_BLOCK: &str = "f903cff9020fa0a218e2c611f21232d857e3c8cecdcdf1f65f25a4477f98f6f47e4063807f2308a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479461c808d82a3ac53231750dadc13c777b59310bd9a0614d7d358b03cbdaf0343529673be20ad45809d02487f023e047efdce9da8affa0d33068a7f21bff5018a00ca08a3566a06be4196dfe9e39f96e431565a619d455a07bda9aa65977800376129148cbfe89d35a016dd51c95d6e6dc1e76307d315468b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008638c3bf2616aa831d4c008347e7c08301482084578f7aa78fe4b883e5bda9e7a59ee4bb99e9b1bca0c52daa7054babe515b17ee98540c0889cf5e1595c5dd77496997ca84a68c8da18805276a600980199df901b9f86c018504a817c8008252089453d284357ec70ce289d6d64134dfac8e511c8a3d888b6cfa3afc058000801ba08d94a55c7ac7adbfa2285ef7f4b0c955ae1a02647452cd4ead03ee6f449675c6a067149821b74208176d78fc4dffbe37c8b64eecfd47532406b9727c4ae8eb7c9af86d018504a817c8008252089453d284357ec70ce289d6d64134dfac8e511c8a3d890116db7272d6d94000801ca06d31e3d59bfea97a34103d8ce767a8fe7a79b8e2f30af1e918df53f9e78e69aba0098e5b80e1cc436421aa54eb17e96b08fe80d28a2fbd46451b56f2bca7a321e7f86c018504a817c8008252089453d284357ec70ce289d6d64134dfac8e511c8a3d8814da2c24e0d37014801ba0fdbbc462a8a60ac3d8b13ee236b45af9b7991cf4f0f556d3af46aa5aeca242aba05de5dc03fdcb6cf6d14609dbe6f5ba4300b8ff917c7d190325d9ea2144a7a2fbf86c018504a817c8008252089453d284357ec70ce289d6d64134dfac8e511c8a3d880e301365046d5000801ba0bafb9f71cef873b9e0395b9ed89aac4f2a752e2a4b88ba3c9b6c1fea254eae73a01cef688f6718932f7705d9c1f0dd5a8aad9ddb196b826775f6e5703fdb997706c0";
 
@@ -55,7 +50,7 @@ pub fn keccak256(data: &[u8]) -> H256 {
 }
 
 fn main() {
-    env_logger::init();
+    let _ = env_logger::init();
 
     let addr = "0.0.0.0:30303".parse().unwrap();
     let public_addr = "127.0.0.1".parse().unwrap();
@@ -63,7 +58,7 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
-    let mut client = ETHStream::new(
+    let client = ETHStream::new(
         &addr,
         &public_addr,
         &handle,
@@ -88,17 +83,17 @@ fn main() {
     )
     .unwrap();
 
-    let mut best_number: U256 = U256::zero();
+    let mut best_number;
     let mut best_hash: H256 = H256::from_str(GENESIS_HASH).unwrap();
-    let mut got_bodies_for_current = true;
+    let got_bodies_for_current = true;
 
     let dur = Duration::new(10, 0);
     let req_max_headers = 2048;
-    let mut when = Instant::now() + dur;
 
-    let (mut client_sender, mut client_receiver) = client.split();
+    let (mut client_sender, client_receiver) = client.split();
     let mut client_future = client_receiver.into_future();
-    let mut timeout = Timeout::new(dur, &handle).unwrap().boxed();
+    let mut timeout = Box::new(Timeout::new(dur, &handle).unwrap())
+        as Box<dyn Future<Item = _, Error = _> + Send + 'static>;
 
     let mut active_peers = 0;
 
@@ -110,7 +105,7 @@ fn main() {
 
         let (val, new_client_receiver) = match ret {
             future::Either::A(((val, new_client), t)) => {
-                timeout = t.boxed();
+                timeout = Box::new(t);
                 (val, new_client)
             }
             future::Either::B((_, fu)) => {
@@ -129,7 +124,7 @@ fn main() {
                     }))
                     .unwrap();
 
-                timeout = Timeout::new(dur, &handle).unwrap().boxed();
+                timeout = Box::new(Timeout::new(dur, &handle).unwrap());
 
                 continue;
             }
@@ -141,23 +136,14 @@ fn main() {
         let val = val.unwrap();
 
         match val {
-            ETHReceiveMessage::Normal {
-                node,
-                data,
-                version,
-            } => match data {
+            ETHReceiveMessage::Normal { node, data, .. } => match data {
                 ETHMessage::Status { .. } => (),
 
                 ETHMessage::Transactions(_) => {
                     println!("received new transactions");
                 }
 
-                ETHMessage::GetBlockHeadersByNumber {
-                    number,
-                    max_headers,
-                    skip,
-                    reverse,
-                } => {
+                ETHMessage::GetBlockHeadersByNumber { number, .. } => {
                     if number == U256::from(1920000) {
                         println!("requested DAO header");
                         let block_raw = read_hex(ETC_DAO_BLOCK).unwrap();
@@ -179,12 +165,7 @@ fn main() {
                     }
                 }
 
-                ETHMessage::GetBlockHeadersByHash {
-                    hash,
-                    max_headers,
-                    skip,
-                    reverse,
-                } => {
+                ETHMessage::GetBlockHeadersByHash { hash, .. } => {
                     println!("requested header {}", hash);
                     client_sender = core
                         .run(client_sender.send(ETHSendMessage {
@@ -211,7 +192,7 @@ fn main() {
                             if header.parent_hash == best_hash {
                                 best_hash = keccak256(&rlp::encode(header).to_vec());
                                 best_number = header.number;
-                                println!("updated best number: {}", header.number);
+                                println!("updated best number: {}", best_number);
                                 println!("updated best hash: 0x{:x}", best_hash);
                             }
                         }
@@ -227,7 +208,7 @@ fn main() {
                             },
                         }))
                         .unwrap();
-                    timeout = Timeout::new(dur, &handle).unwrap().boxed();
+                    timeout = Box::new(Timeout::new(dur, &handle).unwrap());
                 }
 
                 ETHMessage::BlockBodies(ref bodies) => {

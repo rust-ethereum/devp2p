@@ -1,16 +1,15 @@
 use super::algorithm::ECIES;
 use bigint::H512;
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use errors::ECIESError;
 use futures::future;
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use secp256k1::key::SecretKey;
 use std::io;
 use std::net::SocketAddr;
+use tokio_codec::{Decoder, Encoder, Framed};
 use tokio_core::net::TcpStream;
-use tokio_core::reactor::{Core, Handle};
-use tokio_io::codec::{Decoder, Encoder, Framed};
-use tokio_io::{AsyncRead, AsyncWrite};
+use tokio_core::reactor::Handle;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Current ECIES state of a connection
@@ -161,14 +160,15 @@ impl ECIESStream {
         handle: &Handle,
         secret_key: SecretKey,
         remote_id: H512,
-    ) -> Box<Future<Item = ECIESStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = ECIESStream, Error = io::Error>> {
         let ecies = match ECIESCodec::new_client(secret_key, remote_id) {
             Ok(val) => val,
-            Err(e) => {
+            Err(_) => {
                 return Box::new(future::err(io::Error::new(
                     io::ErrorKind::Other,
                     "invalid handshake",
-                ))) as Box<Future<Item = ECIESStream, Error = io::Error>>
+                )))
+                    as Box<dyn Future<Item = ECIESStream, Error = io::Error>>
             }
         };
 
@@ -176,7 +176,7 @@ impl ECIESStream {
         let stream = TcpStream::connect(addr, handle)
             .and_then(|socket| {
                 debug!("sending ecies auth ...");
-                socket.framed(ecies).send(ECIESValue::Auth)
+                ecies.framed(socket).send(ECIESValue::Auth)
             })
             .and_then(|transport| transport.into_future().map_err(|(e, _)| e))
             .and_then(move |(ack, transport)| {
@@ -201,20 +201,21 @@ impl ECIESStream {
     pub fn incoming(
         stream: TcpStream,
         secret_key: SecretKey,
-    ) -> Box<Future<Item = ECIESStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = ECIESStream, Error = io::Error>> {
         let ecies = match ECIESCodec::new_server(secret_key) {
             Ok(val) => val,
-            Err(e) => {
+            Err(_) => {
                 return Box::new(future::err(io::Error::new(
                     io::ErrorKind::Other,
                     "invalid handshake",
-                ))) as Box<Future<Item = ECIESStream, Error = io::Error>>
+                )))
+                    as Box<dyn Future<Item = ECIESStream, Error = io::Error>>
             }
         };
 
         debug!("incoming ecies stream ...");
-        let stream = stream
-            .framed(ecies)
+        let stream = ecies
+            .framed(stream)
             .into_future()
             .map_err(|(e, _)| e)
             .and_then(move |(ack, transport)| {
@@ -303,7 +304,7 @@ impl Sink for ECIESStream {
 
         match self.stream.start_send(ECIESValue::Header(item.len()))? {
             AsyncSink::Ready => (),
-            AsyncSink::NotReady(header) => return Ok(AsyncSink::NotReady(item)),
+            AsyncSink::NotReady(_) => return Ok(AsyncSink::NotReady(item)),
         }
 
         match self.stream.start_send(ECIESValue::Body(item))? {

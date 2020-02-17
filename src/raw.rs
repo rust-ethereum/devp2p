@@ -1,6 +1,6 @@
 use bigint::H512;
 use dpt::{DPTMessage, DPTNode, DPTStream};
-use futures::{future, Async, Future, Poll, Sink, StartSend, Stream};
+use futures::{Async, Future, Poll, Sink, StartSend, Stream};
 use rand::{thread_rng, Rng};
 use rlpx::{CapabilityInfo, RLPxReceiveMessage, RLPxSendMessage, RLPxStream};
 use secp256k1::key::SecretKey;
@@ -47,7 +47,7 @@ impl DevP2PStream {
     ) -> Result<Self, io::Error> {
         let port = addr.port();
 
-        let mut rlpx = RLPxStream::new(
+        let rlpx = RLPxStream::new(
             handle,
             secret_key.clone(),
             protocol_version,
@@ -139,8 +139,6 @@ impl DevP2PStream {
                 }
             }
         }
-
-        Ok(Async::Ready(()))
     }
 
     fn poll_dpt_ping(&mut self) -> Poll<(), io::Error> {
@@ -161,8 +159,6 @@ impl DevP2PStream {
                 }
             }
         }
-
-        Ok(Async::Ready(()))
     }
 }
 

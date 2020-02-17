@@ -1,7 +1,4 @@
 use bigint::{H256, H512};
-use crypto::aessafe::AesSafe128Encryptor;
-use crypto::blockmodes::CtrMode;
-use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
 use crypto::hmac::Hmac;
 use crypto::mac::Mac;
 use secp256k1::key::PublicKey;

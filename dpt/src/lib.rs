@@ -1,36 +1,29 @@
 //! Ethereum DPT protocol implementation
 
-extern crate bigint;
-extern crate hexutil;
-extern crate rlp;
-extern crate secp256k1;
-extern crate sha3;
-#[macro_use]
-extern crate log;
-extern crate futures;
-extern crate rand;
-extern crate time;
-extern crate tokio_core;
-extern crate tokio_io;
-extern crate url;
-
 mod message;
 mod proto;
 mod util;
 
 use bigint::{H256, H512};
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use log::*;
 use message::*;
 use proto::{DPTCodec, DPTCodecMessage};
 use rand::{thread_rng, Rng};
 use rlp::UntrustedRlp;
-use secp256k1::key::{PublicKey, SecretKey};
-use secp256k1::SECP256K1;
-use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::str::FromStr;
-use tokio_core::net::{UdpFramed, UdpSocket};
-use tokio_core::reactor::{Handle, Timeout};
+use secp256k1::{
+    key::{PublicKey, SecretKey},
+    SECP256K1,
+};
+use std::{
+    io,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    str::FromStr,
+};
+use tokio_core::{
+    net::{UdpFramed, UdpSocket},
+    reactor::{Handle, Timeout},
+};
 use url::{Host, Url};
 use util::pk2id;
 

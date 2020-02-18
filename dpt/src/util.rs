@@ -1,6 +1,5 @@
 use bigint::{H256, H512};
-use secp256k1::key::PublicKey;
-use secp256k1::SECP256K1;
+use secp256k1::{key::PublicKey, SECP256K1};
 use sha3::{Digest, Keccak256};
 
 pub fn keccak256(data: &[u8]) -> H256 {

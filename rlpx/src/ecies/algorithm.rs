@@ -1,18 +1,24 @@
+use crate::{
+    errors::ECIESError,
+    mac::MAC,
+    util::{hmac_sha256, id2pk, keccak256, pk2id, sha256},
+};
 use bigint::{H128, H256, H512};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use crypto::aessafe::{AesSafe128Encryptor, AesSafe256Encryptor};
-use crypto::blockmodes::CtrMode;
-use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
-use crypto::symmetriccipher::{Decryptor, Encryptor};
-use errors::ECIESError;
-use mac::MAC;
+use crypto::{
+    aessafe::{AesSafe128Encryptor, AesSafe256Encryptor},
+    blockmodes::CtrMode,
+    buffer::{RefReadBuffer, RefWriteBuffer},
+    symmetriccipher::{Decryptor, Encryptor},
+};
 use rand::os::OsRng;
-use secp256k1::ecdh::SharedSecret;
-use secp256k1::key::{PublicKey, SecretKey};
-use secp256k1::{Message, RecoverableSignature, RecoveryId, SECP256K1};
+use secp256k1::{
+    ecdh::SharedSecret,
+    key::{PublicKey, SecretKey},
+    Message, RecoverableSignature, RecoveryId, SECP256K1,
+};
 use sha2::{Digest, Sha256};
 use sha3::Keccak256;
-use util::{hmac_sha256, id2pk, keccak256, pk2id, sha256};
 
 const AUTH_LEN: usize = 65 /* signature with recovery */ + 32 /* keccak256 ephemeral */ +
     64 /* public key */ + 32 /* nonce */ + 1;
@@ -505,12 +511,12 @@ impl ECIES {
 #[cfg(test)]
 mod tests {
     use super::ECIES;
+    use crate::util::pk2id;
     use rand::os::OsRng;
     use secp256k1::{
         key::{PublicKey, SecretKey},
         SECP256K1,
     };
-    use util::pk2id;
 
     #[test]
     fn communicate() {

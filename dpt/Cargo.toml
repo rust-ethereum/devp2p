@@ -4,7 +4,8 @@ version = "0.2.6"
 license = "Apache-2.0"
 authors = ["Wei Tang <hi@that.world>"]
 description = "Ethereum's Distributed Peer Table implementation in Rust."
-repository = "https://github.com/sorpaas/devp2p-rs"
+repository = "https://github.com/sorpaas/rust-devp2p"
+edition = "2018"
 
 [dependencies]
 secp256k1-plus = "0.5"

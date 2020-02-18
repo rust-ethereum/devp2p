@@ -1,23 +1,5 @@
 //! RLPx protocol implementation in Rust
 
-extern crate rand;
-extern crate secp256k1;
-
-extern crate bigint;
-extern crate byteorder;
-extern crate bytes;
-extern crate crypto;
-extern crate hexutil;
-extern crate rlp;
-extern crate sha2;
-extern crate sha3;
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate futures;
-extern crate tokio_codec;
-extern crate tokio_core;
-
 pub mod ecies;
 mod errors;
 mod mac;
@@ -28,12 +10,14 @@ pub use peer::{CapabilityInfo, PeerStream};
 
 use bigint::H512;
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use log::*;
 use rand::{thread_rng, Rng};
 use secp256k1::key::SecretKey;
-use std::io;
-use std::net::SocketAddr;
-use tokio_core::net::{Incoming, TcpListener};
-use tokio_core::reactor::Handle;
+use std::{io, net::SocketAddr};
+use tokio_core::{
+    net::{Incoming, TcpListener},
+    reactor::Handle,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Sending node type specifying either all, any or a particular peer

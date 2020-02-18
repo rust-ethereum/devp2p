@@ -1,8 +1,6 @@
 use bigint::{H256, H512};
-use crypto::hmac::Hmac;
-use crypto::mac::Mac;
-use secp256k1::key::PublicKey;
-use secp256k1::{self, SECP256K1};
+use crypto::{hmac::Hmac, mac::Mac};
+use secp256k1::{self, key::PublicKey, SECP256K1};
 use sha3::{Digest, Keccak256};
 
 pub fn keccak256(data: &[u8]) -> H256 {
@@ -47,10 +45,12 @@ pub fn id2pk(id: H512) -> Result<PublicKey, secp256k1::Error> {
 
 #[cfg(test)]
 mod tests {
+    use crate::util::*;
     use rand::os::OsRng;
-    use secp256k1::key::{PublicKey, SecretKey};
-    use secp256k1::SECP256K1;
-    use util::*;
+    use secp256k1::{
+        key::{PublicKey, SecretKey},
+        SECP256K1,
+    };
 
     #[test]
     fn pk2id2pk() {

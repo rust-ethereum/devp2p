@@ -59,33 +59,33 @@ impl Decoder for ECIESCodec {
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<ECIESValue>, io::Error> {
         match self.state {
             ECIESState::Auth => {
-                if buf.len() < self.ecies.auth_len() {
+                if buf.len() < ECIES::auth_len() {
                     return Ok(None);
                 }
 
-                let data = buf.split_to(self.ecies.auth_len());
+                let data = buf.split_to(ECIES::auth_len());
                 self.ecies.parse_auth(&data)?;
 
                 self.state = ECIESState::Header;
                 Ok(Some(ECIESValue::AuthReceive(self.ecies.remote_id())))
             }
             ECIESState::Ack => {
-                if buf.len() < self.ecies.ack_len() {
+                if buf.len() < ECIES::ack_len() {
                     return Ok(None);
                 }
 
-                let data = buf.split_to(self.ecies.ack_len());
+                let data = buf.split_to(ECIES::ack_len());
                 self.ecies.parse_ack(&data)?;
 
                 self.state = ECIESState::Header;
                 Ok(Some(ECIESValue::Ack))
             }
             ECIESState::Header => {
-                if buf.len() < self.ecies.header_len() {
+                if buf.len() < ECIES::header_len() {
                     return Ok(None);
                 }
 
-                let data = buf.split_to(self.ecies.header_len());
+                let data = buf.split_to(ECIES::header_len());
                 let size = self.ecies.parse_header(&data)?;
 
                 self.state = ECIESState::Body;
@@ -153,12 +153,13 @@ pub struct ECIESStream {
 
 impl ECIESStream {
     /// Connect to an ECIES server
+    #[must_use]
     pub fn connect(
         addr: &SocketAddr,
         handle: &Handle,
         secret_key: SecretKey,
         remote_id: H512,
-    ) -> Box<dyn Future<Item = ECIESStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
         let ecies = match ECIESCodec::new_client(secret_key, remote_id) {
             Ok(val) => val,
             Err(_) => {
@@ -179,11 +180,11 @@ impl ECIESStream {
             .and_then(move |(ack, transport)| {
                 debug!("receiving ecies ack ...");
                 if ack == Some(ECIESValue::Ack) {
-                    Ok(ECIESStream {
+                    Ok(Self {
                         stream: transport,
                         polled_header: false,
                         sending_body: None,
-                        remote_id: remote_id,
+                        remote_id,
                     })
                 } else {
                     error!("expected ack, got {:?} instead", ack);
@@ -198,7 +199,7 @@ impl ECIESStream {
     pub fn incoming(
         stream: TcpStream,
         secret_key: SecretKey,
-    ) -> Box<dyn Future<Item = ECIESStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
         let ecies = match ECIESCodec::new_server(secret_key) {
             Ok(val) => val,
             Err(_) => {
@@ -231,7 +232,7 @@ impl ECIESStream {
                     .and_then(move |socket| Ok((remote_id, socket)))
             })
             .and_then(|(remote_id, socket)| {
-                Ok(ECIESStream {
+                Ok(Self {
                     stream: socket,
                     polled_header: false,
                     sending_body: None,
@@ -243,7 +244,7 @@ impl ECIESStream {
     }
 
     /// Get the remote id
-    pub fn remote_id(&self) -> H512 {
+    pub const fn remote_id(&self) -> H512 {
         self.remote_id
     }
 }

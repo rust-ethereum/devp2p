@@ -13,7 +13,7 @@ use std::{
 };
 use tokio_core::reactor::{Handle, Timeout};
 
-/// Config for DevP2P
+/// Config for devp2p
 pub struct DevP2PConfig {
     pub ping_interval: Duration,
     pub ping_timeout_interval: Duration,
@@ -23,7 +23,7 @@ pub struct DevP2PConfig {
     pub listen: bool,
 }
 
-/// An Ethereum DevP2P stream that handles peers management
+/// An Ethereum devp2p stream that handles peers management
 pub struct DevP2PStream {
     dpt: DPTStream,
     rlpx: RLPxStream,
@@ -36,10 +36,10 @@ pub struct DevP2PStream {
 }
 
 impl DevP2PStream {
-    /// Create a new DevP2P stream
+    /// Create a new devp2p stream
     pub fn new(
-        addr: &SocketAddr,
-        public_addr: &IpAddr,
+        addr: SocketAddr,
+        public_addr: IpAddr,
         handle: &Handle,
         secret_key: SecretKey,
         protocol_version: usize,
@@ -52,26 +52,19 @@ impl DevP2PStream {
 
         let rlpx = RLPxStream::new(
             handle,
-            secret_key.clone(),
+            secret_key,
             protocol_version,
             client_version,
             capabilities,
             if config.listen { Some(addr) } else { None },
         )?;
 
-        let dpt = DPTStream::new(
-            addr,
-            handle,
-            secret_key.clone(),
-            bootstrap_nodes,
-            public_addr,
-            port,
-        )?;
+        let dpt = DPTStream::new(addr, handle, secret_key, bootstrap_nodes, public_addr, port)?;
 
         let ping_timeout = Timeout::new(config.ping_interval, handle)?;
         let optimal_peers_timeout = Timeout::new(config.optimal_peers_interval, handle)?;
 
-        Ok(DevP2PStream {
+        Ok(Self {
             dpt,
             rlpx,
             ping_timeout,
@@ -124,13 +117,13 @@ impl DevP2PStream {
                         debug!("reconnect to old connected peers ...");
                         let mut connected: Vec<DPTNode> = self.dpt.connected_peers().into();
                         thread_rng().shuffle(&mut connected);
-                        for i in 0..min(
+                        for dpt_node in connected.iter().take(min(
                             self.config.optimal_peers_len - self.rlpx.active_peers().len(),
                             connected.len() / self.config.reconnect_dividend,
-                        ) {
+                        )) {
                             self.rlpx.add_peer(
-                                &SocketAddr::new(connected[i].address, connected[i].tcp_port),
-                                connected[i].id,
+                                &SocketAddr::new(dpt_node.address, dpt_node.tcp_port),
+                                dpt_node.id,
                             );
                         }
                     }

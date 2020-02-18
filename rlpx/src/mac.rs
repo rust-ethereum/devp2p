@@ -26,7 +26,7 @@ impl MAC {
 
     pub fn update_header(&mut self, data: &[u8]) {
         let mut aes = EcbEncryptor::new(AesSafe256Encryptor::new(self.secret.as_ref()), NoPadding);
-        let mut encrypted = vec![0u8; data.len()];
+        let mut encrypted = vec![0_u8; data.len()];
         aes.encrypt(
             &mut RefReadBuffer::new(self.digest().as_ref()),
             &mut RefWriteBuffer::new(encrypted.as_mut()),
@@ -34,7 +34,7 @@ impl MAC {
         )
         .unwrap();
         for i in 0..data.len() {
-            encrypted[i] = encrypted[i] ^ data[i];
+            encrypted[i] ^= data[i];
         }
         self.hasher.input(encrypted.as_ref());
     }
@@ -43,7 +43,7 @@ impl MAC {
         self.hasher.input(data);
         let prev = self.digest();
         let mut aes = EcbEncryptor::new(AesSafe256Encryptor::new(self.secret.as_ref()), NoPadding);
-        let mut encrypted = vec![0u8; 16];
+        let mut encrypted = vec![0_u8; 16];
         aes.encrypt(
             &mut RefReadBuffer::new(self.digest().as_ref()),
             &mut RefWriteBuffer::new(encrypted.as_mut()),
@@ -51,7 +51,7 @@ impl MAC {
         )
         .unwrap();
         for i in 0..16 {
-            encrypted[i] = encrypted[i] ^ prev[i];
+            encrypted[i] ^= prev[i];
         }
         self.hasher.input(encrypted.as_ref());
     }

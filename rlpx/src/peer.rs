@@ -73,7 +73,7 @@ impl Decodable for HelloMessage {
     }
 }
 
-/// Peer stream of a RLPx
+/// Peer stream of a `RLPx`
 #[allow(dead_code)]
 pub struct PeerStream {
     stream: ECIESStream,
@@ -87,7 +87,7 @@ pub struct PeerStream {
 
 impl PeerStream {
     /// Remote public id of this peer
-    pub fn remote_id(&self) -> H512 {
+    pub const fn remote_id(&self) -> H512 {
         self.remote_id
     }
 
@@ -97,6 +97,7 @@ impl PeerStream {
     }
 
     /// Connect to a peer over TCP
+    #[must_use]
     pub fn connect(
         addr: &SocketAddr,
         handle: &Handle,
@@ -106,20 +107,18 @@ impl PeerStream {
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Box<dyn Future<Item = PeerStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
         Box::new(
-            ECIESStream::connect(addr, handle, secret_key.clone(), remote_id).and_then(
-                move |socket| {
-                    PeerStream::new(
-                        socket,
-                        secret_key,
-                        protocol_version,
-                        client_version,
-                        capabilities,
-                        port,
-                    )
-                },
-            ),
+            ECIESStream::connect(addr, handle, secret_key, remote_id).and_then(move |socket| {
+                Self::new(
+                    socket,
+                    secret_key,
+                    protocol_version,
+                    client_version,
+                    capabilities,
+                    port,
+                )
+            }),
         )
     }
 
@@ -131,10 +130,10 @@ impl PeerStream {
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Box<dyn Future<Item = PeerStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
         Box::new(
-            ECIESStream::incoming(stream, secret_key.clone()).and_then(move |socket| {
-                PeerStream::new(
+            ECIESStream::incoming(stream, secret_key).and_then(move |socket| {
+                Self::new(
                     socket,
                     secret_key,
                     protocol_version,
@@ -154,7 +153,7 @@ impl PeerStream {
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Box<dyn Future<Item = PeerStream, Error = io::Error>> {
+    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
         let public_key = match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
             Ok(key) => key,
             Err(_) => {
@@ -190,7 +189,7 @@ impl PeerStream {
                     },
                 })
                 .to_vec();
-                let message_id: Vec<u8> = rlp::encode(&0usize).to_vec();
+                let message_id: Vec<u8> = rlp::encode(&0_usize).to_vec();
                 assert!(message_id.len() == 1);
                 let mut ret: Vec<u8> = Vec::new();
                 ret.push(message_id[0]);
@@ -231,11 +230,11 @@ impl PeerStream {
                             ));
                         }
                     }
-                    Err(_) => {
+                    Err(e) => {
                         debug!("hello failed because message id cannot be parsed");
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
-                            "hello failed (message id parsing)",
+                            format!("hello failed (message id parsing: {})", e),
                         ));
                     }
                 }
@@ -248,12 +247,12 @@ impl PeerStream {
                         let mut shared_capabilities: Vec<CapabilityInfo> = Vec::new();
 
                         for cap_info in nonhello_capabilities {
-                            if val
+                            let cap_match = val
                                 .capabilities
                                 .iter()
-                                .find(|v| v.name == cap_info.name && v.version == cap_info.version)
-                                .is_some()
-                            {
+                                .any(|v| v.name == cap_info.name && v.version == cap_info.version);
+
+                            if cap_match {
                                 shared_capabilities.push(cap_info.clone());
                             }
                         }
@@ -262,19 +261,13 @@ impl PeerStream {
 
                         for cap_info in shared_caps_original {
                             shared_capabilities.retain(|v| {
-                                if v.name != cap_info.name {
-                                    true
-                                } else if v.version < cap_info.version {
-                                    false
-                                } else {
-                                    true
-                                }
+                                v.name != cap_info.name || v.version >= cap_info.version
                             });
                         }
 
-                        shared_capabilities.sort_by_key(|v| v.name.clone());
+                        shared_capabilities.sort_by_key(|v| v.name);
 
-                        Ok(PeerStream {
+                        Ok(Self {
                             remote_id: transport.remote_id(),
                             stream: transport,
                             client_version: nonhello_client_version,
@@ -284,11 +277,11 @@ impl PeerStream {
                             shared_capabilities,
                         })
                     }
-                    Err(_) => {
+                    Err(e) => {
                         debug!("hello failed because message rlp parsing failed");
                         Err(io::Error::new(
                             io::ErrorKind::Other,
-                            "hello failed (rlp error)",
+                            format!("hello failed (rlp error: {})", e),
                         ))
                     }
                 }
@@ -297,21 +290,17 @@ impl PeerStream {
         Box::new(stream)
     }
 
-    fn handle_reserved_message(
-        &mut self,
-        message_id: usize,
-        data: Vec<u8>,
-    ) -> Result<(), io::Error> {
+    fn handle_reserved_message(&mut self, message_id: usize, data: &[u8]) -> Result<(), io::Error> {
         match message_id {
             0x01 /* disconnect */ => {
-                let reason: Result<usize, rlp::DecoderError> = UntrustedRlp::new(&data).val_at(0);
+                let reason: Result<usize, rlp::DecoderError> = UntrustedRlp::new(data).val_at(0);
                 debug!("received disconnect message, reason: {:?}", reason);
                 return Err(io::Error::new(io::ErrorKind::Other,
                                           "explicit disconnect"));
             },
             0x02 /* ping */ => {
                 debug!("received ping message data {:?}", data);
-                let mut payload: Vec<u8> = rlp::encode(&0x03usize /* pong */).to_vec();
+                let mut payload: Vec<u8> = rlp::encode(&0x03_usize /* pong */).to_vec();
                 payload.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
                 debug!("sending pong message payload {:?}", payload);
                 self.stream.start_send(payload)?;
@@ -344,7 +333,7 @@ impl Stream for PeerStream {
                 let (cap, id) = match message_id {
                     Ok(message_id) => {
                         if message_id < 0x10 {
-                            self.handle_reserved_message(message_id, (&val[1..]).into())?;
+                            self.handle_reserved_message(message_id, &val[1..])?;
                             return Ok(Async::NotReady);
                         }
 
@@ -352,8 +341,8 @@ impl Stream for PeerStream {
                         let mut index = 0;
                         for cap in &self.shared_capabilities {
                             if message_id > cap.length {
-                                message_id = message_id - cap.length;
-                                index = index + 1;
+                                message_id -= cap.length;
+                                index += 1;
                             }
                         }
                         if index >= self.shared_capabilities.len() {
@@ -362,12 +351,12 @@ impl Stream for PeerStream {
                                 "message id parsing failed (too big)",
                             ));
                         }
-                        (self.shared_capabilities[index].clone(), message_id)
+                        (self.shared_capabilities[index], message_id)
                     }
-                    Err(_) => {
+                    Err(e) => {
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
-                            "message id parsing failed (invalid)",
+                            format!("message id parsing failed (invalid): {}", e),
                         ));
                     }
                 };
@@ -416,13 +405,13 @@ impl Sink for PeerStream {
 
         let mut message_id = 0x10;
         for scap in &self.shared_capabilities {
-            if scap != &cap {
-                message_id = message_id + scap.length;
-            } else {
+            if scap == &cap {
                 break;
             }
+
+            message_id += scap.length;
         }
-        message_id = message_id + id;
+        message_id += id;
         let first = rlp::encode(&message_id);
         assert!(first.len() == 1);
 

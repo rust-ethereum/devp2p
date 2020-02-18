@@ -37,14 +37,14 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
     let client = DPTStream::new(
-        &addr,
+        addr,
         &handle,
         SecretKey::new(&SECP256K1, &mut OsRng::new().unwrap()),
         BOOTSTRAP_NODES
             .iter()
             .map(|v| DPTNode::from_url(&Url::parse(v).unwrap()).unwrap())
             .collect(),
-        &"127.0.0.1".parse().unwrap(),
+        "127.0.0.1".parse().unwrap(),
         50505,
     )
     .unwrap();

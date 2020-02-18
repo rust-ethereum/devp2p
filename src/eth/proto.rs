@@ -38,25 +38,28 @@ pub enum ETHMessage {
 
 impl ETHMessage {
     /// Get the message id of the ETH message
+    #[must_use]
     pub fn id(&self) -> usize {
         match self {
-            &ETHMessage::Status { .. } => 0,
-            &ETHMessage::NewBlockHashes(_) => 1,
-            &ETHMessage::Transactions(_) => 2,
-            &ETHMessage::GetBlockHeadersByNumber { .. } => 3,
-            &ETHMessage::GetBlockHeadersByHash { .. } => 3,
-            &ETHMessage::BlockHeaders(_) => 4,
-            &ETHMessage::GetBlockBodies(_) => 5,
-            &ETHMessage::BlockBodies(_) => 6,
-            &ETHMessage::NewBlock { .. } => 7,
-            &ETHMessage::Unknown => 127,
+            Self::Status { .. } => 0,
+            Self::NewBlockHashes(_) => 1,
+            Self::Transactions(_) => 2,
+            Self::GetBlockHeadersByNumber { .. } | Self::GetBlockHeadersByHash { .. } => 3,
+            Self::BlockHeaders(_) => 4,
+            Self::GetBlockBodies(_) => 5,
+            Self::BlockBodies(_) => 6,
+            Self::NewBlock { .. } => 7,
+            Self::Unknown => 127,
         }
     }
 
     /// Decode a RLP into ETH message using the given message id
+    ///
+    /// # Errors
+    /// Errors out on failure to decode contents based on provided `id`.
     pub fn decode(rlp: &UntrustedRlp, id: usize) -> Result<Self, DecoderError> {
         Ok(match id {
-            0 => ETHMessage::Status {
+            0 => Self::Status {
                 protocol_version: rlp.val_at(0)?,
                 network_id: rlp.val_at(1)?,
                 total_difficulty: rlp.val_at(2)?,
@@ -69,42 +72,42 @@ impl ETHMessage {
                     let d = rlp.at(i)?;
                     r.push((d.val_at(0)?, d.val_at(1)?));
                 }
-                ETHMessage::NewBlockHashes(r)
+                Self::NewBlockHashes(r)
             }
-            2 => ETHMessage::Transactions(rlp.as_list()?),
+            2 => Self::Transactions(rlp.as_list()?),
             3 => {
                 let reverse: u32 = rlp.val_at(3)?;
                 if rlp.at(0)?.size() == 32 {
-                    ETHMessage::GetBlockHeadersByHash {
+                    Self::GetBlockHeadersByHash {
                         hash: rlp.val_at(0)?,
                         max_headers: rlp.val_at(1)?,
                         skip: rlp.val_at(2)?,
-                        reverse: if reverse == 0 { false } else { true },
+                        reverse: reverse != 0,
                     }
                 } else {
-                    ETHMessage::GetBlockHeadersByNumber {
+                    Self::GetBlockHeadersByNumber {
                         number: rlp.val_at(0)?,
                         max_headers: rlp.val_at(1)?,
                         skip: rlp.val_at(2)?,
-                        reverse: if reverse == 0 { false } else { true },
+                        reverse: reverse != 0,
                     }
                 }
             }
-            4 => ETHMessage::BlockHeaders(rlp.as_list()?),
-            5 => ETHMessage::GetBlockBodies(rlp.as_list()?),
+            4 => Self::BlockHeaders(rlp.as_list()?),
+            5 => Self::GetBlockBodies(rlp.as_list()?),
             6 => {
                 let mut r = Vec::new();
                 for i in 0..rlp.item_count()? {
                     let d = rlp.at(i)?;
                     r.push((d.list_at(0)?, d.list_at(1)?));
                 }
-                ETHMessage::BlockBodies(r)
+                Self::BlockBodies(r)
             }
-            7 => ETHMessage::NewBlock {
+            7 => Self::NewBlock {
                 block: rlp.val_at(0)?,
                 total_difficulty: rlp.val_at(1)?,
             },
-            _ => ETHMessage::Unknown,
+            _ => Self::Unknown,
         })
     }
 }
@@ -112,7 +115,7 @@ impl ETHMessage {
 impl Encodable for ETHMessage {
     fn rlp_append(&self, s: &mut RlpStream) {
         match self {
-            &ETHMessage::Status {
+            Self::Status {
                 protocol_version,
                 network_id,
                 total_difficulty,
@@ -120,69 +123,69 @@ impl Encodable for ETHMessage {
                 genesis_hash,
             } => {
                 s.begin_list(5);
-                s.append(&protocol_version);
-                s.append(&network_id);
-                s.append(&total_difficulty);
-                s.append(&best_hash);
-                s.append(&genesis_hash);
+                s.append(protocol_version);
+                s.append(network_id);
+                s.append(total_difficulty);
+                s.append(best_hash);
+                s.append(genesis_hash);
             }
-            &ETHMessage::NewBlockHashes(ref hashes) => {
+            Self::NewBlockHashes(hashes) => {
                 s.begin_list(hashes.len());
-                for &(hash, number) in hashes {
+                for (hash, number) in hashes {
                     s.begin_list(2);
-                    s.append(&hash);
-                    s.append(&number);
+                    s.append(hash);
+                    s.append(number);
                 }
             }
-            &ETHMessage::Transactions(ref transactions) => {
-                s.append_list(&transactions);
+            Self::Transactions(transactions) => {
+                s.append_list(transactions);
             }
-            &ETHMessage::GetBlockHeadersByNumber {
+            Self::GetBlockHeadersByNumber {
                 number,
                 max_headers,
                 skip,
                 reverse,
             } => {
                 s.begin_list(4);
-                s.append(&number);
-                s.append(&max_headers);
-                s.append(&skip);
-                s.append(&if reverse { 1u32 } else { 0u32 });
+                s.append(number);
+                s.append(max_headers);
+                s.append(skip);
+                s.append(&if *reverse { 1_u32 } else { 0_u32 });
             }
-            &ETHMessage::GetBlockHeadersByHash {
+            Self::GetBlockHeadersByHash {
                 hash,
                 max_headers,
                 skip,
                 reverse,
             } => {
                 s.begin_list(4);
-                s.append(&hash);
-                s.append(&max_headers);
-                s.append(&skip);
-                s.append(&if reverse { 1u32 } else { 0u32 });
+                s.append(hash);
+                s.append(max_headers);
+                s.append(skip);
+                s.append(&if *reverse { 1_u32 } else { 0_u32 });
             }
-            &ETHMessage::BlockHeaders(ref headers) => {
-                s.append_list(&headers);
+            Self::BlockHeaders(headers) => {
+                s.append_list(headers);
             }
-            &ETHMessage::GetBlockBodies(ref hashes) => {
-                s.append_list(&hashes);
+            Self::GetBlockBodies(hashes) => {
+                s.append_list(hashes);
             }
-            &ETHMessage::BlockBodies(ref bodies) => {
-                for &(ref transactions, ref ommers) in bodies {
+            Self::BlockBodies(bodies) => {
+                for (transactions, ommers) in bodies {
                     s.begin_list(2);
-                    s.append_list(&transactions);
-                    s.append_list(&ommers);
+                    s.append_list(transactions);
+                    s.append_list(ommers);
                 }
             }
-            &ETHMessage::NewBlock {
-                ref block,
-                ref total_difficulty,
+            Self::NewBlock {
+                block,
+                total_difficulty,
             } => {
                 s.begin_list(2);
                 s.append(block);
                 s.append(total_difficulty);
             }
-            &ETHMessage::Unknown => {
+            Self::Unknown => {
                 s.begin_list(0);
             }
         }

@@ -41,7 +41,7 @@ pub struct ETHSendMessage {
     pub data: ETHMessage,
 }
 
-/// Represent a ETH stream over DevP2P protocol
+/// Represent a ETH stream over `devp2p` protocol
 #[allow(dead_code)]
 pub struct ETHStream {
     stream: DevP2PStream,
@@ -54,8 +54,8 @@ pub struct ETHStream {
 impl ETHStream {
     /// Create a new ETH stream
     pub fn new(
-        addr: &SocketAddr,
-        public_addr: &IpAddr,
+        addr: SocketAddr,
+        public_addr: IpAddr,
         handle: &Handle,
         secret_key: SecretKey,
         client_version: String,
@@ -66,7 +66,7 @@ impl ETHStream {
         bootstrap_nodes: Vec<DPTNode>,
         config: DevP2PConfig,
     ) -> Result<Self, io::Error> {
-        Ok(ETHStream {
+        Ok(Self {
             stream: DevP2PStream::new(
                 addr,
                 public_addr,
@@ -129,7 +129,7 @@ impl Stream for ETHStream {
 
         match result {
             RLPxReceiveMessage::Connected { node, capabilities } => {
-                if capabilities.len() == 0 {
+                if capabilities.is_empty() {
                     debug!("connected a node without matching capability, ignoring.");
                     return self.poll();
                 }
@@ -152,13 +152,13 @@ impl Stream for ETHStream {
                 })?;
                 self.poll_complete()?;
 
-                return Ok(Async::Ready(Some(ETHReceiveMessage::Connected {
+                Ok(Async::Ready(Some(ETHReceiveMessage::Connected {
                     node,
                     version,
-                })));
+                })))
             }
             RLPxReceiveMessage::Disconnected { node } => {
-                return Ok(Async::Ready(Some(ETHReceiveMessage::Disconnected { node })))
+                Ok(Async::Ready(Some(ETHReceiveMessage::Disconnected { node })))
             }
             RLPxReceiveMessage::Normal {
                 node,
@@ -167,21 +167,20 @@ impl Stream for ETHStream {
                 data,
             } => {
                 debug!("got eth message with id {}", id);
-                let message = match ETHMessage::decode(&UntrustedRlp::new(&data), id) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        debug!(
-                            "got an ununderstandable message with id {}, data {:?}, ignoring.",
-                            id, data
-                        );
-                        return self.poll();
-                    }
+                let message = if let Ok(val) = ETHMessage::decode(&UntrustedRlp::new(&data), id) {
+                    val
+                } else {
+                    debug!(
+                        "got an ununderstandable message with id {}, data {:?}, ignoring.",
+                        id, data
+                    );
+                    return self.poll();
                 };
-                return Ok(Async::Ready(Some(ETHReceiveMessage::Normal {
+                Ok(Async::Ready(Some(ETHReceiveMessage::Normal {
                     node,
                     version: capability.version,
                     data: message,
-                })));
+                })))
             }
         }
     }

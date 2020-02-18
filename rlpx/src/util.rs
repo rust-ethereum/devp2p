@@ -24,7 +24,7 @@ pub fn hmac_sha256(key: &[u8], input: &[u8]) -> H256 {
 
     let mut hmac = Hmac::new(Sha256::new(), key);
     hmac.input(input);
-    let mut result = [0u8; 32];
+    let mut result = [0_u8; 32];
     hmac.raw_result(&mut result);
     H256::from(result.as_ref())
 }
@@ -38,7 +38,7 @@ pub fn pk2id(pk: &PublicKey) -> H512 {
 pub fn id2pk(id: H512) -> Result<PublicKey, secp256k1::Error> {
     let s: [u8; 64] = id.into();
     let mut sp: Vec<u8> = s.as_ref().into();
-    let mut r = vec![0x04u8];
+    let mut r = vec![0x04_u8];
     r.append(&mut sp);
     PublicKey::from_slice(&SECP256K1, r.as_ref())
 }

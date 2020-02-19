@@ -9,20 +9,22 @@ edition = "2018"
 
 [dependencies]
 byteorder = "1"
-bytes = "0.4"
+bytes = "0.5"
 etcommon-bigint = "0.2"
 etcommon-hexutil = "0.2"
 etcommon-rlp = "0.2"
-futures = "0.1"
+futures = "0.3"
 log = "0.3"
 mio = "0.6"
+pin-project-lite = "0.1"
 rand = "0.3.12"
 rust-crypto = "0.2"
 secp256k1-plus = "0.5"
 sha2 = "0.6"
 sha3 = "0.6"
-tokio-codec = "0.1"
-tokio-core = "0.1"
+streamunordered = "0.5"
+tokio = { version = "0.2", features = ["full"] }
+tokio-util = { version = "0.2", features = ["codec"] }
 
 [dev-dependencies]
 env_logger = "0.3"

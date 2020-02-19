@@ -1,14 +1,23 @@
 use crate::{ecies::ECIESStream, util::pk2id};
 use bigint::H512;
-use futures::{future, try_ready, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use futures::{ready, Sink, SinkExt};
 use log::*;
+use pin_project_lite::pin_project;
 use rlp::{Decodable, DecoderError, Encodable, RlpStream, UntrustedRlp};
 use secp256k1::{
     key::{PublicKey, SecretKey},
     SECP256K1,
 };
-use std::{io, net::SocketAddr};
-use tokio_core::{net::TcpStream, reactor::Handle};
+use std::{
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::{
+    net::TcpStream,
+    stream::{Stream, StreamExt},
+};
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 /// Capability information
@@ -73,18 +82,21 @@ impl Decodable for HelloMessage {
     }
 }
 
-/// Peer stream of a `RLPx`
-#[allow(dead_code)]
-pub struct PeerStream {
-    stream: ECIESStream,
-    protocol_version: usize,
-    client_version: String,
-    shared_capabilities: Vec<CapabilityInfo>,
-    port: u16,
-    id: H512,
-    remote_id: H512,
-}
+pin_project! {
+    /// Peer stream of a RLPx
+    pub struct PeerStream {
+        #[pin]
+        stream: ECIESStream,
+        protocol_version: usize,
+        client_version: String,
+        shared_capabilities: Vec<CapabilityInfo>,
+        port: u16,
+        id: H512,
+        remote_id: H512,
 
+        pending_pong: bool,
+    }
+}
 impl PeerStream {
     /// Remote public id of this peer
     pub const fn remote_id(&self) -> H512 {
@@ -97,235 +109,186 @@ impl PeerStream {
     }
 
     /// Connect to a peer over TCP
-    #[must_use]
-    pub fn connect(
-        addr: &SocketAddr,
-        handle: &Handle,
+    pub async fn connect(
+        addr: SocketAddr,
         secret_key: SecretKey,
         remote_id: H512,
         protocol_version: usize,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
-        Box::new(
-            ECIESStream::connect(addr, handle, secret_key, remote_id).and_then(move |socket| {
-                Self::new(
-                    socket,
-                    secret_key,
-                    protocol_version,
-                    client_version,
-                    capabilities,
-                    port,
-                )
-            }),
+    ) -> Result<Self, io::Error> {
+        Ok(Self::new(
+            ECIESStream::connect(addr, secret_key, remote_id).await?,
+            secret_key,
+            protocol_version,
+            client_version,
+            capabilities,
+            port,
         )
+        .await?)
     }
 
     /// Incoming peer stream over TCP
-    pub fn incoming(
+    pub async fn incoming(
         stream: TcpStream,
         secret_key: SecretKey,
         protocol_version: usize,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
-        Box::new(
-            ECIESStream::incoming(stream, secret_key).and_then(move |socket| {
-                Self::new(
-                    socket,
-                    secret_key,
-                    protocol_version,
-                    client_version,
-                    capabilities,
-                    port,
-                )
-            }),
+    ) -> Result<Self, io::Error> {
+        Ok(Self::new(
+            ECIESStream::incoming(stream, secret_key).await?,
+            secret_key,
+            protocol_version,
+            client_version,
+            capabilities,
+            port,
         )
+        .await?)
     }
 
     /// Create a new peer stream
-    pub fn new(
-        ecies_stream: ECIESStream,
+    pub async fn new(
+        mut socket: ECIESStream,
         secret_key: SecretKey,
         protocol_version: usize,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
-        let public_key = match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
-            Ok(key) => key,
-            Err(_) => {
-                return Box::new(future::err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "SECP256K1 public key error",
-                )))
-            }
-        };
+    ) -> Result<Self, io::Error> {
+        let public_key = PublicKey::from_secret_key(&SECP256K1, &secret_key)
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "SECP256K1 public key error"))?;
         let id = pk2id(&public_key);
         let nonhello_capabilities = capabilities.clone();
         let nonhello_client_version = client_version.clone();
 
         debug!("connecting to rlpx peer {:x}", id);
 
-        let stream = future::ok(ecies_stream)
-            .and_then(move |socket| {
-                debug!("sending hello message ...");
-                let hello = rlp::encode(&HelloMessage {
-                    port,
-                    id,
-                    protocol_version,
-                    client_version,
-                    capabilities: {
-                        let mut caps = Vec::new();
-                        for cap in capabilities {
-                            caps.push(CapabilityMessage {
-                                name: cap.name.to_string(),
-                                version: cap.version,
-                            });
-                        }
-                        caps
-                    },
-                })
-                .to_vec();
-                let message_id: Vec<u8> = rlp::encode(&0_usize).to_vec();
-                assert!(message_id.len() == 1);
-                let mut ret: Vec<u8> = Vec::new();
-                ret.push(message_id[0]);
-                for d in &hello {
-                    ret.push(*d);
+        debug!("sending hello message ...");
+        let hello = rlp::encode(&HelloMessage {
+            port,
+            id,
+            protocol_version,
+            client_version,
+            capabilities: {
+                let mut caps = Vec::new();
+                for cap in capabilities {
+                    caps.push(CapabilityMessage {
+                        name: cap.name.to_string(),
+                        version: cap.version,
+                    });
                 }
-                socket.send(ret)
-            })
-            .and_then(|transport| {
-                transport.into_future().map_err(|(e, _)| {
-                    debug!("transport error: {:?}", e);
-                    e
-                })
-            })
-            .and_then(move |(hello, transport)| {
-                debug!("receiving hello message ...");
-                if hello.is_none() {
-                    debug!("hello failed because of no value");
+                caps
+            },
+        })
+        .to_vec();
+        let message_id: Vec<u8> = rlp::encode(&0_usize).to_vec();
+        assert!(message_id.len() == 1);
+        let mut ret: Vec<u8> = Vec::new();
+        ret.push(message_id[0]);
+        for d in &hello {
+            ret.push(*d);
+        }
+        socket.send(ret).await?;
+
+        let hello = socket.try_next().await?;
+        let transport = socket;
+
+        debug!("receiving hello message ...");
+        let hello = hello.ok_or_else(|| {
+            debug!("hello failed because of no value");
+            io::Error::new(io::ErrorKind::Other, "hello failed (no value)")
+        })?;
+
+        let message_id_rlp = UntrustedRlp::new(&hello[0..1]);
+        let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
+        match message_id {
+            Ok(message_id) => {
+                if message_id != 0 {
+                    error!(
+                        "hello failed because message id is not 0 but {}",
+                        message_id
+                    );
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        "hello failed (no value)",
+                        "hello failed (message id)",
                     ));
                 }
-                let hello = hello.unwrap();
-
-                let message_id_rlp = UntrustedRlp::new(&hello[0..1]);
-                let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
-                match message_id {
-                    Ok(message_id) => {
-                        if message_id != 0 {
-                            error!(
-                                "hello failed because message id is not 0 but {}",
-                                message_id
-                            );
-                            return Err(io::Error::new(
-                                io::ErrorKind::Other,
-                                "hello failed (message id)",
-                            ));
-                        }
-                    }
-                    Err(e) => {
-                        debug!("hello failed because message id cannot be parsed");
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            format!("hello failed (message id parsing: {})", e),
-                        ));
-                    }
-                }
-
-                let rlp: Result<HelloMessage, rlp::DecoderError> =
-                    UntrustedRlp::new(&hello[1..]).as_val();
-                match rlp {
-                    Ok(val) => {
-                        debug!("hello message: {:?}", val);
-                        let mut shared_capabilities: Vec<CapabilityInfo> = Vec::new();
-
-                        for cap_info in nonhello_capabilities {
-                            let cap_match = val
-                                .capabilities
-                                .iter()
-                                .any(|v| v.name == cap_info.name && v.version == cap_info.version);
-
-                            if cap_match {
-                                shared_capabilities.push(cap_info.clone());
-                            }
-                        }
-
-                        let shared_caps_original = shared_capabilities.clone();
-
-                        for cap_info in shared_caps_original {
-                            shared_capabilities.retain(|v| {
-                                v.name != cap_info.name || v.version >= cap_info.version
-                            });
-                        }
-
-                        shared_capabilities.sort_by_key(|v| v.name);
-
-                        Ok(Self {
-                            remote_id: transport.remote_id(),
-                            stream: transport,
-                            client_version: nonhello_client_version,
-                            protocol_version,
-                            port,
-                            id,
-                            shared_capabilities,
-                        })
-                    }
-                    Err(e) => {
-                        debug!("hello failed because message rlp parsing failed");
-                        Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            format!("hello failed (rlp error: {})", e),
-                        ))
-                    }
-                }
-            });
-
-        Box::new(stream)
-    }
-
-    fn handle_reserved_message(&mut self, message_id: usize, data: &[u8]) -> Result<(), io::Error> {
-        match message_id {
-            0x01 /* disconnect */ => {
-                let reason: Result<usize, rlp::DecoderError> = UntrustedRlp::new(data).val_at(0);
-                debug!("received disconnect message, reason: {:?}", reason);
-                return Err(io::Error::new(io::ErrorKind::Other,
-                                          "explicit disconnect"));
-            },
-            0x02 /* ping */ => {
-                debug!("received ping message data {:?}", data);
-                let mut payload: Vec<u8> = rlp::encode(&0x03_usize /* pong */).to_vec();
-                payload.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
-                debug!("sending pong message payload {:?}", payload);
-                self.stream.start_send(payload)?;
-                self.stream.poll_complete()?;
-            },
-            0x03 /* pong */ => {
-                debug!("received pong message");
-            },
-            _ => {
-                debug!("received unknown reserved message");
-                return Err(io::Error::new(io::ErrorKind::Other,
-                                          "unhandled reserved message"))
-            },
+            }
+            Err(e) => {
+                debug!("hello failed because message id cannot be parsed");
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("hello failed (message id parsing: {})", e),
+                ));
+            }
         }
-        Ok(())
+
+        let rlp: Result<HelloMessage, rlp::DecoderError> = UntrustedRlp::new(&hello[1..]).as_val();
+        match rlp {
+            Ok(val) => {
+                debug!("hello message: {:?}", val);
+                let mut shared_capabilities: Vec<CapabilityInfo> = Vec::new();
+
+                for cap_info in nonhello_capabilities {
+                    let cap_match = val
+                        .capabilities
+                        .iter()
+                        .any(|v| v.name == cap_info.name && v.version == cap_info.version);
+
+                    if cap_match {
+                        shared_capabilities.push(cap_info.clone());
+                    }
+                }
+
+                let shared_caps_original = shared_capabilities.clone();
+
+                for cap_info in shared_caps_original {
+                    shared_capabilities
+                        .retain(|v| v.name != cap_info.name || v.version >= cap_info.version);
+                }
+
+                shared_capabilities.sort_by_key(|v| v.name);
+
+                Ok(Self {
+                    remote_id: transport.remote_id(),
+                    stream: transport,
+                    client_version: nonhello_client_version,
+                    protocol_version,
+                    port,
+                    id,
+                    shared_capabilities,
+                    pending_pong: false,
+                })
+            }
+            Err(e) => {
+                debug!("hello failed because message rlp parsing failed");
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("hello failed (rlp error: {})", e),
+                ))
+            }
+        }
     }
 }
 
 impl Stream for PeerStream {
-    type Item = (CapabilityInfo, usize, Vec<u8>);
-    type Error = io::Error;
+    type Item = Result<(CapabilityInfo, usize, Vec<u8>), io::Error>;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        match try_ready!(self.stream.poll()) {
-            Some(val) => {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.pending_pong && self.as_mut().project().stream.poll_ready(cx)?.is_ready() {
+            let mut payload: Vec<u8> = rlp::encode(&0x03_usize /* pong */).to_vec();
+            payload.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
+            debug!("sending pong message payload {:?}", payload);
+
+            self.as_mut().project().stream.start_send(payload)?;
+            let _ = self.as_mut().project().stream.poll_flush(cx)?;
+        }
+
+        match ready!(self.as_mut().project().stream.poll_next(cx)) {
+            Some(Ok(val)) => {
                 debug!("received peer message: {:?}", val);
                 let message_id_rlp = UntrustedRlp::new(&val[0..1]);
                 let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
@@ -333,8 +296,30 @@ impl Stream for PeerStream {
                 let (cap, id) = match message_id {
                     Ok(message_id) => {
                         if message_id < 0x10 {
-                            self.handle_reserved_message(message_id, &val[1..])?;
-                            return Ok(Async::NotReady);
+                            let data = &val[1..];
+                            match message_id {
+                                0x01 /* disconnect */ => {
+                                    let reason: Result<usize, rlp::DecoderError> = UntrustedRlp::new(data).val_at(0);
+                                    debug!("received disconnect message, reason: {:?}", reason);
+                                    return Poll::Ready(Some(Err(io::Error::new(io::ErrorKind::Other,
+                                                                               "explicit disconnect"))));
+                                },
+                                0x02 /* ping */ => {
+                                    debug!("received ping message data {:?}", data);
+                                    self.pending_pong = true;
+                                    cx.waker().wake_by_ref();
+                                    return Poll::Pending
+                                },
+                                0x03 /* pong */ => {
+                                    debug!("received pong message");
+                                },
+                                _ => {
+                                    debug!("received unknown reserved message");
+                                    return Poll::Ready(Some(Err(io::Error::new(io::ErrorKind::Other,
+                                                                               "unhandled reserved message"))))
+                                },
+                            }
+                            return Poll::Pending;
                         }
 
                         let mut message_id = message_id - 0x10;
@@ -346,36 +331,40 @@ impl Stream for PeerStream {
                             }
                         }
                         if index >= self.shared_capabilities.len() {
-                            return Err(io::Error::new(
+                            return Poll::Ready(Some(Err(io::Error::new(
                                 io::ErrorKind::Other,
                                 "message id parsing failed (too big)",
-                            ));
+                            ))));
                         }
                         (self.shared_capabilities[index], message_id)
                     }
                     Err(e) => {
-                        return Err(io::Error::new(
+                        return Poll::Ready(Some(Err(io::Error::new(
                             io::ErrorKind::Other,
                             format!("message id parsing failed (invalid): {}", e),
-                        ));
+                        ))));
                     }
                 };
 
-                Ok(Async::Ready(Some((cap, id, (&val[1..]).into()))))
+                Poll::Ready(Some(Ok((cap, id, (&val[1..]).into()))))
             }
-            None => Ok(Async::Ready(None)),
+            Some(Err(e)) => Poll::Ready(Some(Err(e))),
+            None => Poll::Ready(None),
         }
     }
 }
 
-impl Sink for PeerStream {
-    type SinkItem = (&'static str, usize, Vec<u8>);
-    type SinkError = io::Error;
+impl Sink<(&'static str, usize, Vec<u8>)> for PeerStream {
+    type Error = io::Error;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().stream.poll_ready(cx)
+    }
 
     fn start_send(
-        &mut self,
+        self: Pin<&mut Self>,
         (cap_name, id, data): (&'static str, usize, Vec<u8>),
-    ) -> StartSend<Self::SinkItem, Self::SinkError> {
+    ) -> Result<(), Self::Error> {
         let cap = self
             .shared_capabilities
             .iter()
@@ -388,7 +377,7 @@ impl Sink for PeerStream {
                 id,
                 self.remote_id()
             );
-            return Ok(AsyncSink::Ready);
+            return Ok(());
         }
 
         let cap = *cap.unwrap();
@@ -400,7 +389,7 @@ impl Sink for PeerStream {
                 id,
                 self.remote_id()
             );
-            return Ok(AsyncSink::Ready);
+            return Ok(());
         }
 
         let mut message_id = 0x10;
@@ -421,13 +410,14 @@ impl Sink for PeerStream {
             ret.push(*d);
         }
 
-        match self.stream.start_send(ret)? {
-            AsyncSink::Ready => Ok(AsyncSink::Ready),
-            AsyncSink::NotReady(_) => Ok(AsyncSink::NotReady((cap_name, id, data))),
-        }
+        self.project().stream.start_send(ret)
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        self.stream.poll_complete()
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().stream.poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().stream.poll_close(cx)
     }
 }

@@ -2,12 +2,18 @@ use super::algorithm::ECIES;
 use crate::errors::ECIESError;
 use bigint::H512;
 use bytes::BytesMut;
-use futures::{future, try_ready, Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use futures::{ready, Sink, SinkExt};
 use log::*;
+use pin_project_lite::pin_project;
 use secp256k1::key::SecretKey;
-use std::{io, net::SocketAddr};
-use tokio_codec::{Decoder, Encoder, Framed};
-use tokio_core::{net::TcpStream, reactor::Handle};
+use std::{
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::{net::TcpStream, stream::*};
+use tokio_util::codec::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Current ECIES state of a connection
@@ -56,7 +62,7 @@ impl Decoder for ECIESCodec {
     type Item = ECIESValue;
     type Error = io::Error;
 
-    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<ECIESValue>, io::Error> {
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         match self.state {
             ECIESState::Auth => {
                 if buf.len() < ECIES::auth_len() {
@@ -110,9 +116,12 @@ impl Encoder for ECIESCodec {
     type Item = ECIESValue;
     type Error = io::Error;
 
-    fn encode(&mut self, msg: ECIESValue, buf: &mut BytesMut) -> Result<(), io::Error> {
-        match msg {
-            ECIESValue::AuthReceive(_) => panic!(),
+    fn encode(&mut self, item: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
+        match item {
+            ECIESValue::AuthReceive(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "AuthReceive is not expected",
+            )),
             ECIESValue::Auth => {
                 let data = self.ecies.create_auth()?;
                 self.state = ECIESState::Ack;
@@ -143,104 +152,76 @@ impl Encoder for ECIESCodec {
     }
 }
 
-/// ECIES stream over TCP exchanging raw bytes
-pub struct ECIESStream {
-    stream: Framed<TcpStream, ECIESCodec>,
-    polled_header: bool,
-    sending_body: Option<Vec<u8>>,
-    remote_id: H512,
+pin_project! {
+    /// `ECIES` stream over TCP exchanging raw bytes
+    pub struct ECIESStream {
+        #[pin]
+        stream: Framed<TcpStream, ECIESCodec>,
+        polled_header: bool,
+        remote_id: H512,
+    }
 }
 
 impl ECIESStream {
-    /// Connect to an ECIES server
-    #[must_use]
-    pub fn connect(
-        addr: &SocketAddr,
-        handle: &Handle,
+    /// Connect to an `ECIES` server
+    pub async fn connect(
+        addr: SocketAddr,
         secret_key: SecretKey,
         remote_id: H512,
-    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
-        let ecies = match ECIESCodec::new_client(secret_key, remote_id) {
-            Ok(val) => val,
-            Err(_) => {
-                return Box::new(future::err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "invalid handshake",
-                ))) as Box<dyn Future<Item = _, Error = _>>
-            }
-        };
+    ) -> Result<Self, io::Error> {
+        let ecies = ECIESCodec::new_client(secret_key, remote_id)
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid handshake"))?;
 
         debug!("connecting to ecies stream ...");
-        let stream = TcpStream::connect(addr, handle)
-            .and_then(|socket| {
-                debug!("sending ecies auth ...");
-                ecies.framed(socket).send(ECIESValue::Auth)
-            })
-            .and_then(|transport| transport.into_future().map_err(|(e, _)| e))
-            .and_then(move |(ack, transport)| {
-                debug!("receiving ecies ack ...");
-                if ack == Some(ECIESValue::Ack) {
-                    Ok(Self {
-                        stream: transport,
-                        polled_header: false,
-                        sending_body: None,
-                        remote_id,
-                    })
-                } else {
-                    error!("expected ack, got {:?} instead", ack);
-                    Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"))
-                }
-            });
+        let socket = TcpStream::connect(addr).await?;
+        debug!("sending ecies auth ...");
 
-        Box::new(stream)
+        let mut transport = ecies.framed(socket);
+        transport.send(ECIESValue::Auth).await?;
+
+        let ack = transport.try_next().await?;
+
+        debug!("receiving ecies ack ...");
+        if ack == Some(ECIESValue::Ack) {
+            Ok(Self {
+                stream: transport,
+                polled_header: false,
+                remote_id,
+            })
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("invalid handshake: expected ack, got {:?} instead", ack),
+            ))
+        }
     }
 
-    /// Listen on a just connected ECIES clinet
-    pub fn incoming(
-        stream: TcpStream,
-        secret_key: SecretKey,
-    ) -> Box<dyn Future<Item = Self, Error = io::Error>> {
-        let ecies = match ECIESCodec::new_server(secret_key) {
-            Ok(val) => val,
-            Err(_) => {
-                return Box::new(future::err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "invalid handshake",
-                ))) as Box<dyn Future<Item = _, Error = _>>
+    /// Listen on a just connected ECIES client
+    pub async fn incoming(stream: TcpStream, secret_key: SecretKey) -> Result<Self, io::Error> {
+        let ecies = ECIESCodec::new_server(secret_key)
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid handshake"))?;
+
+        debug!("incoming ecies stream ...");
+        let mut transport = ecies.framed(stream);
+        let ack = transport.try_next().await?;
+
+        debug!("receiving ecies auth");
+        let remote_id = match ack {
+            Some(ECIESValue::AuthReceive(remote_id)) => remote_id,
+            other => {
+                error!("expected auth, got {:?} instead", other);
+                return Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"));
             }
         };
 
-        debug!("incoming ecies stream ...");
-        let stream = ecies
-            .framed(stream)
-            .into_future()
-            .map_err(|(e, _)| e)
-            .and_then(move |(ack, transport)| {
-                debug!("receiving ecies auth");
-                match ack {
-                    Some(ECIESValue::AuthReceive(remote_id)) => Ok((remote_id, transport)),
-                    ack => {
-                        error!("expected auth, got {:?} instead", ack);
-                        Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"))
-                    }
-                }
-            })
-            .and_then(|(remote_id, socket)| {
-                debug!("sending ecies ack ...");
-                socket
-                    .send(ECIESValue::Ack)
-                    .and_then(move |socket| Ok((remote_id, socket)))
-            })
-            .and_then(|(remote_id, socket)| {
-                Ok(Self {
-                    stream: socket,
-                    polled_header: false,
-                    sending_body: None,
-                    remote_id,
-                })
-            });
+        debug!("sending ecies ack ...");
+        transport.send(ECIESValue::Ack).await?;
 
-        Box::new(stream)
+        Ok(Self {
+            stream: transport,
+            polled_header: false,
+            remote_id,
+        })
     }
 
     /// Get the remote id
@@ -250,84 +231,62 @@ impl ECIESStream {
 }
 
 impl Stream for ECIESStream {
-    type Item = Vec<u8>;
-    type Error = io::Error;
+    type Item = Result<Vec<u8>, io::Error>;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.polled_header {
-            match try_ready!(self.stream.poll()) {
-                Some(ECIESValue::Header(_)) => (),
+            match ready!(self.as_mut().project().stream.poll_next(cx)) {
+                Some(Ok(ECIESValue::Header(_))) => (),
                 Some(_) => {
-                    return Err(io::Error::new(
+                    return Poll::Ready(Some(Err(io::Error::new(
                         io::ErrorKind::Other,
                         "ECIES stream protocol error",
-                    ))
+                    ))))
                 }
-                None => return Ok(Async::Ready(None)),
+                None => return Poll::Ready(None),
             };
             self.polled_header = true;
         }
-        let body = match try_ready!(self.stream.poll()) {
-            Some(ECIESValue::Body(val)) => val,
+        let body = match ready!(self.as_mut().project().stream.poll_next(cx)) {
+            Some(Ok(ECIESValue::Body(val))) => val,
             Some(_) => {
-                return Err(io::Error::new(
+                return Poll::Ready(Some(Err(io::Error::new(
                     io::ErrorKind::Other,
                     "ECIES stream protocol error",
-                ))
+                ))))
             }
-            None => return Ok(Async::Ready(None)),
+            None => return Poll::Ready(None),
         };
         self.polled_header = false;
-        Ok(Async::Ready(Some(body)))
+        Poll::Ready(Some(Ok(body)))
     }
 }
 
-impl Sink for ECIESStream {
-    type SinkItem = Vec<u8>;
-    type SinkError = io::Error;
+impl Sink<Vec<u8>> for ECIESStream {
+    type Error = io::Error;
 
-    fn start_send(&mut self, item: Vec<u8>) -> StartSend<Self::SinkItem, Self::SinkError> {
-        if self.sending_body.is_some() {
-            let sending_body = self.sending_body.take().unwrap();
-            match self.stream.start_send(ECIESValue::Body(sending_body))? {
-                AsyncSink::Ready => (), // Cache cleared, able to deal with the current item.
-                AsyncSink::NotReady(ECIESValue::Body(sending_body)) => {
-                    self.sending_body = Some(sending_body);
-                    return Ok(AsyncSink::NotReady(item));
-                }
-                _ => panic!(),
-            }
-        }
-
-        match self.stream.start_send(ECIESValue::Header(item.len()))? {
-            AsyncSink::Ready => (),
-            AsyncSink::NotReady(_) => return Ok(AsyncSink::NotReady(item)),
-        }
-
-        match self.stream.start_send(ECIESValue::Body(item))? {
-            AsyncSink::Ready => (),
-            AsyncSink::NotReady(ECIESValue::Body(item)) => {
-                self.sending_body = Some(item);
-            }
-            _ => panic!(),
-        }
-
-        Ok(AsyncSink::Ready)
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().stream.poll_ready(cx)
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        if self.sending_body.is_some() {
-            let sending_body = self.sending_body.take().unwrap();
-            match self.stream.start_send(ECIESValue::Body(sending_body))? {
-                AsyncSink::Ready => (),
-                AsyncSink::NotReady(ECIESValue::Body(sending_body)) => {
-                    self.sending_body = Some(sending_body);
-                    return Ok(Async::NotReady);
-                }
-                _ => panic!(),
-            }
-        }
+    fn start_send(mut self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
+        self.as_mut()
+            .project()
+            .stream
+            .start_send(ECIESValue::Header(item.len()))?;
+        self.as_mut()
+            .project()
+            .stream
+            .start_send(ECIESValue::Body(item))?;
 
-        self.stream.poll_complete()
+        Ok(())
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().stream.poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().stream.poll_close(cx)
     }
 }

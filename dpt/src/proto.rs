@@ -1,7 +1,7 @@
 use crate::util::{keccak256, pk2id};
 use bigint::{H256, H512};
 use secp256k1::{key::SecretKey, Message, RecoverableSignature, RecoveryId, SECP256K1};
-use std::{io, net::SocketAddr};
+use std::{convert::TryFrom, io, net::SocketAddr};
 use tokio_core::net::UdpCodec;
 
 macro_rules! try_none {
@@ -24,8 +24,8 @@ pub struct DPTCodecMessage {
 }
 
 impl DPTCodec {
-    pub fn new(secret_key: SecretKey) -> Self {
-        DPTCodec { secret_key }
+    pub const fn new(secret_key: SecretKey) -> Self {
+        Self { secret_key }
     }
 }
 
@@ -45,7 +45,7 @@ impl UdpCodec for DPTCodec {
         }
 
         let sighash = keccak256(&buf[97..]);
-        let rec_id = try_none!(RecoveryId::from_i32(buf[96] as i32));
+        let rec_id = try_none!(RecoveryId::from_i32(i32::from(buf[96])));
         let rec_sig = try_none!(RecoverableSignature::from_compact(
             &SECP256K1,
             &buf[32..96],
@@ -57,13 +57,13 @@ impl UdpCodec for DPTCodec {
 
         let typ = buf[97];
         let mut data = Vec::new();
-        for i in 98..buf.len() {
-            data.push(buf[i]);
+        for item in buf.iter().skip(98) {
+            data.push(*item);
         }
 
         Ok(Some((
             DPTCodecMessage {
-                addr: src.clone(),
+                addr: *src,
                 typ,
                 data,
             },
@@ -88,7 +88,7 @@ impl UdpCodec for DPTCodec {
         for d in sig.as_ref() {
             hashdata.push(*d);
         }
-        hashdata.push(rec.to_i32() as u8);
+        hashdata.push(u8::try_from(rec.to_i32()).expect("always u8"));
         hashdata.append(&mut typdata);
 
         let hash = keccak256(&hashdata);

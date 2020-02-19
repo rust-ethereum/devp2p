@@ -12,7 +12,7 @@ pub struct Neighbour {
 impl Encodable for Neighbour {
     fn rlp_append(&self, s: &mut RlpStream) {
         s.begin_list(4);
-        let address: Vec<u8> = match self.address.clone() {
+        let address: Vec<u8> = match self.address {
             IpAddr::V4(v) => v.octets().as_ref().into(),
             IpAddr::V6(v) => v.octets().as_ref().into(),
         };
@@ -27,16 +27,12 @@ impl Decodable for Neighbour {
     fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
         let address_raw: Vec<u8> = rlp.val_at(0)?;
         let address = if address_raw.len() == 4 {
-            let mut raw = [0u8; 4];
-            for i in 0..4 {
-                raw[i] = address_raw[i];
-            }
+            let mut raw = [0_u8; 4];
+            raw[..4].clone_from_slice(&address_raw[..4]);
             IpAddr::from(raw)
         } else if address_raw.len() == 16 {
-            let mut raw = [0u8; 16];
-            for i in 0..16 {
-                raw[i] = address_raw[i];
-            }
+            let mut raw = [0_u8; 16];
+            raw[..16].clone_from_slice(&address_raw[..16]);
             IpAddr::from(raw)
         } else {
             return Err(DecoderError::Custom("wrong address length"));
@@ -60,7 +56,7 @@ pub struct Endpoint {
 impl Encodable for Endpoint {
     fn rlp_append(&self, s: &mut RlpStream) {
         s.begin_list(3);
-        let address: Vec<u8> = match self.address.clone() {
+        let address: Vec<u8> = match self.address {
             IpAddr::V4(v) => v.octets().as_ref().into(),
             IpAddr::V6(v) => v.octets().as_ref().into(),
         };
@@ -81,10 +77,8 @@ impl Decodable for Endpoint {
                 address_raw[3],
             ))
         } else if address_raw.len() == 16 {
-            let mut raw = [0u8; 16];
-            for i in 0..16 {
-                raw[i] = address_raw[i];
-            }
+            let mut raw = [0_u8; 16];
+            raw[..16].clone_from_slice(&address_raw[..16]);
             IpAddr::from(raw)
         } else {
             return Err(DecoderError::Custom("wrong address length"));
@@ -151,7 +145,7 @@ pub struct PingMessage {
 impl Encodable for PingMessage {
     fn rlp_append(&self, s: &mut RlpStream) {
         s.begin_list(4);
-        s.append(&4u32); // Version 4
+        s.append(&4_u32); // Version 4
         s.append(&self.from);
         s.append(&self.to);
         s.append(&self.expire);

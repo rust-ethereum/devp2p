@@ -1,5 +1,13 @@
 //! Ethereum DPT protocol implementation
 
+#![warn(clippy::all, clippy::pedantic, clippy::nursery)]
+#![allow(
+    clippy::cognitive_complexity,
+    clippy::missing_errors_doc,
+    clippy::module_name_repetitions,
+    clippy::too_many_lines
+)]
+
 mod message;
 mod proto;
 mod util;
@@ -16,6 +24,7 @@ use secp256k1::{
     SECP256K1,
 };
 use std::{
+    convert::TryFrom,
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
@@ -47,8 +56,8 @@ pub struct DPTStream {
     tcp_port: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// DPT node used by a DPT stream
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct DPTNode {
     pub address: IpAddr,
     pub tcp_port: u16,
@@ -64,16 +73,18 @@ pub enum DPTNodeParseError {
 
 impl DPTNode {
     /// The TCP socket address of this node
+    #[must_use]
     pub fn tcp_addr(&self) -> SocketAddr {
         SocketAddr::new(self.address, self.tcp_port)
     }
 
     /// The UDP socket address of this node
+    #[must_use]
     pub fn udp_addr(&self) -> SocketAddr {
         SocketAddr::new(self.address, self.udp_port)
     }
 
-    pub fn from_url(url: &Url) -> Result<DPTNode, DPTNodeParseError> {
+    pub fn from_url(url: &Url) -> Result<Self, DPTNodeParseError> {
         let address = match url.host() {
             Some(Host::Ipv4(ip)) => IpAddr::V4(ip),
             Some(Host::Ipv6(ip)) => IpAddr::V6(ip),
@@ -89,7 +100,7 @@ impl DPTNode {
             _ => return Err(DPTNodeParseError::HexError),
         };
 
-        Ok(DPTNode {
+        Ok(Self {
             address,
             id,
             tcp_port: port,
@@ -101,11 +112,11 @@ impl DPTNode {
 impl DPTStream {
     /// Create a new DPT stream
     pub fn new(
-        addr: &SocketAddr,
+        addr: SocketAddr,
         handle: &Handle,
         secret_key: SecretKey,
         bootstrap_nodes: Vec<DPTNode>,
-        public_address: &IpAddr,
+        public_address: IpAddr,
         tcp_port: u16,
     ) -> Result<Self, io::Error> {
         let id = pk2id(&match PublicKey::from_secret_key(&SECP256K1, &secret_key) {
@@ -119,14 +130,14 @@ impl DPTStream {
         });
         debug!("self id: {:x}", id);
         Ok(Self {
-            stream: UdpSocket::bind(addr, handle)?.framed(DPTCodec::new(secret_key)),
+            stream: UdpSocket::bind(&addr, handle)?.framed(DPTCodec::new(secret_key)),
             id,
             connected: bootstrap_nodes.clone(),
             incoming: bootstrap_nodes,
             pingponged: Vec::new(),
             bootstrapped: false,
             timeout: None,
-            address: public_address.clone(),
+            address: public_address,
             udp_port: addr.port(),
             tcp_port,
         })
@@ -145,20 +156,20 @@ impl DPTStream {
 
     /// Get the peer by its id
     pub fn get_peer(&self, remote_id: H512) -> Option<DPTNode> {
-        for i in 0..self.connected.len() {
-            if self.connected[i].id == remote_id {
-                return Some(self.connected[i].clone());
-            }
-        }
-        return None;
+        self.connected
+            .iter()
+            .find(|connected_peer| connected_peer.id == remote_id)
+            .copied()
     }
 
-    fn default_expire(&self) -> u64 {
-        time::now_utc().to_timespec().sec as u64 + 60
+    fn default_expire() -> u64 {
+        u64::try_from(time::now_utc().to_timespec().sec)
+            .expect("this would predate the protocol inception")
+            + 60
     }
 
     fn send_ping(&mut self, addr: SocketAddr, to: DPTNode) -> Poll<(), io::Error> {
-        let typ = 0x01u8;
+        let typ = 0x01_u8;
         let message = PingMessage {
             from: Endpoint {
                 address: self.address,
@@ -170,7 +181,7 @@ impl DPTStream {
                 udp_port: to.udp_port,
                 tcp_port: to.tcp_port,
             },
-            expire: self.default_expire(),
+            expire: Self::default_expire(),
         };
         let data = rlp::encode(&message).to_vec();
 
@@ -182,11 +193,11 @@ impl DPTStream {
     }
 
     fn send_pong(&mut self, addr: SocketAddr, echo: H256, to: Endpoint) -> Poll<(), io::Error> {
-        let typ = 0x02u8;
+        let typ = 0x02_u8;
         let message = PongMessage {
             echo,
             to,
-            expire: self.default_expire(),
+            expire: Self::default_expire(),
         };
         let data = rlp::encode(&message).to_vec();
 
@@ -199,10 +210,10 @@ impl DPTStream {
     }
 
     fn send_find_neighbours(&mut self, addr: SocketAddr) -> Poll<(), io::Error> {
-        let typ = 0x03u8;
+        let typ = 0x03_u8;
         let message = FindNeighboursMessage {
             id: self.id,
-            expire: self.default_expire(),
+            expire: Self::default_expire(),
         };
         let data = rlp::encode(&message).to_vec();
 
@@ -214,7 +225,7 @@ impl DPTStream {
     }
 
     fn send_neighbours(&mut self, addr: SocketAddr) -> Poll<(), io::Error> {
-        let typ = 0x04u8;
+        let typ = 0x04_u8;
         // Return at most 3 nodes at a time.
         let mut nodes = Vec::new();
         for i in 0..self.connected.len() {
@@ -236,7 +247,7 @@ impl DPTStream {
         }
         let message = NeighboursMessage {
             nodes,
-            expire: self.default_expire(),
+            expire: Self::default_expire(),
         };
         let data = rlp::encode(&message).to_vec();
 
@@ -262,7 +273,7 @@ impl Stream for DPTStream {
 
         let mut timeoutted = false;
         if self.timeout.is_some() {
-            let &mut (ref mut timeout, ref hs) = self.timeout.as_mut().unwrap();
+            let (timeout, hs) = self.timeout.as_mut().unwrap();
             timeoutted = match timeout.poll() {
                 Ok(Async::Ready(())) => true,
                 Ok(Async::NotReady) => false,
@@ -285,11 +296,11 @@ impl Stream for DPTStream {
                 Async::Ready(Some(Some(val))) => val,
                 Async::Ready(Some(None)) => continue,
                 Async::NotReady => {
-                    if self.incoming.len() > 0 {
+                    if !self.incoming.is_empty() {
                         return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
-                    } else {
-                        return Ok(Async::NotReady);
                     }
+
+                    return Ok(Async::NotReady);
                 }
                 Async::Ready(None) => return Ok(Async::Ready(None)),
             };
@@ -304,9 +315,8 @@ impl Stream for DPTStream {
 
                     self.send_pong(message.addr, hash, ping_message.to)?;
 
-                    let v = self.connected.iter().find(|v| v.id == remote_id).map(|v| v.clone());
-                    if v.is_some() {
-                        let v = v.unwrap();
+                    let v = self.connected.iter().find(|v| v.id == remote_id).cloned();
+                    if let Some(v) = v {
                         if !self.pingponged.contains(&v) {
                             self.pingponged.push(v);
                         }
@@ -324,9 +334,8 @@ impl Stream for DPTStream {
                         });
                     }
 
-                    let v = self.connected.iter().find(|v| v.id == remote_id).map(|v| v.clone());
-                    if v.is_some() {
-                        let v = v.unwrap();
+                    let v = self.connected.iter().find(|v| v.id == remote_id).cloned();
+                    if let Some(v) = v {
                         if !self.pingponged.contains(&v) {
                             debug!("pushing pingponged: {:?}", v);
                             self.pingponged.push(v);
@@ -365,7 +374,7 @@ impl Stream for DPTStream {
                 _ => { }
             }
 
-            if self.incoming.len() > 0 {
+            if !self.incoming.is_empty() {
                 return Ok(Async::Ready(Some(self.incoming.pop().unwrap())));
             }
         }
@@ -386,7 +395,7 @@ impl Sink for DPTStream {
                 debug!("randomly selecting one peer from {}", self.pingponged.len());
                 thread_rng().shuffle(&mut self.pingponged);
 
-                if self.pingponged.len() == 0 {
+                if self.pingponged.is_empty() {
                     debug!("no peers available to find node");
                     for node in self.connected.clone() {
                         self.send_ping(node.udp_addr(), node)?;
@@ -397,7 +406,7 @@ impl Sink for DPTStream {
                 let addr = self.pingponged[0].udp_addr();
                 self.send_find_neighbours(addr)?;
 
-                return Ok(AsyncSink::Ready);
+                Ok(AsyncSink::Ready)
             }
 
             DPTMessage::Ping(timeout) => {
@@ -409,14 +418,8 @@ impl Sink for DPTStream {
 
                 self.timeout = Some((timeout, timeoutting));
 
-                return Ok(AsyncSink::Ready);
+                Ok(AsyncSink::Ready)
             }
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {}
 }

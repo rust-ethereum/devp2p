@@ -19,6 +19,7 @@ use secp256k1::{
 };
 use sha2::{Digest, Sha256};
 use sha3::Keccak256;
+use std::{convert::TryFrom, io};
 
 const AUTH_LEN: usize = 65 /* signature with recovery */ + 32 /* keccak256 ephemeral */ +
     64 /* public key */ + 32 /* nonce */ + 1;
@@ -31,14 +32,14 @@ fn ecdh_x(public_key: &PublicKey, secret_key: &SecretKey) -> H256 {
 }
 
 fn concat_kdf(key_material: H256) -> H256 {
-    const SHA256_BLOCK_SIZE: usize = 64;
-    const REPS: usize = (32 + 7) * 8 / (SHA256_BLOCK_SIZE * 8);
+    const SHA256_BLOCK_SIZE: u32 = 64;
+    const REPS: u32 = (32 + 7) * 8 / (SHA256_BLOCK_SIZE * 8);
 
     let mut buffers: Vec<u8> = Vec::new();
-    for counter in 0..(REPS + 1) {
+    for counter in 0..=REPS {
         let mut sha256 = Sha256::new();
         let mut tmp: Vec<u8> = Vec::new();
-        tmp.write_u32::<BigEndian>((counter + 1) as u32).unwrap();
+        tmp.write_u32::<BigEndian>(counter + 1).unwrap();
         sha256.input(&tmp);
         sha256.input(&key_material);
         buffers.append(&mut sha256.result().as_ref().into());
@@ -81,7 +82,7 @@ impl ECIES {
         let (ephemeral_secret_key, ephemeral_public_key) =
             SECP256K1.generate_keypair(&mut OsRng::new()?)?;
 
-        Ok(ECIES {
+        Ok(Self {
             secret_key,
             public_key,
             ephemeral_secret_key,
@@ -111,7 +112,7 @@ impl ECIES {
         let (ephemeral_secret_key, ephemeral_public_key) =
             SECP256K1.generate_keypair(&mut OsRng::new()?)?;
 
-        Ok(ECIES {
+        Ok(Self {
             secret_key,
             public_key,
             ephemeral_secret_key,
@@ -143,25 +144,27 @@ impl ECIES {
         let secret_key = SecretKey::new(&SECP256K1, &mut OsRng::new()?);
         let x = ecdh_x(&self.remote_public_key.unwrap(), &secret_key);
         let key = concat_kdf(x);
-        let ekey = H128::from(&key[0..16]);
-        let mkey = sha256(&key[16..32]);
+        let enc_key = H128::from(&key[0..16]);
+        let mac_key = sha256(&key[16..32]);
 
         let iv = H128::random();
-        let mut iv_encrypted = vec![0u8; 16 + data.len()];
+        let mut iv_encrypted = vec![0_u8; 16 + data.len()];
         iv_encrypted[0..16].copy_from_slice(iv.as_ref());
 
-        let mut encryptor =
-            CtrMode::new(AesSafe128Encryptor::new(ekey.as_ref()), iv.as_ref().into());
+        let mut encryptor = CtrMode::new(
+            AesSafe128Encryptor::new(enc_key.as_ref()),
+            iv.as_ref().into(),
+        );
         encryptor.encrypt(
             &mut RefReadBuffer::new(data),
             &mut RefWriteBuffer::new(&mut iv_encrypted[16..]),
             true,
         )?;
 
-        let tag = hmac_sha256(mkey.as_ref(), iv_encrypted.as_ref());
+        let tag = hmac_sha256(mac_key.as_ref(), iv_encrypted.as_ref());
         let public_key = PublicKey::from_secret_key(&SECP256K1, &secret_key)?;
 
-        let mut ret = vec![0u8; 65 + 16 + data.len() + 32];
+        let mut ret = vec![0_u8; 65 + 16 + data.len() + 32];
         ret[0..65].copy_from_slice(&public_key.serialize_vec(&SECP256K1, false));
         ret[65..(65 + 16 + data.len())].copy_from_slice(&iv_encrypted);
         ret[(65 + 16 + data.len())..].copy_from_slice(tag.as_ref());
@@ -176,21 +179,21 @@ impl ECIES {
 
         let x = ecdh_x(&public_key, &self.secret_key);
         let key = concat_kdf(x);
-        let ekey = H128::from(&key[0..16]);
-        let mkey = sha256(&key[16..32]);
+        let enc_key = H128::from(&key[0..16]);
+        let mac_key = sha256(&key[16..32]);
 
-        let check_tag = hmac_sha256(mkey.as_ref(), data_iv);
+        let check_tag = hmac_sha256(mac_key.as_ref(), data_iv);
         if check_tag != tag {
             return Err(ECIESError::TagCheckFailed);
         }
 
         let iv = &data_iv[0..16];
         let encrypted_data = &data_iv[16..];
-        let mut decrypted_data = vec![0u8; encrypted_data.len()];
+        let mut decrypted_data = vec![0_u8; encrypted_data.len()];
 
-        let mut encryptor = CtrMode::new(AesSafe128Encryptor::new(ekey.as_ref()), iv.into());
+        let mut encryptor = CtrMode::new(AesSafe128Encryptor::new(enc_key.as_ref()), iv.into());
         encryptor.decrypt(
-            &mut RefReadBuffer::new(&encrypted_data),
+            &mut RefReadBuffer::new(encrypted_data),
             &mut RefWriteBuffer::new(&mut decrypted_data),
             true,
         )?;
@@ -203,14 +206,14 @@ impl ECIES {
         let msg = Message::from_slice((x ^ self.nonce).as_ref())?;
         let sig_rec = SECP256K1.sign_recoverable(&msg, &self.ephemeral_secret_key)?;
         let (rec, sig) = sig_rec.serialize_compact(&SECP256K1);
-        let mut ret = [0u8; AUTH_LEN];
+        let mut out = [0_u8; AUTH_LEN];
 
-        ret[0..64].copy_from_slice(&sig[0..64]);
-        ret[64] = rec.to_i32() as u8;
-        ret[65..97].copy_from_slice(&keccak256(pk2id(&self.ephemeral_public_key).as_ref())[0..32]);
-        ret[97..161].copy_from_slice(&pk2id(&self.public_key)[0..64]);
-        ret[161..193].copy_from_slice(&self.nonce[0..32]);
-        Ok(ret)
+        out[0..64].copy_from_slice(&sig[0..64]);
+        out[64] = u8::try_from(rec.to_i32()).expect("always u8");
+        out[65..97].copy_from_slice(&keccak256(pk2id(&self.ephemeral_public_key).as_ref())[0..32]);
+        out[97..161].copy_from_slice(&pk2id(&self.public_key)[0..64]);
+        out[161..193].copy_from_slice(&self.nonce[0..32]);
+        Ok(out)
     }
 
     pub fn create_auth(&mut self) -> Result<Vec<u8>, ECIESError> {
@@ -224,13 +227,13 @@ impl ECIES {
         let sig_rec = RecoverableSignature::from_compact(
             &SECP256K1,
             &data[0..64],
-            RecoveryId::from_i32(data[64] as i32)?,
+            RecoveryId::from_i32(i32::from(data[64]))?,
         )?;
         let heid = H256::from(&data[65..97]);
         self.remote_id = Some(H512::from(&data[97..161]));
         self.remote_public_key = Some(id2pk(H512::from(&data[97..161]))?);
         self.remote_nonce = Some(H256::from(&data[161..193]));
-        if data[193] != 0u8 {
+        if data[193] != 0_u8 {
             return Err(ECIESError::InvalidAuthData);
         }
 
@@ -252,22 +255,20 @@ impl ECIES {
 
     pub fn parse_auth(&mut self, data: &[u8]) -> Result<(), ECIESError> {
         self.remote_init_msg = Some(data.into());
-        let unencrypted = self.decrypt_message(&data)?;
+        let unencrypted = self.decrypt_message(data)?;
         if unencrypted.len() != AUTH_LEN {
             return Err(ECIESError::InvalidAuthData);
         }
-        let mut data = [0u8; AUTH_LEN];
-        for i in 0..AUTH_LEN {
-            data[i] = unencrypted[i];
-        }
-        self.parse_auth_unencrypted(data)
+        let mut decrypted = [0_u8; AUTH_LEN];
+        decrypted[..AUTH_LEN].clone_from_slice(&unencrypted[..AUTH_LEN]);
+        self.parse_auth_unencrypted(decrypted)
     }
 
     fn create_ack_unencrypted(&self) -> [u8; ACK_LEN] {
-        let mut ret = [0u8; ACK_LEN];
+        let mut ret = [0_u8; ACK_LEN];
         ret[0..64].copy_from_slice(pk2id(&self.ephemeral_public_key).as_ref());
         ret[64..96].copy_from_slice(self.nonce.as_ref());
-        ret[96] = 0u8;
+        ret[96] = 0_u8;
         ret
     }
 
@@ -282,7 +283,7 @@ impl ECIES {
     fn parse_ack_unencrypted(&mut self, data: [u8; ACK_LEN]) -> Result<(), ECIESError> {
         self.remote_ephemeral_public_key = Some(id2pk(H512::from(&data[0..64]))?);
         self.remote_nonce = Some(H256::from(&data[64..96]));
-        if data[96] != 0u8 {
+        if data[96] != 0_u8 {
             return Err(ECIESError::InvalidAckData);
         }
 
@@ -295,15 +296,13 @@ impl ECIES {
 
     pub fn parse_ack(&mut self, data: &[u8]) -> Result<(), ECIESError> {
         self.remote_init_msg = Some(data.into());
-        let unencrypted = self.decrypt_message(&data)?;
+        let unencrypted = self.decrypt_message(data)?;
         if unencrypted.len() != ACK_LEN {
             return Err(ECIESError::InvalidAckData);
         }
-        let mut data = [0u8; ACK_LEN];
-        for i in 0..ACK_LEN {
-            data[i] = unencrypted[i];
-        }
-        self.parse_ack_unencrypted(data)?;
+        let mut decrypted = [0_u8; ACK_LEN];
+        decrypted[..ACK_LEN].clone_from_slice(&unencrypted[..ACK_LEN]);
+        self.parse_ack_unencrypted(decrypted)?;
         self.setup_frame(false);
         Ok(())
     }
@@ -373,11 +372,11 @@ impl ECIES {
     pub fn create_header(&mut self, size: usize) -> Vec<u8> {
         let mut buffer = Vec::new();
         buffer.write_uint::<BigEndian>(size as u64, 3).unwrap();
-        let mut header = [0u8; 16];
+        let mut header = [0_u8; 16];
         header[0..3].copy_from_slice(buffer.as_ref());
-        header[3..6].copy_from_slice(&[194u8, 128u8, 128u8].as_ref());
+        header[3..6].copy_from_slice([194_u8, 128_u8, 128_u8].as_ref());
 
-        let mut encrypted = [0u8; 16];
+        let mut encrypted = [0_u8; 16];
         self.egress_aes
             .as_mut()
             .unwrap()
@@ -394,11 +393,11 @@ impl ECIES {
         let tag = self.egress_mac.as_mut().unwrap().digest();
 
         let mut ret = Vec::new();
-        for i in 0..16 {
-            ret.push(encrypted[i]);
+        for item in &encrypted {
+            ret.push(*item);
         }
-        for i in 0..16 {
-            ret.push(tag[i]);
+        for item in tag.iter() {
+            ret.push(*item);
         }
         ret
     }
@@ -413,30 +412,34 @@ impl ECIES {
             return Err(ECIESError::TagCheckFailed);
         }
 
-        let mut decrypted = [0u8; 16];
+        let mut decrypted = [0_u8; 16];
         self.ingress_aes
             .as_mut()
             .unwrap()
             .decrypt(
-                &mut RefReadBuffer::new(&header),
+                &mut RefReadBuffer::new(header),
                 &mut RefWriteBuffer::new(&mut decrypted),
                 false,
             )
             .unwrap();
-        self.body_size = Some(decrypted.as_ref().read_uint::<BigEndian>(3)? as usize);
+        self.body_size = Some(
+            usize::try_from(decrypted.as_ref().read_uint::<BigEndian>(3)?).map_err(|_| {
+                io::Error::new(io::ErrorKind::Other, "32 bit systems are not supported")
+            })?,
+        );
 
         Ok(self.body_size.unwrap())
     }
 
-    pub fn auth_len(&self) -> usize {
+    pub const fn auth_len() -> usize {
         65 + 16 + AUTH_LEN + 32
     }
 
-    pub fn ack_len(&self) -> usize {
+    pub const fn ack_len() -> usize {
         65 + 16 + ACK_LEN + 32
     }
 
-    pub fn header_len(&self) -> usize {
+    pub const fn header_len() -> usize {
         32
     }
 
@@ -455,11 +458,9 @@ impl ECIES {
         } else {
             (data.len() / 16 + 1) * 16
         };
-        let mut data_padded = vec![0u8; len];
-        for i in 0..data.len() {
-            data_padded[i] = data[i];
-        }
-        let mut encrypted = vec![0u8; len];
+        let mut data_padded = vec![0_u8; len];
+        data_padded[..data.len()].clone_from_slice(&data[..]);
+        let mut encrypted = vec![0_u8; len];
         self.egress_aes
             .as_mut()
             .unwrap()
@@ -474,7 +475,7 @@ impl ECIES {
             .unwrap()
             .update_body(encrypted.as_ref());
         let tag = self.egress_mac.as_mut().unwrap().digest();
-        let mut ret = vec![0u8; len + 16];
+        let mut ret = vec![0_u8; len + 16];
         ret[0..len].copy_from_slice(encrypted.as_ref());
         ret[len..].copy_from_slice(tag.as_ref());
         ret
@@ -491,12 +492,12 @@ impl ECIES {
 
         let size = self.body_size.unwrap();
         self.body_size = None;
-        let mut ret = vec![0u8; data.len() - 16];
+        let mut ret = vec![0_u8; data.len() - 16];
         self.ingress_aes
             .as_mut()
             .unwrap()
             .decrypt(
-                &mut RefReadBuffer::new(&body),
+                &mut RefReadBuffer::new(body),
                 &mut RefWriteBuffer::new(&mut ret),
                 false,
             )
@@ -530,18 +531,18 @@ mod tests {
 
         // Handshake
         let auth = client_ecies.create_auth().unwrap();
-        assert_eq!(auth.len(), server_ecies.auth_len());
+        assert_eq!(auth.len(), ECIES::auth_len());
         server_ecies.parse_auth(auth.as_ref()).unwrap();
         let ack = server_ecies.create_ack().unwrap();
-        assert_eq!(ack.len(), client_ecies.ack_len());
+        assert_eq!(ack.len(), ECIES::ack_len());
         client_ecies.parse_ack(ack.as_ref()).unwrap();
 
-        let server_to_client_data = [0u8, 1u8, 2u8, 3u8, 4u8];
-        let client_to_server_data = [5u8, 6u8, 7u8];
+        let server_to_client_data = [0_u8, 1_u8, 2_u8, 3_u8, 4_u8];
+        let client_to_server_data = [5_u8, 6_u8, 7_u8];
 
         // Test server to client 1
         let header = server_ecies.create_header(server_to_client_data.len());
-        assert_eq!(header.len(), client_ecies.header_len());
+        assert_eq!(header.len(), ECIES::header_len());
         client_ecies.parse_header(header.as_ref()).unwrap();
         let body = server_ecies.create_body(&server_to_client_data);
         assert_eq!(body.len(), client_ecies.body_len());

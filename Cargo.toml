@@ -9,22 +9,22 @@ edition = "2018"
 
 [dependencies]
 dpt = { version = "0.2", path = "./dpt" }
-rand = "0.3.12"
-rlpx = { version = "0.3", path = "./rlpx" }
-futures = "0.1"
-tokio-io = "0.1"
-tokio-core = "0.1"
-secp256k1-plus = "0.5"
 etcommon-bigint = "0.2"
-etcommon-rlp = "0.2"
 etcommon-block = "0.3"
 etcommon-hexutil = "0.2"
+etcommon-rlp = "0.2"
+futures = "0.1"
 log = "0.3"
+rand = "0.3.12"
+rlpx = { version = "0.3", path = "./rlpx" }
+secp256k1-plus = "0.5"
+tokio-core = "0.1"
+tokio-io = "0.1"
 
 [dev-dependencies]
 env_logger = "0.3"
-url = "1.5.1"
 sha3 = "0.6"
+url = "1.5.1"
 
 [workspace]
 members = [

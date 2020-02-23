@@ -2,6 +2,7 @@
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 #![allow(
+    clippy::default_trait_access,
     clippy::missing_errors_doc,
     clippy::module_name_repetitions,
     clippy::too_many_arguments,
@@ -17,9 +18,9 @@ mod util;
 pub use peer::{CapabilityInfo, PeerStream};
 
 use bigint::H512;
+use derivative::Derivative;
 use futures::{stream::SplitStream, Sink, SinkExt};
 use log::*;
-use pin_project_lite::pin_project;
 use secp256k1::key::SecretKey;
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -31,7 +32,9 @@ use std::{
 };
 use streamunordered::StreamYield;
 use tokio::{
-    net::TcpListener,
+    io::AsyncRead,
+    io::AsyncWrite,
+    net::{TcpListener, TcpStream},
     stream::{Stream, StreamExt},
     sync::Mutex,
 };
@@ -91,35 +94,35 @@ impl PeerState {
     }
 }
 
-#[derive(Default)]
-struct PeerStreams {
-    streams: streamunordered::StreamUnordered<SplitStream<PeerStream>>,
+#[derive(Derivative)]
+#[derivative(Default(bound = "Io: AsyncRead + AsyncWrite + Unpin"))]
+struct PeerStreams<Io> {
+    streams: streamunordered::StreamUnordered<SplitStream<PeerStream<Io>>>,
     // Mapping of remote IDs to streams in streamunordered
     mapping: HashMap<H512, PeerState>,
     reverse_mapping: HashMap<usize, H512>,
 }
 
-pin_project! {
-    /// A `RLPx` stream and sink
-    pub struct RLPxStream {
-        dropper: tokio::sync::watch::Sender<()>,
-        drop_handle: tokio::sync::watch::Receiver<()>,
+/// A `RLPx` stream and sink
+pub struct RLPxStream {
+    #[allow(unused)]
+    dropper: tokio::sync::watch::Sender<()>,
+    drop_handle: tokio::sync::watch::Receiver<()>,
 
-        streams: Arc<Mutex<PeerStreams>>,
+    streams: Arc<Mutex<PeerStreams<TcpStream>>>,
 
-        newly_connected_tx: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
-        newly_connected: tokio::sync::mpsc::Receiver<(H512, Vec<CapabilityInfo>)>,
-        newly_disconnected_tx: tokio::sync::mpsc::Sender<H512>,
-        newly_disconnected: tokio::sync::mpsc::Receiver<H512>,
-        sink: tokio::sync::mpsc::UnboundedSender<RLPxSendMessage>,
-        disconnect_cmd_tx: tokio::sync::mpsc::UnboundedSender<(H512, Option<tokio::sync::oneshot::Sender<bool>>)>,
+    newly_connected_tx: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
+    newly_connected: tokio::sync::mpsc::Receiver<(H512, Vec<CapabilityInfo>)>,
+    newly_disconnected: tokio::sync::mpsc::Receiver<H512>,
+    sink: tokio::sync::mpsc::UnboundedSender<RLPxSendMessage>,
+    disconnect_cmd_tx:
+        tokio::sync::mpsc::UnboundedSender<(H512, Option<tokio::sync::oneshot::Sender<bool>>)>,
 
-        secret_key: SecretKey,
-        protocol_version: usize,
-        client_version: String,
-        capabilities: Vec<CapabilityInfo>,
-        port: u16,
-    }
+    secret_key: SecretKey,
+    protocol_version: usize,
+    client_version: String,
+    capabilities: Vec<CapabilityInfo>,
+    port: u16,
 }
 
 // This is a Tokio-based RLPx server implementation.
@@ -159,7 +162,7 @@ impl RLPxStream {
         tokio::spawn({
             let mut drop_handle = drop_handle.clone();
             let streams = streams.clone();
-            let mut newly_disconnected_tx = newly_disconnected_tx.clone();
+            let mut newly_disconnected_tx = newly_disconnected_tx;
             async move {
                 loop {
                     tokio::select! {
@@ -314,19 +317,19 @@ impl RLPxStream {
                                 data,
                             }) = res
                             {
-                                let s = streams.lock().await;
+                                let this = streams.lock().await;
                                 // So here we select the peers that will receive our message.
                                 let peer = match node {
                                     RLPxNode::Peer(peer_id) => Some(peer_id),
                                     RLPxNode::All => None,
-                                    RLPxNode::Any => s.mapping.keys().next().copied(),
+                                    RLPxNode::Any => this.mapping.keys().next().copied(),
                                 };
 
                                 let message = (capability_name, id, data);
 
                                 // Send to one peer if it's selected.
                                 if let Some(peer_id) = peer {
-                                    match s.mapping.get(&peer_id) {
+                                    match this.mapping.get(&peer_id) {
                                         Some(PeerState::Connected(handle)) => {
                                             let _ = handle.sender.send(message);
                                         }
@@ -345,7 +348,7 @@ impl RLPxStream {
                                     }
                                 } else {
                                     // Send to everybody otherwise.
-                                    for handle in s.mapping.values() {
+                                    for handle in this.mapping.values() {
                                         if let PeerState::Connected(handle) = handle {
                                             let _ = handle.sender.send(message.clone());
                                         }
@@ -372,7 +375,6 @@ impl RLPxStream {
             newly_connected,
             newly_connected_tx,
             newly_disconnected,
-            newly_disconnected_tx,
             disconnect_cmd_tx,
             port,
         })
@@ -415,16 +417,19 @@ impl RLPxStream {
 
             // Connecting to peer is a long running operation so we have to break the mutex lock.
 
-            let peer_res = PeerStream::connect(
-                addr,
-                secret_key,
-                remote_id,
-                protocol_version,
-                client_version,
-                capabilities,
-                port,
-            )
-            .await;
+            let peer_res = async {
+                let transport = TcpStream::connect(addr).await?;
+                PeerStream::connect(
+                    transport,
+                    secret_key,
+                    remote_id,
+                    protocol_version,
+                    client_version,
+                    capabilities,
+                    port,
+                )
+                    .await
+            }.await;
             let mut s = streams.lock().await;
             let PeerStreams {
                 streams,
@@ -577,7 +582,7 @@ impl Sink<RLPxSendMessage> for RLPxStream {
     }
 
     fn start_send(self: Pin<&mut Self>, item: RLPxSendMessage) -> Result<(), Self::Error> {
-        let _ = self.project().sink.send(item);
+        let _ = self.get_mut().sink.send(item);
         Ok(())
     }
 

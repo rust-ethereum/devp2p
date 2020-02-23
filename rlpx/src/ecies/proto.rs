@@ -4,15 +4,14 @@ use bigint::H512;
 use bytes::BytesMut;
 use futures::{ready, Sink, SinkExt};
 use log::*;
-use pin_project_lite::pin_project;
 use secp256k1::key::SecretKey;
 use std::{
     io,
-    net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::{net::TcpStream, stream::*};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::stream::*;
 use tokio_util::codec::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,31 +151,29 @@ impl Encoder for ECIESCodec {
     }
 }
 
-pin_project! {
-    /// `ECIES` stream over TCP exchanging raw bytes
-    pub struct ECIESStream {
-        #[pin]
-        stream: Framed<TcpStream, ECIESCodec>,
-        polled_header: bool,
-        remote_id: H512,
-    }
+/// `ECIES` stream over TCP exchanging raw bytes
+pub struct ECIESStream<Io> {
+    stream: Framed<Io, ECIESCodec>,
+    polled_header: bool,
+    remote_id: H512,
 }
 
-impl ECIESStream {
+impl<Io> ECIESStream<Io>
+where
+    Io: AsyncRead + AsyncWrite + Unpin,
+{
     /// Connect to an `ECIES` server
     pub async fn connect(
-        addr: SocketAddr,
+        transport: Io,
         secret_key: SecretKey,
         remote_id: H512,
     ) -> Result<Self, io::Error> {
         let ecies = ECIESCodec::new_client(secret_key, remote_id)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid handshake"))?;
 
-        debug!("connecting to ecies stream ...");
-        let socket = TcpStream::connect(addr).await?;
-        debug!("sending ecies auth ...");
+        let mut transport = ecies.framed(transport);
 
-        let mut transport = ecies.framed(socket);
+        debug!("sending ecies auth ...");
         transport.send(ECIESValue::Auth).await?;
 
         let ack = transport.try_next().await?;
@@ -197,12 +194,12 @@ impl ECIESStream {
     }
 
     /// Listen on a just connected ECIES client
-    pub async fn incoming(stream: TcpStream, secret_key: SecretKey) -> Result<Self, io::Error> {
+    pub async fn incoming(transport: Io, secret_key: SecretKey) -> Result<Self, io::Error> {
         let ecies = ECIESCodec::new_server(secret_key)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid handshake"))?;
 
         debug!("incoming ecies stream ...");
-        let mut transport = ecies.framed(stream);
+        let mut transport = ecies.framed(transport);
         let ack = transport.try_next().await?;
 
         debug!("receiving ecies auth");
@@ -225,17 +222,21 @@ impl ECIESStream {
     }
 
     /// Get the remote id
-    pub const fn remote_id(&self) -> H512 {
+    pub fn remote_id(&self) -> H512 {
         self.remote_id
     }
 }
 
-impl Stream for ECIESStream {
+impl<Io> Stream for ECIESStream<Io>
+where
+    Io: AsyncRead + AsyncWrite + Unpin,
+{
     type Item = Result<Vec<u8>, io::Error>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if !self.polled_header {
-            match ready!(self.as_mut().project().stream.poll_next(cx)) {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if !this.polled_header {
+            match ready!(Pin::new(&mut this.stream).poll_next(cx)) {
                 Some(Ok(ECIESValue::Header(_))) => (),
                 Some(_) => {
                     return Poll::Ready(Some(Err(io::Error::new(
@@ -245,9 +246,9 @@ impl Stream for ECIESStream {
                 }
                 None => return Poll::Ready(None),
             };
-            self.polled_header = true;
+            this.polled_header = true;
         }
-        let body = match ready!(self.as_mut().project().stream.poll_next(cx)) {
+        let body = match ready!(Pin::new(&mut this.stream).poll_next(cx)) {
             Some(Ok(ECIESValue::Body(val))) => val,
             Some(_) => {
                 return Poll::Ready(Some(Err(io::Error::new(
@@ -257,36 +258,34 @@ impl Stream for ECIESStream {
             }
             None => return Poll::Ready(None),
         };
-        self.polled_header = false;
+        this.polled_header = false;
         Poll::Ready(Some(Ok(body)))
     }
 }
 
-impl Sink<Vec<u8>> for ECIESStream {
+impl<Io> Sink<Vec<u8>> for ECIESStream<Io>
+where
+    Io: AsyncRead + AsyncWrite + Unpin,
+{
     type Error = io::Error;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().stream.poll_ready(cx)
+        Pin::new(&mut self.get_mut().stream).poll_ready(cx)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
-        self.as_mut()
-            .project()
-            .stream
-            .start_send(ECIESValue::Header(item.len()))?;
-        self.as_mut()
-            .project()
-            .stream
-            .start_send(ECIESValue::Body(item))?;
+    fn start_send(self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+        Pin::new(&mut this.stream).start_send(ECIESValue::Header(item.len()))?;
+        Pin::new(&mut this.stream).start_send(ECIESValue::Body(item))?;
 
         Ok(())
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().stream.poll_flush(cx)
+        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().stream.poll_close(cx)
+        Pin::new(&mut self.get_mut().stream).poll_close(cx)
     }
 }

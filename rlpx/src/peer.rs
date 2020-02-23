@@ -2,7 +2,6 @@ use crate::{ecies::ECIESStream, util::pk2id};
 use bigint::H512;
 use futures::{ready, Sink, SinkExt};
 use log::*;
-use pin_project_lite::pin_project;
 use rlp::{Decodable, DecoderError, Encodable, RlpStream, UntrustedRlp};
 use secp256k1::{
     key::{PublicKey, SecretKey},
@@ -10,12 +9,11 @@ use secp256k1::{
 };
 use std::{
     io,
-    net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::{
-    net::TcpStream,
+    io::{AsyncRead, AsyncWrite},
     stream::{Stream, StreamExt},
 };
 
@@ -82,24 +80,26 @@ impl Decodable for HelloMessage {
     }
 }
 
-pin_project! {
-    /// Peer stream of a RLPx
-    pub struct PeerStream {
-        #[pin]
-        stream: ECIESStream,
-        protocol_version: usize,
-        client_version: String,
-        shared_capabilities: Vec<CapabilityInfo>,
-        port: u16,
-        id: H512,
-        remote_id: H512,
+/// `RLPx` transport peer stream
+#[allow(unused)]
+pub struct PeerStream<Io> {
+    stream: ECIESStream<Io>,
+    protocol_version: usize,
+    client_version: String,
+    shared_capabilities: Vec<CapabilityInfo>,
+    port: u16,
+    id: H512,
+    remote_id: H512,
 
-        pending_pong: bool,
-    }
+    pending_pong: bool,
 }
-impl PeerStream {
+
+impl<Io> PeerStream<Io>
+where
+    Io: AsyncRead + AsyncWrite + Unpin,
+{
     /// Remote public id of this peer
-    pub const fn remote_id(&self) -> H512 {
+    pub fn remote_id(&self) -> H512 {
         self.remote_id
     }
 
@@ -110,7 +110,7 @@ impl PeerStream {
 
     /// Connect to a peer over TCP
     pub async fn connect(
-        addr: SocketAddr,
+        transport: Io,
         secret_key: SecretKey,
         remote_id: H512,
         protocol_version: usize,
@@ -119,7 +119,7 @@ impl PeerStream {
         port: u16,
     ) -> Result<Self, io::Error> {
         Ok(Self::new(
-            ECIESStream::connect(addr, secret_key, remote_id).await?,
+            ECIESStream::connect(transport, secret_key, remote_id).await?,
             secret_key,
             protocol_version,
             client_version,
@@ -131,7 +131,7 @@ impl PeerStream {
 
     /// Incoming peer stream over TCP
     pub async fn incoming(
-        stream: TcpStream,
+        transport: Io,
         secret_key: SecretKey,
         protocol_version: usize,
         client_version: String,
@@ -139,7 +139,7 @@ impl PeerStream {
         port: u16,
     ) -> Result<Self, io::Error> {
         Ok(Self::new(
-            ECIESStream::incoming(stream, secret_key).await?,
+            ECIESStream::incoming(transport, secret_key).await?,
             secret_key,
             protocol_version,
             client_version,
@@ -151,7 +151,7 @@ impl PeerStream {
 
     /// Create a new peer stream
     pub async fn new(
-        mut socket: ECIESStream,
+        mut transport: ECIESStream<Io>,
         secret_key: SecretKey,
         protocol_version: usize,
         client_version: String,
@@ -191,10 +191,9 @@ impl PeerStream {
         for d in &hello {
             ret.push(*d);
         }
-        socket.send(ret).await?;
+        transport.send(ret).await?;
 
-        let hello = socket.try_next().await?;
-        let transport = socket;
+        let hello = transport.try_next().await?;
 
         debug!("receiving hello message ...");
         let hello = hello.ok_or_else(|| {
@@ -274,20 +273,24 @@ impl PeerStream {
     }
 }
 
-impl Stream for PeerStream {
+impl<Io> Stream for PeerStream<Io>
+where
+    Io: AsyncRead + AsyncWrite + Unpin,
+{
     type Item = Result<(CapabilityInfo, usize, Vec<u8>), io::Error>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.pending_pong && self.as_mut().project().stream.poll_ready(cx)?.is_ready() {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut s = self.get_mut();
+        if s.pending_pong && Pin::new(&mut s.stream).poll_ready(cx)?.is_ready() {
             let mut payload: Vec<u8> = rlp::encode(&0x03_usize /* pong */).to_vec();
             payload.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
             debug!("sending pong message payload {:?}", payload);
 
-            self.as_mut().project().stream.start_send(payload)?;
-            let _ = self.as_mut().project().stream.poll_flush(cx)?;
+            Pin::new(&mut s.stream).start_send(payload)?;
+            let _ = Pin::new(&mut s.stream).poll_flush(cx)?;
         }
 
-        match ready!(self.as_mut().project().stream.poll_next(cx)) {
+        match ready!(Pin::new(&mut s.stream).poll_next(cx)) {
             Some(Ok(val)) => {
                 debug!("received peer message: {:?}", val);
                 let message_id_rlp = UntrustedRlp::new(&val[0..1]);
@@ -306,7 +309,7 @@ impl Stream for PeerStream {
                                 },
                                 0x02 /* ping */ => {
                                     debug!("received ping message data {:?}", data);
-                                    self.pending_pong = true;
+                                    s.pending_pong = true;
                                     cx.waker().wake_by_ref();
                                     return Poll::Pending
                                 },
@@ -324,19 +327,19 @@ impl Stream for PeerStream {
 
                         let mut message_id = message_id - 0x10;
                         let mut index = 0;
-                        for cap in &self.shared_capabilities {
+                        for cap in &s.shared_capabilities {
                             if message_id > cap.length {
                                 message_id -= cap.length;
                                 index += 1;
                             }
                         }
-                        if index >= self.shared_capabilities.len() {
+                        if index >= s.shared_capabilities.len() {
                             return Poll::Ready(Some(Err(io::Error::new(
                                 io::ErrorKind::Other,
                                 "message id parsing failed (too big)",
                             ))));
                         }
-                        (self.shared_capabilities[index], message_id)
+                        (s.shared_capabilities[index], message_id)
                     }
                     Err(e) => {
                         return Poll::Ready(Some(Err(io::Error::new(
@@ -354,18 +357,22 @@ impl Stream for PeerStream {
     }
 }
 
-impl Sink<(&'static str, usize, Vec<u8>)> for PeerStream {
+impl<Io> Sink<(&'static str, usize, Vec<u8>)> for PeerStream<Io>
+where
+    Io: AsyncRead + AsyncWrite + Unpin,
+{
     type Error = io::Error;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().stream.poll_ready(cx)
+        Pin::new(&mut self.get_mut().stream).poll_ready(cx)
     }
 
     fn start_send(
         self: Pin<&mut Self>,
         (cap_name, id, data): (&'static str, usize, Vec<u8>),
     ) -> Result<(), Self::Error> {
-        let cap = self
+        let this = self.get_mut();
+        let cap = this
             .shared_capabilities
             .iter()
             .find(|cap| cap.name == cap_name);
@@ -375,7 +382,7 @@ impl Sink<(&'static str, usize, Vec<u8>)> for PeerStream {
                 "giving up sending cap {} of id {} to 0x{:x} because remote does not support.",
                 cap_name,
                 id,
-                self.remote_id()
+                this.remote_id()
             );
             return Ok(());
         }
@@ -387,13 +394,13 @@ impl Sink<(&'static str, usize, Vec<u8>)> for PeerStream {
                 "giving up sending cap {} of id {} to 0x{:x} because it is too big.",
                 cap_name,
                 id,
-                self.remote_id()
+                this.remote_id()
             );
             return Ok(());
         }
 
         let mut message_id = 0x10;
-        for scap in &self.shared_capabilities {
+        for scap in &this.shared_capabilities {
             if scap == &cap {
                 break;
             }
@@ -410,14 +417,14 @@ impl Sink<(&'static str, usize, Vec<u8>)> for PeerStream {
             ret.push(*d);
         }
 
-        self.project().stream.start_send(ret)
+        Pin::new(&mut this.stream).start_send(ret)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().stream.poll_flush(cx)
+        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.project().stream.poll_close(cx)
+        Pin::new(&mut self.get_mut().stream).poll_close(cx)
     }
 }

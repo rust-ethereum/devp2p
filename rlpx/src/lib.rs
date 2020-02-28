@@ -18,7 +18,6 @@ mod util;
 pub use peer::{CapabilityInfo, PeerStream};
 
 use bigint::H512;
-use derivative::Derivative;
 use futures::{stream::SplitStream, Sink, SinkExt};
 use log::*;
 use secp256k1::key::SecretKey;
@@ -30,12 +29,11 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use streamunordered::StreamYield;
 use tokio::{
     io::AsyncRead,
     io::AsyncWrite,
     net::{TcpListener, TcpStream},
-    stream::{Stream, StreamExt},
+    stream::{Stream, StreamExt, StreamMap},
     sync::Mutex,
 };
 
@@ -75,7 +73,6 @@ pub enum RLPxReceiveMessage {
 }
 
 struct StreamHandle {
-    token: usize,
     sender: tokio::sync::mpsc::UnboundedSender<(&'static str, usize, Vec<u8>)>,
 }
 
@@ -94,13 +91,63 @@ impl PeerState {
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Default(bound = "Io: AsyncRead + AsyncWrite + Unpin"))]
+struct StreamMapEntry<Io> {
+    inner: SplitStream<PeerStream<Io>>,
+    done: bool,
+}
+
+impl<Io> From<SplitStream<PeerStream<Io>>> for StreamMapEntry<Io> {
+    fn from(inner: SplitStream<PeerStream<Io>>) -> Self {
+        Self { inner, done: false }
+    }
+}
+
+enum PeerStreamUpdate {
+    Data((CapabilityInfo, usize, Vec<u8>)),
+    Error(io::Error),
+    Finished,
+}
+
+impl<Io: AsyncRead + AsyncWrite + Unpin> Stream for StreamMapEntry<Io> {
+    type Item = PeerStreamUpdate;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.done {
+            return Poll::Ready(None);
+        }
+
+        if let Poll::Ready(res) = Pin::new(&mut this.inner).poll_next(cx) {
+            match res {
+                Some(Ok(data)) => Poll::Ready(Some(PeerStreamUpdate::Data(data))),
+                Some(Err(e)) => {
+                    this.done = true;
+                    Poll::Ready(Some(PeerStreamUpdate::Error(e)))
+                }
+                None => {
+                    this.done = true;
+                    Poll::Ready(Some(PeerStreamUpdate::Finished))
+                }
+            }
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
 struct PeerStreams<Io> {
-    streams: streamunordered::StreamUnordered<SplitStream<PeerStream<Io>>>,
-    // Mapping of remote IDs to streams in streamunordered
+    streams: StreamMap<H512, StreamMapEntry<Io>>,
+    /// Mapping of remote IDs to streams in `StreamMap`
     mapping: HashMap<H512, PeerState>,
-    reverse_mapping: HashMap<usize, H512>,
+}
+
+impl<Io> Default for PeerStreams<Io> {
+    fn default() -> Self {
+        Self {
+            streams: StreamMap::new(),
+            mapping: HashMap::new(),
+        }
+    }
 }
 
 /// A `RLPx` stream and sink
@@ -174,18 +221,16 @@ impl RLPxStream {
                                 debug!("disconnecting peer {}", remote_id);
 
                                 let mut s = streams.lock().await;
-                                let PeerStreams { streams, mapping, reverse_mapping } = &mut *s;
+                                let PeerStreams { streams, mapping } = &mut *s;
 
-                                let mut peer_dropped = false;
                                 // If this was a known peer, remove it.
-                                if let Some(peer_state) = mapping.remove(&remote_id) {
+                                let peer_dropped = if mapping.remove(&remote_id).is_some() {
                                     // If the connection was successfully established, drop it.
-                                    if let PeerState::Connected(handle) = peer_state {
-                                        Pin::new(streams).remove(handle.token);
-                                        reverse_mapping.remove(&handle.token);
-                                    }
-                                    peer_dropped = true;
-                                }
+                                    streams.remove(&remote_id).unwrap();
+                                    true
+                                } else {
+                                    false
+                                };
                                 let _ = newly_disconnected_tx.send(remote_id).await;
                                 if let Some(cb_chan) = cb_chan {
                                     let _ = cb_chan.send(peer_dropped);
@@ -243,7 +288,7 @@ impl RLPxStream {
                                             Ok(peer) => {
                                                 let remote_id = peer.remote_id();
                                                 let mut s = streams.lock().await;
-                                                let PeerStreams { streams, mapping, reverse_mapping } = &mut *s;
+                                                let PeerStreams { streams, mapping } = &mut *s;
                                                 let peer_state = mapping.entry(remote_id).or_insert(PeerState::Connecting);
                                                 if peer_state.is_connected() {
                                                     // Turns out that remote peer's already connected. Drop connection request.
@@ -277,9 +322,8 @@ impl RLPxStream {
                                                         }
                                                     }
                                                 });
-                                                let token = streams.push(stream);
-                                                *peer_state = PeerState::Connected(StreamHandle { token, sender: peer_sender_tx });
-                                                assert!(reverse_mapping.insert(token, remote_id).is_none());
+                                                assert!(streams.insert(remote_id.clone(), stream.into()).is_none());
+                                                *peer_state = PeerState::Connected(StreamHandle { sender: peer_sender_tx });
                                                 drop(s);
                                                 let _ = newly_connected
                                                     .send((remote_id, capabilities))
@@ -434,7 +478,6 @@ impl RLPxStream {
             let PeerStreams {
                 streams,
                 mapping,
-                reverse_mapping,
             } = &mut *s;
 
             // Adopt the new connection if the peer has not been dropped or superseded by incoming connection.
@@ -470,11 +513,9 @@ impl RLPxStream {
                                     }
                                 }
                             });
-                            let token = streams.push(stream);
-                            assert!(reverse_mapping.insert(token, remote_id).is_none());
+                            assert!(streams.insert(remote_id.clone(), stream.into()).is_none());
                             *peer_state.get_mut() =
                                 PeerState::Connected(StreamHandle {
-                                    token,
                                     sender: peer_sender_tx,
                                 });
                             drop(s);
@@ -521,51 +562,40 @@ impl RLPxStream {
 impl Stream for RLPxStream {
     type Item = RLPxReceiveMessage;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut need_disconnect = None;
-        if let Ok(mut streams) = self.as_mut().streams.try_lock() {
-            if let Poll::Ready(resp) = Pin::new(&mut streams.streams).poll_next(cx) {
-                match resp {
-                    Some((StreamYield::Item(Ok((cap, message_id, data))), token)) => {
-                        debug!("received RLPx data {:?}", data);
-                        let remote_id = streams.reverse_mapping.get(&token).unwrap();
-                        return Poll::Ready(Some(Self::Item::Normal {
-                            node: *remote_id,
-                            capability: cap,
-                            id: message_id,
-                            data,
-                        }));
-                    }
-                    Some((StreamYield::Item(Err(e)), token)) => {
-                        debug!("peer disconnected with error {:?}", e);
-                        need_disconnect =
-                            Some(*streams.reverse_mapping.get(&token).expect("always exists"))
-                    }
-                    Some((StreamYield::Finished(_stream), token)) => {
-                        debug!("peer disconnected without error");
-                        need_disconnect =
-                            Some(*streams.reverse_mapping.get(&token).expect("always exists"));
-                    }
-                    None => {
-                        return Poll::Pending;
-                    }
-                }
-            }
-        }
-
-        if let Some(remote_id) = need_disconnect {
-            let _ = self.disconnect_cmd_tx.send((remote_id, None));
-            cx.waker().wake_by_ref();
-            return Poll::Pending;
-        }
-
-        if let Poll::Ready(Some(connected)) = self.newly_connected.poll_recv(cx) {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if let Poll::Ready(Some(connected)) = this.newly_connected.poll_recv(cx) {
             Poll::Ready(Some(RLPxReceiveMessage::Connected {
                 node: connected.0,
                 capabilities: connected.1,
             }))
-        } else if let Poll::Ready(Some(node)) = self.newly_disconnected.poll_recv(cx) {
+        } else if let Poll::Ready(Some(node)) = this.newly_disconnected.poll_recv(cx) {
             Poll::Ready(Some(RLPxReceiveMessage::Disconnected { node }))
+        } else if let Ok(mut streams) = this.streams.try_lock() {
+            if let Poll::Ready(Some((node, res))) = Pin::new(&mut streams.streams).poll_next(cx) {
+                match res {
+                    PeerStreamUpdate::Data((capability, id, data)) => {
+                        debug!("received RLPx data {:?}", data);
+                        return Poll::Ready(Some(Self::Item::Normal {
+                            node,
+                            capability,
+                            id,
+                            data,
+                        }));
+                    }
+                    PeerStreamUpdate::Error(e) => {
+                        debug!("Peer {} disconnected with error: {}", node, e);
+                    }
+                    PeerStreamUpdate::Finished => {
+                        debug!("Peer {} disconnected without error", node);
+                    }
+                }
+
+                let _ = this.disconnect_cmd_tx.send((node, None));
+                cx.waker().wake_by_ref();
+            }
+
+            Poll::Pending
         } else {
             Poll::Pending
         }

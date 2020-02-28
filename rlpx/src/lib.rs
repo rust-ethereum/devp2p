@@ -73,7 +73,7 @@ pub enum RLPxReceiveMessage {
 }
 
 struct StreamHandle {
-    sender: tokio::sync::mpsc::UnboundedSender<(&'static str, usize, Vec<u8>)>,
+    sender: tokio::sync::mpsc::Sender<(&'static str, usize, Vec<u8>)>,
 }
 
 enum PeerState {
@@ -161,7 +161,7 @@ pub struct RLPxStream {
     newly_connected_tx: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
     newly_connected: tokio::sync::mpsc::Receiver<(H512, Vec<CapabilityInfo>)>,
     newly_disconnected: tokio::sync::mpsc::Receiver<H512>,
-    sink: tokio::sync::mpsc::UnboundedSender<RLPxSendMessage>,
+    sink: tokio::sync::mpsc::Sender<RLPxSendMessage>,
     disconnect_cmd_tx:
         tokio::sync::mpsc::UnboundedSender<(H512, Option<tokio::sync::oneshot::Sender<bool>>)>,
 
@@ -300,7 +300,7 @@ impl RLPxStream {
                                                 let capabilities = peer.capabilities().into();
                                                 let (mut sink, stream) = futures::StreamExt::split(peer);
                                                 let mut drop_handle = drop_handle.clone();
-                                                let (peer_sender_tx, mut peer_sender_rx) = tokio::sync::mpsc::unbounded_channel();
+                                                let (peer_sender_tx, mut peer_sender_rx) = tokio::sync::mpsc::channel(1);
 
                                                 // Outgoing router -> PeerStream connector
                                                 tokio::spawn(async move {
@@ -343,7 +343,7 @@ impl RLPxStream {
         }
 
         // Outgoing message router
-        let (sink, mut outgoing_messages) = tokio::sync::mpsc::unbounded_channel();
+        let (sink, mut outgoing_messages) = tokio::sync::mpsc::channel(1);
         tokio::spawn({
             let mut drop_handle = drop_handle.clone();
             let streams = streams.clone();
@@ -375,7 +375,9 @@ impl RLPxStream {
                                 if let Some(peer_id) = peer {
                                     match this.mapping.get(&peer_id) {
                                         Some(PeerState::Connected(handle)) => {
-                                            let _ = handle.sender.send(message);
+                                            let mut sender = handle.sender.clone();
+                                            drop(this);
+                                            let _ = sender.send(message).await;
                                         }
                                         Some(PeerState::Connecting) => {
                                             warn!(
@@ -392,10 +394,10 @@ impl RLPxStream {
                                     }
                                 } else {
                                     // Send to everybody otherwise.
-                                    for handle in this.mapping.values() {
-                                        if let PeerState::Connected(handle) = handle {
-                                            let _ = handle.sender.send(message.clone());
-                                        }
+                                    let senders = this.mapping.values().filter_map(|v| if let PeerState::Connected(handle) = v { Some(handle.sender.clone()) } else { None }).collect::<Vec<_>>();
+                                    drop(this);
+                                    for mut sender in senders {
+                                        let _ = sender.send(message.clone()).await;
                                     }
                                 }
                             } else {
@@ -490,7 +492,7 @@ impl RLPxStream {
                             let capabilities = peer.capabilities().into();
                             let (mut sink, stream) = futures::StreamExt::split(peer);
                             let (peer_sender_tx, mut peer_sender_rx) =
-                                tokio::sync::mpsc::unbounded_channel();
+                                tokio::sync::mpsc::channel(1);
 
                             // Outgoing router -> PeerStream connector
                             tokio::spawn(async move {
@@ -602,17 +604,18 @@ impl Stream for RLPxStream {
     }
 }
 
-// NOTE: Be careful with handling large load here: this implementation of sink does *not* support backpressure.
-// If your packet flow overwhelms the inner PeerStream you will eventually run out of memory!
 impl Sink<RLPxSendMessage> for RLPxStream {
     type Error = io::Error;
 
-    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut()
+            .sink
+            .poll_ready(cx)
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "channel closed"))
     }
 
     fn start_send(self: Pin<&mut Self>, item: RLPxSendMessage) -> Result<(), Self::Error> {
-        let _ = self.get_mut().sink.send(item);
+        let _ = self.get_mut().sink.try_send(item);
         Ok(())
     }
 

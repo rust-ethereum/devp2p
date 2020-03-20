@@ -149,6 +149,180 @@ impl<Io> Default for PeerStreams<Io> {
     }
 }
 
+pub type CancellationToken = tokio::sync::watch::Receiver<()>;
+
+/// Removes peer from internal state on request.
+async fn disconnecter_loop(
+    mut drop_handle: CancellationToken,
+    mut disconnect_cmd: tokio::sync::mpsc::UnboundedReceiver<(
+        H512,
+        Option<tokio::sync::oneshot::Sender<bool>>,
+    )>,
+    streams: Arc<Mutex<PeerStreams<TcpStream>>>,
+    mut newly_disconnected_notify: tokio::sync::mpsc::Sender<H512>,
+) {
+    loop {
+        tokio::select! {
+            _ = drop_handle.recv() => {
+                return;
+            }
+            res = disconnect_cmd.next() => {
+                if let Some((remote_id, cb_chan)) = res {
+                    debug!("disconnecting peer {}", remote_id);
+
+                    let mut s = streams.lock().await;
+                    let PeerStreams { streams, mapping } = &mut *s;
+
+                    // If this was a known peer, remove it.
+                    let peer_dropped = if mapping.remove(&remote_id).is_some() {
+                        // If the connection was successfully established, drop it.
+                        streams.remove(&remote_id).unwrap();
+                        true
+                    } else {
+                        false
+                    };
+                    let _ = newly_disconnected_notify.send(remote_id).await;
+                    if let Some(cb_chan) = cb_chan {
+                        let _ = cb_chan.send(peer_dropped);
+                    }
+                } else {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PeerStreamHandshakeData {
+    port: u16,
+    protocol_version: usize,
+    secret_key: SecretKey,
+    client_version: String,
+    capabilities: Vec<CapabilityInfo>,
+}
+
+async fn incoming_loop(
+    drop_handle: CancellationToken,
+    mut tcp_incoming: TcpListener,
+    handshake_data: PeerStreamHandshakeData,
+    streams: Arc<Mutex<PeerStreams<TcpStream>>>,
+    newly_connected: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
+    disconnecter: tokio::sync::mpsc::UnboundedSender<(
+        H512,
+        Option<tokio::sync::oneshot::Sender<bool>>,
+    )>,
+) {
+    let mut general_drop_handle = drop_handle.clone();
+
+    loop {
+        tokio::select! {
+            _ = general_drop_handle.recv() => {
+                return;
+            }
+            res = tcp_incoming.accept() => {
+                match res {
+                    Err(e) => {
+                        error!("failed to accept peer: {:?}, shutting down", e);
+                        return;
+                    }
+                    Ok((stream, _remote_addr)) => {
+                        tokio::spawn(
+                            handle_incoming(
+                                drop_handle.clone(),
+                                stream,
+                                handshake_data.clone(),
+                                streams.clone(),
+                                newly_connected.clone(),
+                                disconnecter.clone(),
+                            )
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Establishes the connection with peer and adds them to internal state.
+async fn handle_incoming<Io: AsyncRead + AsyncWrite + Unpin>(
+    drop_handle: CancellationToken,
+    stream: Io,
+    handshake_data: PeerStreamHandshakeData,
+    streams: Arc<Mutex<PeerStreams<Io>>>,
+
+    mut newly_connected: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
+    disconnecter: tokio::sync::mpsc::UnboundedSender<(
+        H512,
+        Option<tokio::sync::oneshot::Sender<bool>>,
+    )>,
+) {
+    let PeerStreamHandshakeData {
+        secret_key,
+        protocol_version,
+        client_version,
+        capabilities,
+        port,
+    } = handshake_data;
+    // Do handshake and convert incoming connection into stream.
+    let peer_res = PeerStream::incoming(
+        stream,
+        secret_key,
+        protocol_version,
+        client_version,
+        capabilities,
+        port,
+    )
+    .await;
+    match peer_res {
+        Ok(peer) => {
+            let remote_id = peer.remote_id();
+            let mut s = streams.lock().await;
+            let PeerStreams { streams, mapping } = &mut *s;
+            let peer_state = mapping.entry(remote_id).or_insert(PeerState::Connecting);
+            if peer_state.is_connected() {
+                // Turns out that remote peer's already connected. Drop connection request.
+                warn!("we are already connected to remote peer {}!", remote_id);
+                return;
+            }
+            // If we are connecting, incoming connection request takes precedence
+            debug!("new peer connected: {}", remote_id);
+            let capabilities = peer.capabilities().into();
+            let (mut sink, stream) = futures::StreamExt::split(peer);
+            let mut drop_handle = drop_handle.clone();
+            let (peer_sender_tx, mut peer_sender_rx) = tokio::sync::mpsc::channel(1);
+
+            assert!(streams.insert(remote_id.clone(), stream.into()).is_none());
+            *peer_state = PeerState::Connected(StreamHandle {
+                sender: peer_sender_tx,
+            });
+            drop(s);
+            let _ = newly_connected.send((remote_id, capabilities)).await;
+
+            loop {
+                tokio::select! {
+                    _ = drop_handle.recv() => {
+                        return;
+                    }
+                    res = peer_sender_rx.recv() => {
+                        if let Some(msg) = res {
+                            if let Err(e) = sink.send(msg).await {
+                                debug!("peer disconnected with error {:?}", e);
+                                let _ = disconnecter.send((remote_id, None));
+                            }
+                        } else {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!("peer disconnected with error {}", e);
+        }
+    }
+}
+
 /// A `RLPx` stream and sink
 pub struct RLPxStream {
     #[allow(unused)]
@@ -200,145 +374,33 @@ impl RLPxStream {
 
         let streams = Arc::new(Mutex::new(PeerStreams::default()));
 
-        // Disconnect command listener
-        let (disconnect_cmd_tx, mut disconnect_cmd) = tokio::sync::mpsc::unbounded_channel::<(
+        let (disconnect_cmd_tx, disconnect_cmd) = tokio::sync::mpsc::unbounded_channel::<(
             _,
             Option<tokio::sync::oneshot::Sender<bool>>,
         )>();
-        tokio::spawn({
-            let mut drop_handle = drop_handle.clone();
-            let streams = streams.clone();
-            let mut newly_disconnected_tx = newly_disconnected_tx;
-            async move {
-                loop {
-                    tokio::select! {
-                        _ = drop_handle.recv() => {
-                            return;
-                        }
-                        res = disconnect_cmd.next() => {
-                            if let Some((remote_id, cb_chan)) = res {
-                                debug!("disconnecting peer {}", remote_id);
+        tokio::spawn(disconnecter_loop(
+            drop_handle.clone(),
+            disconnect_cmd,
+            streams.clone(),
+            newly_disconnected_tx.clone(),
+        ));
 
-                                let mut s = streams.lock().await;
-                                let PeerStreams { streams, mapping } = &mut *s;
-
-                                // If this was a known peer, remove it.
-                                let peer_dropped = if mapping.remove(&remote_id).is_some() {
-                                    // If the connection was successfully established, drop it.
-                                    streams.remove(&remote_id).unwrap();
-                                    true
-                                } else {
-                                    false
-                                };
-                                let _ = newly_disconnected_tx.send(remote_id).await;
-                                if let Some(cb_chan) = cb_chan {
-                                    let _ = cb_chan.send(peer_dropped);
-                                }
-                            } else {
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        // Incoming connection handler
         if let Some(addr) = listen {
-            let mut tcp_incoming = TcpListener::bind(addr).await?;
-            let streams = streams.clone();
-            let client_version = client_version.clone();
-            let capabilities = capabilities.clone();
-            let newly_connected = newly_connected_tx.clone();
-            let drop_handle = drop_handle.clone();
-            let mut general_drop_handle = drop_handle.clone();
-            let disconnect_cmd_tx = disconnect_cmd_tx.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = general_drop_handle.recv() => {
-                            return;
-                        }
-                        res = tcp_incoming.accept() => {
-                            match res {
-                                Err(e) => {
-                                    error!("failed to accept peer: {:?}, shutting down", e);
-                                    return;
-                                }
-                                Ok((stream, _remote_addr)) => {
-                                    let client_version = client_version.clone();
-                                    let capabilities = capabilities.clone();
-                                    let mut newly_connected = newly_connected.clone();
-                                    let streams = streams.clone();
-                                    let disconnect_cmd_tx = disconnect_cmd_tx.clone();
-                                    let drop_handle = drop_handle.clone();
-                                    tokio::spawn(async move {
-                                        // Do handshake and convert incoming connection into stream.
-                                        let peer_res = PeerStream::incoming(
-                                            stream,
-                                            secret_key,
-                                            protocol_version,
-                                            client_version.clone(),
-                                            capabilities.clone(),
-                                            port,
-                                        )
-                                        .await;
-                                        match peer_res {
-                                            Ok(peer) => {
-                                                let remote_id = peer.remote_id();
-                                                let mut s = streams.lock().await;
-                                                let PeerStreams { streams, mapping } = &mut *s;
-                                                let peer_state = mapping.entry(remote_id).or_insert(PeerState::Connecting);
-                                                if peer_state.is_connected() {
-                                                    // Turns out that remote peer's already connected. Drop connection request.
-                                                    warn!("we are already connected to remote peer {}!", remote_id);
-                                                    return;
-                                                }
-                                                // If we are connecting, incoming connection request takes precedence
-                                                debug!("new peer connected: {}", remote_id);
-                                                let capabilities = peer.capabilities().into();
-                                                let (mut sink, stream) = futures::StreamExt::split(peer);
-                                                let mut drop_handle = drop_handle.clone();
-                                                let (peer_sender_tx, mut peer_sender_rx) = tokio::sync::mpsc::channel(1);
-
-                                                // Outgoing router -> PeerStream connector
-                                                tokio::spawn(async move {
-                                                    loop {
-                                                        tokio::select! {
-                                                            _ = drop_handle.recv() => {
-                                                                return;
-                                                            }
-                                                            res = peer_sender_rx.recv() => {
-                                                                if let Some(msg) = res {
-                                                                    if let Err(e) = sink.send(msg).await {
-                                                                        debug!("peer disconnected with error {:?}", e);
-                                                                        let _ = disconnect_cmd_tx.send((remote_id, None));
-                                                                    }
-                                                                } else {
-                                                                    return;
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                });
-                                                assert!(streams.insert(remote_id.clone(), stream.into()).is_none());
-                                                *peer_state = PeerState::Connected(StreamHandle { sender: peer_sender_tx });
-                                                drop(s);
-                                                let _ = newly_connected
-                                                    .send((remote_id, capabilities))
-                                                    .await;
-                                            }
-                                            Err(e) => {
-                                                error!("peer disconnected with error {}", e);
-                                            }
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            });
+            let tcp_incoming = TcpListener::bind(addr).await?;
+            tokio::spawn(incoming_loop(
+                drop_handle.clone(),
+                tcp_incoming,
+                PeerStreamHandshakeData {
+                    port,
+                    protocol_version,
+                    secret_key,
+                    client_version: client_version.clone(),
+                    capabilities: capabilities.clone(),
+                },
+                streams.clone(),
+                newly_connected_tx.clone(),
+                disconnect_cmd_tx.clone(),
+            ));
         }
 
         // Outgoing message router

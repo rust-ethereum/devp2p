@@ -371,33 +371,34 @@ impl RLPxStream {
                                 let message = (capability_name, id, data);
 
                                 // Send to one peer if it's selected.
-                                if let Some(peer_id) = peer {
+                                let selected_peers = if let Some(peer_id) = peer {
                                     match this.mapping.get(&peer_id) {
                                         Some(PeerState::Connected(handle)) => {
-                                            let mut sender = handle.sender.clone();
-                                            drop(this);
-                                            let _ = sender.send(message).await;
+                                            vec![handle.sender.clone()]
                                         }
                                         Some(PeerState::Connecting) => {
                                             warn!(
                                                 "Skipping message for a connecting peer: {:?}",
                                                 message
                                             );
+                                            vec![]
                                         }
                                         None => {
                                             warn!(
                                                 "Skipping message for disconnected peer: {:?}",
                                                 message
                                             );
+                                            vec![]
                                         }
                                     }
                                 } else {
                                     // Send to everybody otherwise.
-                                    let senders = this.mapping.values().filter_map(|v| if let PeerState::Connected(handle) = v { Some(handle.sender.clone()) } else { None }).collect::<Vec<_>>();
-                                    drop(this);
-                                    for mut sender in senders {
-                                        let _ = sender.send(message.clone()).await;
-                                    }
+                                    this.mapping.values().filter_map(|v| if let PeerState::Connected(handle) = v { Some(handle.sender.clone()) } else { None }).collect::<Vec<_>>()
+                                };
+
+                                drop(this);
+                                for mut peer in selected_peers {
+                                    let _ = peer.send(message.clone()).await;
                                 }
                             } else {
                                 return;

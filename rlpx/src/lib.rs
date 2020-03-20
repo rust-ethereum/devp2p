@@ -30,8 +30,7 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::{
-    io::AsyncRead,
-    io::AsyncWrite,
+    io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     stream::{Stream, StreamExt, StreamMap},
     sync::Mutex,

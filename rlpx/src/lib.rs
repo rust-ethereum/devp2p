@@ -22,7 +22,7 @@ use futures::{stream::SplitStream, Sink, SinkExt};
 use log::*;
 use secp256k1::key::SecretKey;
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, HashSet},
     io,
     net::SocketAddr,
     pin::Pin,
@@ -151,23 +151,24 @@ impl<Io> Default for PeerStreams<Io> {
 
 pub type CancellationToken = tokio::sync::watch::Receiver<()>;
 
+type DisconnectCb = Box<dyn FnOnce(bool) + Send + 'static>;
+
 /// Removes peer from internal state on request.
-async fn disconnecter_loop(
+async fn disconnecter_task<S>(
     mut drop_handle: CancellationToken,
-    mut disconnect_cmd: tokio::sync::mpsc::UnboundedReceiver<(
-        H512,
-        Option<tokio::sync::oneshot::Sender<bool>>,
-    )>,
+    mut disconnect_requests: S,
     streams: Arc<Mutex<PeerStreams<TcpStream>>>,
     mut newly_disconnected_notify: tokio::sync::mpsc::Sender<H512>,
-) {
+) where
+    S: Stream<Item = (H512, Option<DisconnectCb>)> + Unpin,
+{
     loop {
         tokio::select! {
             _ = drop_handle.recv() => {
                 return;
             }
-            res = disconnect_cmd.next() => {
-                if let Some((remote_id, cb_chan)) = res {
+            res = disconnect_requests.next() => {
+                if let Some((remote_id, disconnect_cb)) = res {
                     debug!("disconnecting peer {}", remote_id);
 
                     let mut s = streams.lock().await;
@@ -182,8 +183,8 @@ async fn disconnecter_loop(
                         false
                     };
                     let _ = newly_disconnected_notify.send(remote_id).await;
-                    if let Some(cb_chan) = cb_chan {
-                        let _ = cb_chan.send(peer_dropped);
+                    if let Some(disconnect_cb) = disconnect_cb {
+                        (disconnect_cb)(peer_dropped)
                     }
                 } else {
                     return;
@@ -202,16 +203,13 @@ struct PeerStreamHandshakeData {
     capabilities: Vec<CapabilityInfo>,
 }
 
-async fn incoming_loop(
+async fn handle_incoming(
     drop_handle: CancellationToken,
     mut tcp_incoming: TcpListener,
     handshake_data: PeerStreamHandshakeData,
     streams: Arc<Mutex<PeerStreams<TcpStream>>>,
     newly_connected: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
-    disconnecter: tokio::sync::mpsc::UnboundedSender<(
-        H512,
-        Option<tokio::sync::oneshot::Sender<bool>>,
-    )>,
+    disconnecter: tokio::sync::mpsc::UnboundedSender<(H512, Option<DisconnectCb>)>,
 ) {
     let mut general_drop_handle = drop_handle.clone();
 
@@ -228,7 +226,7 @@ async fn incoming_loop(
                     }
                     Ok((stream, _remote_addr)) => {
                         tokio::spawn(
-                            handle_incoming(
+                            handle_incoming_request(
                                 drop_handle.clone(),
                                 stream,
                                 handshake_data.clone(),
@@ -245,17 +243,14 @@ async fn incoming_loop(
 }
 
 /// Establishes the connection with peer and adds them to internal state.
-async fn handle_incoming<Io: AsyncRead + AsyncWrite + Unpin>(
+async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Unpin>(
     drop_handle: CancellationToken,
     stream: Io,
     handshake_data: PeerStreamHandshakeData,
     streams: Arc<Mutex<PeerStreams<Io>>>,
 
     mut newly_connected: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
-    disconnecter: tokio::sync::mpsc::UnboundedSender<(
-        H512,
-        Option<tokio::sync::oneshot::Sender<bool>>,
-    )>,
+    disconnecter: tokio::sync::mpsc::UnboundedSender<(H512, Option<DisconnectCb>)>,
 ) {
     let PeerStreamHandshakeData {
         secret_key,
@@ -323,6 +318,75 @@ async fn handle_incoming<Io: AsyncRead + AsyncWrite + Unpin>(
     }
 }
 
+// Routes all outgoing message requests to appropriate peers.
+async fn outgoing_router<S>(
+    mut drop_handle: CancellationToken,
+    mut outgoing_messages: S,
+    streams: Arc<Mutex<PeerStreams<TcpStream>>>,
+) where
+    S: Stream<Item = RLPxSendMessage> + Unpin,
+{
+    loop {
+        tokio::select! {
+            _ = drop_handle.recv() => {
+                return;
+            }
+            res = outgoing_messages.next() => {
+                if let Some(RLPxSendMessage {
+                    node,
+                    capability_name,
+                    id,
+                    data,
+                }) = res
+                {
+                    let this = streams.lock().await;
+                    // So here we select the peers that will receive our message.
+                    let peer = match node {
+                        RLPxNode::Peer(peer_id) => Some(peer_id),
+                        RLPxNode::All => None,
+                        RLPxNode::Any => this.mapping.keys().next().copied(),
+                    };
+
+                    let message = (capability_name, id, data);
+
+                    // Send to one peer if it's selected.
+                    let selected_peers = if let Some(peer_id) = peer {
+                        match this.mapping.get(&peer_id) {
+                            Some(PeerState::Connected(handle)) => {
+                                vec![handle.sender.clone()]
+                            }
+                            Some(PeerState::Connecting) => {
+                                warn!(
+                                    "Skipping message for a connecting peer: {:?}",
+                                    message
+                                );
+                                vec![]
+                            }
+                            None => {
+                                warn!(
+                                    "Skipping message for disconnected peer: {:?}",
+                                    message
+                                );
+                                vec![]
+                            }
+                        }
+                    } else {
+                        // Send to everybody otherwise.
+                        this.mapping.values().filter_map(|v| if let PeerState::Connected(handle) = v { Some(handle.sender.clone()) } else { None }).collect::<Vec<_>>()
+                    };
+
+                    drop(this);
+                    for mut peer in selected_peers {
+                        let _ = peer.send(message.clone()).await;
+                    }
+                } else {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// A `RLPx` stream and sink
 pub struct RLPxStream {
     #[allow(unused)]
@@ -335,8 +399,7 @@ pub struct RLPxStream {
     newly_connected: tokio::sync::mpsc::Receiver<(H512, Vec<CapabilityInfo>)>,
     newly_disconnected: tokio::sync::mpsc::Receiver<H512>,
     sink: tokio::sync::mpsc::Sender<RLPxSendMessage>,
-    disconnect_cmd_tx:
-        tokio::sync::mpsc::UnboundedSender<(H512, Option<tokio::sync::oneshot::Sender<bool>>)>,
+    disconnect_cmd_tx: tokio::sync::mpsc::UnboundedSender<(H512, Option<DisconnectCb>)>,
 
     secret_key: SecretKey,
     protocol_version: usize,
@@ -374,20 +437,18 @@ impl RLPxStream {
 
         let streams = Arc::new(Mutex::new(PeerStreams::default()));
 
-        let (disconnect_cmd_tx, disconnect_cmd) = tokio::sync::mpsc::unbounded_channel::<(
-            _,
-            Option<tokio::sync::oneshot::Sender<bool>>,
-        )>();
-        tokio::spawn(disconnecter_loop(
+        let (disconnect_cmd_tx, disconnect_requests) =
+            tokio::sync::mpsc::unbounded_channel::<(_, Option<DisconnectCb>)>();
+        tokio::spawn(disconnecter_task(
             drop_handle.clone(),
-            disconnect_cmd,
+            disconnect_requests,
             streams.clone(),
             newly_disconnected_tx.clone(),
         ));
 
         if let Some(addr) = listen {
             let tcp_incoming = TcpListener::bind(addr).await?;
-            tokio::spawn(incoming_loop(
+            tokio::spawn(handle_incoming(
                 drop_handle.clone(),
                 tcp_incoming,
                 PeerStreamHandshakeData {
@@ -403,73 +464,12 @@ impl RLPxStream {
             ));
         }
 
-        // Outgoing message router
-        let (sink, mut outgoing_messages) = tokio::sync::mpsc::channel(1);
-        tokio::spawn({
-            let mut drop_handle = drop_handle.clone();
-            let streams = streams.clone();
-            async move {
-                loop {
-                    tokio::select! {
-                        _ = drop_handle.recv() => {
-                            return;
-                        }
-                        res = outgoing_messages.next() => {
-                            if let Some(RLPxSendMessage {
-                                node,
-                                capability_name,
-                                id,
-                                data,
-                            }) = res
-                            {
-                                let this = streams.lock().await;
-                                // So here we select the peers that will receive our message.
-                                let peer = match node {
-                                    RLPxNode::Peer(peer_id) => Some(peer_id),
-                                    RLPxNode::All => None,
-                                    RLPxNode::Any => this.mapping.keys().next().copied(),
-                                };
-
-                                let message = (capability_name, id, data);
-
-                                // Send to one peer if it's selected.
-                                let selected_peers = if let Some(peer_id) = peer {
-                                    match this.mapping.get(&peer_id) {
-                                        Some(PeerState::Connected(handle)) => {
-                                            vec![handle.sender.clone()]
-                                        }
-                                        Some(PeerState::Connecting) => {
-                                            warn!(
-                                                "Skipping message for a connecting peer: {:?}",
-                                                message
-                                            );
-                                            vec![]
-                                        }
-                                        None => {
-                                            warn!(
-                                                "Skipping message for disconnected peer: {:?}",
-                                                message
-                                            );
-                                            vec![]
-                                        }
-                                    }
-                                } else {
-                                    // Send to everybody otherwise.
-                                    this.mapping.values().filter_map(|v| if let PeerState::Connected(handle) = v { Some(handle.sender.clone()) } else { None }).collect::<Vec<_>>()
-                                };
-
-                                drop(this);
-                                for mut peer in selected_peers {
-                                    let _ = peer.send(message.clone()).await;
-                                }
-                            } else {
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        });
+        let (sink, outgoing_messages) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(outgoing_router(
+            drop_handle.clone(),
+            outgoing_messages,
+            streams.clone(),
+        ));
 
         Ok(Self {
             dropper,
@@ -524,7 +524,6 @@ impl RLPxStream {
             }
 
             // Connecting to peer is a long running operation so we have to break the mutex lock.
-
             let peer_res = async {
                 let transport = TcpStream::connect(addr).await?;
                 PeerStream::connect(
@@ -605,20 +604,25 @@ impl RLPxStream {
     /// to be connected. Useful for removing peers on a different hard
     /// fork network
     pub async fn disconnect_peer(&self, remote_id: H512) -> bool {
-        let (cb_tx, res) = tokio::sync::oneshot::channel();
-        if self
+        let (cb_tx, disconnection_res) = tokio::sync::oneshot::channel();
+        let disconnecter_alive = self
             .disconnect_cmd_tx
-            .send((remote_id, Some(cb_tx)))
-            .is_err()
-        {
+            .send((
+                remote_id,
+                Some(Box::new(move |b| {
+                    let _ = cb_tx.send(b);
+                })),
+            ))
+            .is_err();
+        if !disconnecter_alive {
             return false;
         }
 
-        res.await.unwrap_or(false)
+        disconnection_res.await.unwrap_or(false)
     }
 
     /// Active peers
-    pub async fn active_peers(&self) -> Vec<H512> {
+    pub async fn active_peers(&self) -> HashSet<H512> {
         self.streams.lock().await.mapping.keys().copied().collect()
     }
 }
@@ -670,14 +674,16 @@ impl Sink<RLPxSendMessage> for RLPxStream {
     type Error = io::Error;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.get_mut()
-            .sink
-            .poll_ready(cx)
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "channel closed"))
+        self.get_mut().sink.poll_ready(cx).map_err(|_| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "server does not accept messages")
+        })
     }
 
     fn start_send(self: Pin<&mut Self>, item: RLPxSendMessage) -> Result<(), Self::Error> {
-        let _ = self.get_mut().sink.try_send(item);
+        self.get_mut()
+            .sink
+            .try_send(item)
+            .expect("readiness should have been checked with poll_ready; qed");
         Ok(())
     }
 

@@ -10,8 +10,10 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::stream::*;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    stream::*,
+};
 use tokio_util::codec::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

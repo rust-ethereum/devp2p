@@ -22,7 +22,7 @@ use futures::{stream::SplitStream, Sink, SinkExt};
 use log::*;
 use secp256k1::key::SecretKey;
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
     io,
     net::SocketAddr,
     pin::Pin,
@@ -36,18 +36,10 @@ use tokio::{
     sync::Mutex,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Sending node type specifying either all, any or a particular peer
-pub enum RLPxNode {
-    Any,
-    All,
-    Peer(H512),
-}
-
 /// Sending message for `RLPx`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RLPxSendMessage {
-    pub node: RLPxNode,
+    pub peer: H512,
     pub capability_name: &'static str,
     pub id: usize,
     pub data: Vec<u8>,
@@ -333,51 +325,40 @@ async fn outgoing_router<S>(
             }
             res = outgoing_messages.next() => {
                 if let Some(RLPxSendMessage {
-                    node,
+                    peer,
                     capability_name,
                     id,
                     data,
                 }) = res
                 {
                     let this = streams.lock().await;
-                    // So here we select the peers that will receive our message.
-                    let peer = match node {
-                        RLPxNode::Peer(peer_id) => Some(peer_id),
-                        RLPxNode::All => None,
-                        RLPxNode::Any => this.mapping.keys().next().copied(),
-                    };
 
                     let message = (capability_name, id, data);
 
                     // Send to one peer if it's selected.
-                    let selected_peers = if let Some(peer_id) = peer {
-                        match this.mapping.get(&peer_id) {
-                            Some(PeerState::Connected(handle)) => {
-                                vec![handle.sender.clone()]
-                            }
-                            Some(PeerState::Connecting) => {
-                                warn!(
-                                    "Skipping message for a connecting peer: {:?}",
-                                    message
-                                );
-                                vec![]
-                            }
-                            None => {
-                                warn!(
-                                    "Skipping message for disconnected peer: {:?}",
-                                    message
-                                );
-                                vec![]
-                            }
+                    let mut peer_sender = None;
+                    match this.mapping.get(&peer) {
+                        Some(PeerState::Connected(handle)) => {
+                            peer_sender = Some(handle.sender.clone());
                         }
-                    } else {
-                        // Send to everybody otherwise.
-                        this.mapping.values().filter_map(|v| if let PeerState::Connected(handle) = v { Some(handle.sender.clone()) } else { None }).collect::<Vec<_>>()
-                    };
+                        Some(PeerState::Connecting) => {
+                            warn!(
+                                "Skipping message for a connecting peer: {:?}",
+                                message
+                            );
+                        }
+                        None => {
+                            warn!(
+                                "Skipping message for disconnected peer: {:?}",
+                                message
+                            );
+                        }
+                    }
 
                     drop(this);
-                    for mut peer in selected_peers {
-                        let _ = peer.send(message.clone()).await;
+
+                    if let Some(mut peer_sender) = peer_sender {
+                        let _ = peer_sender.send(message.clone()).await;
                     }
                 } else {
                     return;
@@ -406,6 +387,16 @@ pub struct RLPxStream {
     client_version: String,
     capabilities: Vec<CapabilityInfo>,
     port: u16,
+}
+
+pub struct CapabilityFilter {
+    pub name: String,
+    pub versions: BTreeSet<usize>,
+}
+
+pub struct PeerFilter {
+    pub is_connected: Option<bool>,
+    pub capability: Option<CapabilityFilter>,
 }
 
 // This is a Tokio-based RLPx server implementation.
@@ -624,6 +615,15 @@ impl RLPxStream {
     /// Active peers
     pub async fn active_peers(&self) -> HashSet<H512> {
         self.streams.lock().await.mapping.keys().copied().collect()
+    }
+
+    /// Get peer by capability
+    pub async fn get_peers(&self, limit: usize, filter: PeerFilter) -> HashSet<H512> {
+        let peers = self.streams.lock().await;
+
+        // peers.iter().filter(|peer| )
+
+        unimplemented!()
     }
 }
 

@@ -2,6 +2,17 @@ use bigint::{H256, U256};
 use block::{Block, Header, Transaction};
 use rlp::{DecoderError, Encodable, RlpStream, UntrustedRlp};
 
+pub enum EthGossipMessage {
+    NewBlockHashes(Vec<(H256, U256)>),
+    NewTransactionHashes,
+    NewBlock {
+        block: Block,
+        total_difficulty: U256,
+    },
+}
+
+pub struct Transactions(pub Vec<Transaction>);
+
 /// ETH message version 62 and 63
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ETHMessage {

@@ -8,26 +8,22 @@ repository = "https://github.com/sorpaas/rust-devp2p"
 edition = "2018"
 
 [dependencies]
-dpt = { version = "0.2", path = "./dpt" }
+async-trait = "*"
+discv5 = { git = "https://github.com/sigp/discv5" }
+enr = "0.1"
 etcommon-bigint = "0.2"
 etcommon-block = "0.3"
 etcommon-hexutil = "0.2"
 etcommon-rlp = "0.2"
-futures = "0.1"
+ethereum-types = "*"
+futures = "0.3"
 log = "0.3"
 rand = "0.3.12"
 rlpx = { version = "0.3", path = "./rlpx" }
 secp256k1-plus = "0.5"
-tokio-core = "0.1"
-tokio-io = "0.1"
+tokio = { version = "0.2", features = ["full"] }
 
 [dev-dependencies]
 env_logger = "0.3"
 sha3 = "0.6"
 url = "1.5.1"
-
-[workspace]
-members = [
-  "./dpt",
-  "./rlpx",
-]

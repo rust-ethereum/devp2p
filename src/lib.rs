@@ -7,11 +7,10 @@
     clippy::too_many_arguments
 )]
 
-pub use dpt;
 pub use rlpx;
 
 mod eth;
 mod raw;
 
-pub use eth::{ETHMessage, ETHReceiveMessage, ETHSendMessage, ETHStream};
-pub use raw::{DevP2PConfig, DevP2PStream};
+pub use eth::Server as ETHServer;
+pub use raw::Server as DevP2PServer;

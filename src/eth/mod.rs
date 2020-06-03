@@ -4,6 +4,7 @@ pub use self::proto::*;
 use super::raw::*;
 use async_trait::async_trait;
 use bigint::{H256, H512, U256};
+use block::Block;
 use ethereum_types::*;
 use futures::prelude::*;
 use log::*;
@@ -22,30 +23,34 @@ use tokio::{prelude::*, sync::oneshot::Sender as OneshotSender};
 pub struct PooledTransactionHashes();
 
 #[async_trait]
-pub trait EthGossipHandler: Send + Sync {
-    async fn handle_gossip_message(&self, message: EthGossipMessage);
+pub trait EthRequestHandler: Send + Sync {
+    async fn handle_new_block_hashes(&self, hashes: Vec<(H256, U256)>);
+    async fn handle_new_transaction_hashes(&self, hashes: ());
+    async fn handle_new_block(&self, block: Block, total_difficulty: U256);
 }
 
 #[async_trait]
 pub trait EthProtocol {
-    async fn get_pooled_transaction_hashes(
+    async fn new_block_hashes(&self, hashes: Vec<(H256, U256)>) -> Result<(), Shutdown>;
+    async fn get_pooled_transactions(
         &self,
         hashes: HashSet<H256>,
-    ) -> Result<PooledTransactionHashes, Shutdown>;
+    ) -> Result<Vec<Transaction>, Shutdown>;
 }
 
-pub struct Server<P2P: ProtocolRegistrar, G: EthGossipHandler> {
+pub struct Server<P2P: ProtocolRegistrar, RH: EthRequestHandler> {
     inflight_requests: Arc<Mutex<HashMap<H512, HashMap<u64, OneshotSender<Vec<u8>>>>>>,
 
-    gossip_handler: Arc<G>,
+    gossip_handler: Arc<RH>,
     devp2p_handle: Arc<P2P::ServerHandle>,
     devp2p_owned_handle: Option<Arc<P2P>>,
 }
 
-impl<P2P: ProtocolRegistrar, G: EthGossipHandler> Server<P2P, G> {
-    pub fn new(registrator: &P2P, gossip_handler: Arc<G>) -> Self {
+impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
+    pub fn new(registrar: &P2P, request_handler: Arc<RH>) -> Self {
         let devp2p_handle = Arc::new(
-            registrator.register_handler("eth".to_string(), Box::pin(futures::sink::drain())),
+            registrar
+                .register_incoming_handler("eth".to_string(), Box::pin(futures::sink::drain())),
         );
         Self {
             inflight_requests: Default::default(),
@@ -55,9 +60,9 @@ impl<P2P: ProtocolRegistrar, G: EthGossipHandler> Server<P2P, G> {
         }
     }
 
-    pub fn new_owned(registrator: Arc<P2P>, gossip_handler: Arc<G>) -> Self {
-        let mut this = Self::new(&*registrator, gossip_handler);
-        this.devp2p_owned_handle = Some(registrator);
+    pub fn new_owned(registrar: Arc<P2P>, request_handler: Arc<RH>) -> Self {
+        let mut this = Self::new(&*registrar, request_handler);
+        this.devp2p_owned_handle = Some(registrar);
         this
     }
 }

@@ -8,6 +8,7 @@ repository = "https://github.com/sorpaas/rust-devp2p"
 edition = "2018"
 
 [dependencies]
+arrayvec = "0.5"
 byteorder = "1"
 bytes = "0.5"
 etcommon-bigint = "0.2"

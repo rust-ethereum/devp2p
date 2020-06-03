@@ -9,6 +9,7 @@ edition = "2018"
 
 [dependencies]
 async-trait = "*"
+bytes = "*"
 discv5 = { git = "https://github.com/sigp/discv5" }
 enr = "0.1"
 etcommon-bigint = "0.2"

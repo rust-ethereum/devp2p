@@ -10,6 +10,7 @@ use secp256k1::{
 use std::{
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::{
@@ -17,10 +18,12 @@ use tokio::{
     stream::{Stream, StreamExt},
 };
 
+pub type CapabilityName = arrayvec::ArrayString<[u8; 4]>;
+
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 /// Capability information
 pub struct CapabilityInfo {
-    pub name: &'static str,
+    pub name: CapabilityName,
     pub version: usize,
     pub length: usize,
 }
@@ -176,7 +179,7 @@ where
                 let mut caps = Vec::new();
                 for cap in capabilities {
                     caps.push(CapabilityMessage {
-                        name: cap.name.to_string(),
+                        name: cap.name,
                         version: cap.version,
                     });
                 }
@@ -277,7 +280,7 @@ impl<Io> Stream for PeerStream<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Item = Result<(CapabilityInfo, usize, Vec<u8>), io::Error>;
+    type Item = Result<(CapabilityInfo, usize, Bytes), io::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut s = self.get_mut();
@@ -349,7 +352,7 @@ where
                     }
                 };
 
-                Poll::Ready(Some(Ok((cap, id, (&val[1..]).into()))))
+                Poll::Ready(Some(Ok((cap, id, Bytes::copy_from_slice(&val[1..])))))
             }
             Some(Err(e)) => Poll::Ready(Some(Err(e))),
             None => Poll::Ready(None),
@@ -357,7 +360,7 @@ where
     }
 }
 
-impl<Io> Sink<(&'static str, usize, Vec<u8>)> for PeerStream<Io>
+impl<Io> Sink<(CapabilityName, usize, Bytes)> for PeerStream<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
@@ -369,7 +372,7 @@ where
 
     fn start_send(
         self: Pin<&mut Self>,
-        (cap_name, id, data): (&'static str, usize, Vec<u8>),
+        (cap_name, id, data): (CapabilityName, usize, Bytes),
     ) -> Result<(), Self::Error> {
         let this = self.get_mut();
         let cap = this
@@ -380,7 +383,7 @@ where
         if cap.is_none() {
             debug!(
                 "giving up sending cap {} of id {} to 0x{:x} because remote does not support.",
-                cap_name,
+                cap_name.0,
                 id,
                 this.remote_id()
             );
@@ -392,7 +395,7 @@ where
         if id >= cap.length {
             debug!(
                 "giving up sending cap {} of id {} to 0x{:x} because it is too big.",
-                cap_name,
+                cap_name.0,
                 id,
                 this.remote_id()
             );

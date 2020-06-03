@@ -10,8 +10,10 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::stream::*;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    stream::*,
+};
 use tokio_util::codec::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,11 +113,10 @@ impl Decoder for ECIESCodec {
     }
 }
 
-impl Encoder for ECIESCodec {
-    type Item = ECIESValue;
+impl Encoder<ECIESValue> for ECIESCodec {
     type Error = io::Error;
 
-    fn encode(&mut self, item: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: ECIESValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
         match item {
             ECIESValue::AuthReceive(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

@@ -15,9 +15,10 @@ mod mac;
 mod peer;
 mod util;
 
-pub use peer::{CapabilityInfo, PeerStream};
+pub use peer::{CapabilityInfo, CapabilityName, PeerStream};
 
 use bigint::H512;
+use bytes::Bytes;
 use futures::{stream::SplitStream, Sink, SinkExt};
 use log::*;
 use secp256k1::key::SecretKey;
@@ -40,9 +41,9 @@ use tokio::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RLPxSendMessage {
     pub peer: H512,
-    pub capability_name: &'static str,
+    pub capability_name: CapabilityName,
     pub id: usize,
-    pub data: Vec<u8>,
+    pub data: Bytes,
 }
 
 /// Receiving message for `RLPx`
@@ -59,12 +60,12 @@ pub enum RLPxReceiveMessage {
         node: H512,
         capability: CapabilityInfo,
         id: usize,
-        data: Vec<u8>,
+        data: Bytes,
     },
 }
 
 struct StreamHandle {
-    sender: tokio::sync::mpsc::Sender<(&'static str, usize, Vec<u8>)>,
+    sender: tokio::sync::mpsc::Sender<(CapabilityName, usize, Bytes)>,
 }
 
 enum PeerState {
@@ -94,7 +95,7 @@ impl<Io> From<SplitStream<PeerStream<Io>>> for StreamMapEntry<Io> {
 }
 
 enum PeerStreamUpdate {
-    Data((CapabilityInfo, usize, Vec<u8>)),
+    Data((CapabilityInfo, usize, Bytes)),
     Error(io::Error),
     Finished,
 }
@@ -335,7 +336,6 @@ async fn outgoing_router<S>(
 
                     let message = (capability_name, id, data);
 
-                    // Send to one peer if it's selected.
                     let mut peer_sender = None;
                     match this.mapping.get(&peer) {
                         Some(PeerState::Connected(handle)) => {

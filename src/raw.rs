@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use bigint::{H512, H512 as PeerId};
+use bytes::Bytes;
 use discv5::Discv5;
 use futures::prelude::*;
 use log::*;
@@ -31,13 +32,14 @@ pub type Enr = enr::Enr<SecretKey>;
 pub trait PeerHandle: Send + Sync {
     fn capability_version(&self) -> u8;
     fn peer_id(&self) -> PeerId;
-    async fn send_message(self, message: Arc<Vec<u8>>) -> Result<(), PeerSendError>;
+    async fn send_message(self, message: Bytes) -> Result<(), PeerSendError>;
 }
 
 pub struct PeerHandleImpl {
+    capability: CapabilityName,
     capability_version: u8,
     peer_id: PeerId,
-    sender: OneShotSender<(Arc<Vec<u8>>, OneShotSender<()>)>,
+    pool: Weak<AsyncMutex<RLPxStream>>,
 }
 
 #[async_trait]
@@ -48,12 +50,19 @@ impl PeerHandle for PeerHandleImpl {
     fn peer_id(&self) -> PeerId {
         self.peer_id.clone()
     }
-    async fn send_message(self, message: Arc<Vec<u8>>) -> Result<(), PeerSendError> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.sender
-            .send((message, tx))
-            .map_err(|_| PeerSendError::Shutdown)?;
-        rx.await.map_err(|_| PeerSendError::Shutdown)?;
+    async fn send_message(self, message: Bytes) -> Result<(), PeerSendError> {
+        self.pool
+            .upgrade()
+            .ok_or(PeerSendError::Shutdown)?
+            .lock()
+            .await
+            .send(RLPxSendMessage {
+                id: todo!(),
+                peer: self.peer_id.clone(),
+                capability_name: self.capability.clone(),
+                data: message,
+            })
+            .await?;
 
         Ok(())
     }
@@ -95,7 +104,11 @@ impl ServerHandle for ServerHandleImpl {
             .await
         };
 
-        unimplemented!()
+        Self::PeerHandle {
+            capability_version: unimplemented!(),
+            peer_id,
+            pool: self.pool.clone(),
+        }
     }
 
     async fn num_peers(&self, min_capability_version: usize) -> Result<usize, Shutdown> {
@@ -116,13 +129,21 @@ pub trait ProtocolRegistrar: Send + Sync {
     type ServerHandle: ServerHandle;
 
     /// Register support for the protocol. Takes the sink as incoming handler for the protocol. Returns personal handle to the peer pool.
-    fn register_handler(&self, protocol: String, handler: IncomingHandler) -> Self::ServerHandle;
+    fn register_incoming_handler(
+        &self,
+        protocol: CapabilityName,
+        handler: IncomingHandler,
+    ) -> Self::ServerHandle;
 }
 
 impl ProtocolRegistrar for Server {
     type ServerHandle = ServerHandleImpl;
 
-    fn register_handler(&self, protocol: String, handler: IncomingHandler) -> Self::ServerHandle {
+    fn register_handler(
+        &self,
+        protocol: CapabilityName,
+        handler: IncomingHandler,
+    ) -> Self::ServerHandle {
         self.protocol_handlers
             .lock()
             .unwrap()

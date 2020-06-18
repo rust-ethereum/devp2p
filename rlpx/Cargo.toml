@@ -11,22 +11,30 @@ repository = "https://github.com/sorpaas/rust-devp2p"
 edition = "2018"
 
 [dependencies]
+aes = "0.4"
+aes-ctr = "0.4"
+arrayref = "0.3"
 arrayvec = "0.5"
+block-modes = "0.5"
 byteorder = "1"
 bytes = "0.5"
-etcommon-bigint = "0.2"
-etcommon-hexutil = "0.2"
-etcommon-rlp = "0.2"
+digest = "0.9"
+ethereum-types = "0.9"
 futures = "0.3"
-log = "0.3"
-mio = "0.6"
-rand = "0.3.12"
-rust-crypto = "0.2"
-secp256k1-plus = "0.5"
-sha2 = "0.6"
-sha3 = "0.6"
-tokio = { version = "0.2.12", features = ["full"] }
-tokio-util = { version = "0.2", features = ["codec"] }
+generic-array = "0.14"
+hmac = "0.8"
+libsecp256k1 = { git = "https://github.com/vorot93/libsecp256k1", branch = "copy-based-api" }
+log = "0.4"
+once_cell = "1"
+parking_lot = "0.11"
+rand = "0.7"
+rlp = "0.4"
+sha2 = "0.9"
+sha3 = "0.9"
+tokio = { version = "0.2", features = ["full"] }
+tokio-util = { version = "0.3", features = ["codec"] }
+uint = "0.8"
 
 [dev-dependencies]
-env_logger = "0.3"
+env_logger = "0.7"
+hex-literal = "0.2"

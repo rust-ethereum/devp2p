@@ -1,10 +1,10 @@
 use super::algorithm::ECIES;
 use crate::errors::ECIESError;
-use bigint::H512;
 use bytes::BytesMut;
+use ethereum_types::H512;
 use futures::{ready, Sink, SinkExt};
+use libsecp256k1::SecretKey;
 use log::*;
-use secp256k1::key::SecretKey;
 use std::{
     io,
     pin::Pin,
@@ -66,6 +66,7 @@ impl Decoder for ECIESCodec {
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         match self.state {
             ECIESState::Auth => {
+                trace!("parsing auth");
                 if buf.len() < ECIES::auth_len() {
                     return Ok(None);
                 }
@@ -77,6 +78,7 @@ impl Decoder for ECIESCodec {
                 Ok(Some(ECIESValue::AuthReceive(self.ecies.remote_id())))
             }
             ECIESState::Ack => {
+                trace!("parsing ack with len {}", buf.len());
                 if buf.len() < ECIES::ack_len() {
                     return Ok(None);
                 }
@@ -125,27 +127,23 @@ impl Encoder<ECIESValue> for ECIESCodec {
             ECIESValue::Auth => {
                 let data = self.ecies.create_auth()?;
                 self.state = ECIESState::Ack;
-                buf.reserve(data.len());
-                buf.extend(data);
+                buf.extend_from_slice(&data);
                 Ok(())
             }
             ECIESValue::Ack => {
                 let data = self.ecies.create_ack()?;
                 self.state = ECIESState::Header;
-                buf.reserve(data.len());
-                buf.extend(data);
+                buf.extend_from_slice(&data);
                 Ok(())
             }
             ECIESValue::Header(size) => {
                 let data = self.ecies.create_header(size);
-                buf.reserve(data.len());
-                buf.extend(data);
+                buf.extend_from_slice(&data);
                 Ok(())
             }
             ECIESValue::Body(val) => {
                 let data = self.ecies.create_body(val.as_ref());
-                buf.reserve(data.len());
-                buf.extend(data);
+                buf.extend_from_slice(&data);
                 Ok(())
             }
         }
@@ -161,7 +159,7 @@ pub struct ECIESStream<Io> {
 
 impl<Io> ECIESStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + AsyncWrite + Send + Unpin,
 {
     /// Connect to an `ECIES` server
     pub async fn connect(
@@ -177,9 +175,10 @@ where
         debug!("sending ecies auth ...");
         transport.send(ECIESValue::Auth).await?;
 
+        debug!("waiting for ecies ack ...");
         let ack = transport.try_next().await?;
 
-        debug!("receiving ecies ack ...");
+        debug!("parsing ecies ack ...");
         if ack == Some(ECIESValue::Ack) {
             Ok(Self {
                 stream: transport,

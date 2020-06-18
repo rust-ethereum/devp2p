@@ -1,10 +1,6 @@
-use bigint::{H128, H256};
-use crypto::{
-    aessafe::AesSafe256Encryptor,
-    blockmodes::{EcbEncryptor, NoPadding},
-    buffer::{RefReadBuffer, RefWriteBuffer},
-    symmetriccipher::Encryptor,
-};
+use aes::*;
+use block_modes::{block_padding::NoPadding, BlockMode, Ecb};
+use ethereum_types::{H128, H256};
 use sha3::{Digest, Keccak256};
 
 pub struct MAC {
@@ -21,42 +17,36 @@ impl MAC {
     }
 
     pub fn update(&mut self, data: &[u8]) {
-        self.hasher.input(data)
+        self.hasher.update(data)
     }
 
     pub fn update_header(&mut self, data: &[u8]) {
-        let mut aes = EcbEncryptor::new(AesSafe256Encryptor::new(self.secret.as_ref()), NoPadding);
-        let mut encrypted = vec![0_u8; data.len()];
-        aes.encrypt(
-            &mut RefReadBuffer::new(self.digest().as_ref()),
-            &mut RefWriteBuffer::new(encrypted.as_mut()),
-            true,
-        )
-        .unwrap();
+        let aes = Ecb::<_, NoPadding>::new(
+            Aes256::new_varkey(self.secret.as_ref()).unwrap(),
+            &Default::default(),
+        );
+        let mut encrypted = aes.encrypt_vec(self.digest().as_bytes());
         for i in 0..data.len() {
             encrypted[i] ^= data[i];
         }
-        self.hasher.input(encrypted.as_ref());
+        self.hasher.update(encrypted);
     }
 
     pub fn update_body(&mut self, data: &[u8]) {
-        self.hasher.input(data);
+        self.hasher.update(data);
         let prev = self.digest();
-        let mut aes = EcbEncryptor::new(AesSafe256Encryptor::new(self.secret.as_ref()), NoPadding);
-        let mut encrypted = vec![0_u8; 16];
-        aes.encrypt(
-            &mut RefReadBuffer::new(self.digest().as_ref()),
-            &mut RefWriteBuffer::new(encrypted.as_mut()),
-            true,
-        )
-        .unwrap();
+        let aes = Ecb::<_, NoPadding>::new(
+            Aes256::new_varkey(self.secret.as_ref()).unwrap(),
+            &Default::default(),
+        );
+        let mut encrypted = aes.encrypt_vec(self.digest().as_bytes());
         for i in 0..16 {
             encrypted[i] ^= prev[i];
         }
-        self.hasher.input(encrypted.as_ref());
+        self.hasher.update(encrypted);
     }
 
     pub fn digest(&self) -> H128 {
-        H128::from(&self.hasher.clone().result()[0..16])
+        H128::from_slice(&self.hasher.clone().finalize()[0..16])
     }
 }

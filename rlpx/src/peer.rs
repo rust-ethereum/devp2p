@@ -1,16 +1,14 @@
 use crate::{ecies::ECIESStream, util::pk2id};
-use bigint::H512;
+use arrayvec::ArrayString;
+use bytes::Bytes;
+use ethereum_types::H512;
 use futures::{ready, Sink, SinkExt};
+use libsecp256k1::{PublicKey, SecretKey};
 use log::*;
-use rlp::{Decodable, DecoderError, Encodable, RlpStream, UntrustedRlp};
-use secp256k1::{
-    key::{PublicKey, SecretKey},
-    SECP256K1,
-};
+use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
 use std::{
     io,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::{
@@ -18,7 +16,26 @@ use tokio::{
     stream::{Stream, StreamExt},
 };
 
-pub type CapabilityName = arrayvec::ArrayString<[u8; 4]>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CapabilityName(pub ArrayString<[u8; 4]>);
+
+impl rlp::Encodable for CapabilityName {
+    fn rlp_append(&self, s: &mut RlpStream) {
+        self.0.as_bytes().rlp_append(s);
+    }
+}
+
+impl rlp::Decodable for CapabilityName {
+    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+        Ok(Self(
+            ArrayString::from(
+                std::str::from_utf8(rlp.data()?)
+                    .map_err(|_| DecoderError::Custom("should be a UTF-8 string"))?,
+            )
+            .map_err(|_| DecoderError::RlpIsTooBig)?,
+        ))
+    }
+}
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 /// Capability information
@@ -30,7 +47,7 @@ pub struct CapabilityInfo {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapabilityMessage {
-    pub name: String,
+    pub name: CapabilityName,
     pub version: usize,
 }
 
@@ -43,7 +60,7 @@ impl Encodable for CapabilityMessage {
 }
 
 impl Decodable for CapabilityMessage {
-    fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
+    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
         Ok(Self {
             name: rlp.val_at(0)?,
             version: rlp.val_at(1)?,
@@ -72,7 +89,7 @@ impl Encodable for HelloMessage {
 }
 
 impl Decodable for HelloMessage {
-    fn decode(rlp: &UntrustedRlp) -> Result<Self, DecoderError> {
+    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
         Ok(Self {
             protocol_version: rlp.val_at(0)?,
             client_version: rlp.val_at(1)?,
@@ -99,7 +116,7 @@ pub struct PeerStream<Io> {
 
 impl<Io> PeerStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + AsyncWrite + Send + Unpin,
 {
     /// Remote public id of this peer
     pub fn remote_id(&self) -> H512 {
@@ -161,8 +178,7 @@ where
         capabilities: Vec<CapabilityInfo>,
         port: u16,
     ) -> Result<Self, io::Error> {
-        let public_key = PublicKey::from_secret_key(&SECP256K1, &secret_key)
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "SECP256K1 public key error"))?;
+        let public_key = PublicKey::from_secret_key(secret_key);
         let id = pk2id(&public_key);
         let nonhello_capabilities = capabilities.clone();
         let nonhello_client_version = client_version.clone();
@@ -204,7 +220,7 @@ where
             io::Error::new(io::ErrorKind::Other, "hello failed (no value)")
         })?;
 
-        let message_id_rlp = UntrustedRlp::new(&hello[0..1]);
+        let message_id_rlp = Rlp::new(&hello[0..1]);
         let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
         match message_id {
             Ok(message_id) => {
@@ -228,7 +244,7 @@ where
             }
         }
 
-        let rlp: Result<HelloMessage, rlp::DecoderError> = UntrustedRlp::new(&hello[1..]).as_val();
+        let rlp: Result<HelloMessage, rlp::DecoderError> = Rlp::new(&hello[1..]).as_val();
         match rlp {
             Ok(val) => {
                 debug!("hello message: {:?}", val);
@@ -241,7 +257,7 @@ where
                         .any(|v| v.name == cap_info.name && v.version == cap_info.version);
 
                     if cap_match {
-                        shared_capabilities.push(cap_info.clone());
+                        shared_capabilities.push(cap_info);
                     }
                 }
 
@@ -296,7 +312,7 @@ where
         match ready!(Pin::new(&mut s.stream).poll_next(cx)) {
             Some(Ok(val)) => {
                 debug!("received peer message: {:?}", val);
-                let message_id_rlp = UntrustedRlp::new(&val[0..1]);
+                let message_id_rlp = Rlp::new(&val[0..1]);
                 let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
 
                 let (cap, id) = match message_id {
@@ -305,7 +321,7 @@ where
                             let data = &val[1..];
                             match message_id {
                                 0x01 /* disconnect */ => {
-                                    let reason: Result<usize, rlp::DecoderError> = UntrustedRlp::new(data).val_at(0);
+                                    let reason: Result<usize, rlp::DecoderError> = Rlp::new(data).val_at(0);
                                     debug!("received disconnect message, reason: {:?}", reason);
                                     return Poll::Ready(Some(Err(io::Error::new(io::ErrorKind::Other,
                                                                                "explicit disconnect"))));
@@ -362,7 +378,7 @@ where
 
 impl<Io> Sink<(CapabilityName, usize, Bytes)> for PeerStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: AsyncRead + AsyncWrite + Send + Unpin,
 {
     type Error = io::Error;
 

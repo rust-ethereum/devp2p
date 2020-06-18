@@ -79,8 +79,7 @@ pub trait ServerHandle: Send + Sync {
 }
 
 pub struct ServerHandleImpl {
-    pool: Weak<AsyncMutex<RLPxStream>>,
-    inner: Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>>,
+    pool: Weak<RLPxStream>,
 }
 
 #[async_trait]
@@ -89,8 +88,7 @@ impl ServerHandle for ServerHandleImpl {
 
     async fn get_peer(&self, min_capability_version: usize) -> Result<Self::PeerHandle, Shutdown> {
         let peer_id = {
-            let pool_ref = self.pool.upgrade().ok_or(Shutdown)?;
-            let pool = pool_ref.lock().await;
+            let pool = self.pool.upgrade().ok_or(Shutdown)?;
             pool.get_peers(
                 1,
                 PeerFilter {
@@ -101,7 +99,6 @@ impl ServerHandle for ServerHandleImpl {
                     }),
                 },
             )
-            .await
         };
 
         Self::PeerHandle {

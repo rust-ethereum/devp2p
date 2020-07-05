@@ -2,7 +2,10 @@
 name = "rlpx"
 version = "0.3.0"
 license = "Apache-2.0"
-authors = ["Wei Tang <hi@that.world>"]
+authors = [
+    "Wei Tang <hi@that.world>",
+    "Artem Vorotnikov <artem@vorotnikov.me>",
+]
 description = "RLPx peer-to-peer protocol implementation in Rust."
 repository = "https://github.com/sorpaas/rust-devp2p"
 edition = "2018"

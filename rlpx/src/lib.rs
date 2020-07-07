@@ -608,7 +608,8 @@ impl RLPxStream {
     }
 
     /// Active peers
-    pub async fn active_peers(&self) -> HashSet<H512> {
+    #[must_use]
+    pub fn active_peers(&self) -> HashSet<H512> {
         self.streams.lock().mapping.keys().copied().collect()
     }
 

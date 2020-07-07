@@ -4,6 +4,7 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::default_trait_access,
+    clippy::filter_map,
     clippy::if_not_else,
     clippy::missing_errors_doc,
     clippy::module_name_repetitions,
@@ -71,6 +72,7 @@ pub enum RLPxReceiveMessage {
 
 struct StreamHandle {
     sender: tokio::sync::mpsc::Sender<(CapabilityName, usize, Bytes)>,
+    capabilities: HashMap<CapabilityName, BTreeSet<usize>>,
 }
 
 enum PeerState {
@@ -260,13 +262,20 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin>(
                 }
                 // If we are connecting, incoming connection request takes precedence
                 debug!("new peer connected: {}", remote_id);
-                let capabilities = peer.capabilities().into();
+                let capabilities = peer.capabilities().to_vec();
                 let (sink, stream) = futures::StreamExt::split(peer);
                 let (peer_sender_tx, peer_sender_rx) = tokio::sync::mpsc::channel(1);
 
                 assert!(streams.insert(remote_id, stream.into()).is_none());
                 *peer_state = PeerState::Connected(StreamHandle {
                     sender: peer_sender_tx,
+                    capabilities: {
+                        let mut v = HashMap::<CapabilityName, BTreeSet<usize>>::new();
+                        for cap in &capabilities {
+                            v.entry(cap.name).or_default().insert(cap.version);
+                        }
+                        v
+                    },
                 });
 
                 (remote_id, capabilities, peer_sender_rx, sink)
@@ -346,13 +355,15 @@ pub struct RLPxStream {
 }
 
 pub struct CapabilityFilter {
-    pub name: String,
+    pub name: CapabilityName,
     pub versions: BTreeSet<usize>,
 }
 
-pub struct PeerFilter {
-    pub is_connected: Option<bool>,
-    pub capability: Option<CapabilityFilter>,
+pub enum PeerFilter {
+    Connecting,
+    Connected {
+        capabilities: Option<CapabilityFilter>,
+    },
 }
 
 #[derive(Default, Debug)]
@@ -529,7 +540,7 @@ impl RLPxStream {
                             Ok(peer) => {
                                 assert_eq!(peer.remote_id(), remote_id);
                                 debug!("new peer connected: {}", remote_id);
-                                let capabilities = peer.capabilities().into();
+                                let capabilities = peer.capabilities().to_vec();
                                 let (mut sink, stream) = futures::StreamExt::split(peer);
                                 let (peer_sender_tx, mut peer_sender_rx) =
                                     tokio::sync::mpsc::channel(1);
@@ -551,6 +562,14 @@ impl RLPxStream {
                                 assert!(streams.insert(remote_id, stream.into()).is_none());
                                 *peer_state.get_mut() = PeerState::Connected(StreamHandle {
                                     sender: peer_sender_tx,
+                                    capabilities: {
+                                        let mut v =
+                                            HashMap::<CapabilityName, BTreeSet<usize>>::new();
+                                        for cap in &capabilities {
+                                            v.entry(cap.name).or_default().insert(cap.version);
+                                        }
+                                        v
+                                    },
                                 });
                                 drop(s);
 
@@ -614,12 +633,46 @@ impl RLPxStream {
     }
 
     /// Get peer by capability
-    pub async fn get_peers(&self, _limit: usize, _filter: PeerFilter) -> HashSet<H512> {
-        let _peers = self.streams.lock();
+    pub async fn get_peers(&self, limit: usize, filter: PeerFilter) -> HashSet<H512> {
+        let peers = self.streams.lock();
 
-        // peers.iter().filter(|peer| )
+        peers
+            .mapping
+            .iter()
+            .filter(|(_, peer)| {
+                match peer {
+                    // Simple case: peer is connecting, info unknown
+                    PeerState::Connecting => {
+                        if let PeerFilter::Connecting = filter {
+                            return true;
+                        }
+                    }
+                    // Peer is connected, let's dig him further
+                    PeerState::Connected(handle) => {
+                        if let PeerFilter::Connected { capabilities } = &filter {
+                            // Check if peer supports capability
+                            if let Some(cap_filter) = capabilities {
+                                if let Some(versions) = handle.capabilities.get(&cap_filter.name) {
+                                    // Check if peer supports cap version
+                                    if cap_filter.versions.is_empty() {
+                                        return true;
+                                    }
 
-        todo!()
+                                    if !cap_filter.versions.is_disjoint(versions) {
+                                        return true;
+                                    }
+                                }
+                            } else {
+                                return true;
+                            }
+                        }
+                    }
+                };
+                false
+            })
+            .map(|(remote_id, _)| *remote_id)
+            .take(limit)
+            .collect()
     }
 }
 

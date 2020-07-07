@@ -321,12 +321,16 @@ where
     }
 }
 
+pub type NodeFilter = Box<dyn Fn(usize, H512) -> bool + Send + 'static>;
+
 /// A `RLPx` stream and sink
 pub struct RLPxStream {
     #[allow(unused)]
     tasks: Arc<TaskGroup>,
 
     streams: Arc<Mutex<PeerStreams<TcpStream>>>,
+
+    node_filter: Arc<Mutex<NodeFilter>>,
 
     newly_connected_tx: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
     newly_connected: tokio::sync::mpsc::Receiver<(H512, Vec<CapabilityInfo>)>,
@@ -401,6 +405,7 @@ impl RLPxStream {
         let port = listen.map_or(0, |addr| addr.port());
 
         let streams = Arc::new(Mutex::new(PeerStreams::default()));
+        let node_filter = Arc::new(Mutex::new(Box::new(|_, _| true) as NodeFilter));
 
         let (disconnect_cmd_tx, disconnect_requests) =
             tokio::sync::mpsc::unbounded_channel::<(_, Option<DisconnectCb>)>();
@@ -435,6 +440,7 @@ impl RLPxStream {
         Ok(Self {
             tasks,
             streams,
+            node_filter,
             secret_key,
             protocol_version,
             client_version,
@@ -452,6 +458,7 @@ impl RLPxStream {
     pub async fn add_peer(&self, addr: SocketAddr, remote_id: H512) -> io::Result<bool> {
         let tasks_handle = Arc::downgrade(&self.tasks);
 
+        let node_filter = self.node_filter.clone();
         let streams = self.streams.clone();
         let disconnect_cmd_tx = self.disconnect_cmd_tx.clone();
         let mut newly_connected = self.newly_connected_tx.clone();
@@ -463,24 +470,37 @@ impl RLPxStream {
         let port = self.port;
 
         tokio::spawn(async move {
-            // NOTE: we assume that successful handshake means that remote id provided above is correct
-            match streams.lock().mapping.entry(remote_id) {
-                Entry::Occupied(key) => {
-                    warn!(
-                        "we are already {} to remote peer {}!",
-                        if key.get().is_connected() {
-                            "connected"
-                        } else {
-                            "connecting"
-                        },
-                        remote_id
-                    );
-                    return Ok(false);
+            let mut inserted = false;
+            {
+                let mut streams = streams.lock();
+                let node_filter = node_filter.lock();
+
+                let connection_num = streams.mapping.len();
+
+                match streams.mapping.entry(remote_id) {
+                    Entry::Occupied(key) => {
+                        warn!(
+                            "we are already {} to remote peer {}!",
+                            if key.get().is_connected() {
+                                "connected"
+                            } else {
+                                "connecting"
+                            },
+                            remote_id
+                        );
+                    }
+                    Entry::Vacant(vacant) => {
+                        if (node_filter)(connection_num, remote_id) {
+                            info!("connecting to peer {}", remote_id);
+                            vacant.insert(PeerState::Connecting);
+                            inserted = true;
+                        }
+                    }
                 }
-                Entry::Vacant(vacant) => {
-                    info!("connecting to peer {}", remote_id);
-                    vacant.insert(PeerState::Connecting);
-                }
+            }
+
+            if !inserted {
+                return Ok(false);
             }
 
             // Connecting to peer is a long running operation so we have to break the mutex lock.
@@ -580,6 +600,11 @@ impl RLPxStream {
         }
 
         disconnection_res.await.unwrap_or(false)
+    }
+
+    /// Set the node filter.
+    pub fn set_node_filter<F: Fn(usize, H512) -> bool + Send + 'static>(&self, node_filter: F) {
+        *self.node_filter.lock() = Box::new(node_filter);
     }
 
     /// Active peers

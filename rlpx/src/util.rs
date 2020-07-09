@@ -45,7 +45,7 @@ mod tests {
     #[test]
     fn pk2id2pk() {
         let prikey = SecretKey::random(&mut OsRng);
-        let pubkey = PublicKey::from_secret_key(prikey);
+        let pubkey = PublicKey::from_secret_key(&prikey);
         assert_eq!(pubkey, id2pk(pk2id(&pubkey)).unwrap());
     }
 }

@@ -178,7 +178,7 @@ where
         capabilities: Vec<CapabilityInfo>,
         port: u16,
     ) -> Result<Self, io::Error> {
-        let public_key = PublicKey::from_secret_key(secret_key);
+        let public_key = PublicKey::from_secret_key(&secret_key);
         let id = pk2id(&public_key);
         let nonhello_capabilities = capabilities.clone();
         let nonhello_client_version = client_version.clone();

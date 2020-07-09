@@ -23,7 +23,7 @@ ethereum-types = "0.9"
 futures = "0.3"
 generic-array = "0.14"
 hmac = "0.8"
-libsecp256k1 = { git = "https://github.com/vorot93/libsecp256k1", branch = "copy-based-api" }
+libsecp256k1 = { git = "https://github.com/paritytech/libsecp256k1" }
 log = "0.4"
 once_cell = "1"
 parking_lot = "0.11"

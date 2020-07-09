@@ -61,7 +61,7 @@ fn ecdh_x(public_key: PublicKey, secret_key: SecretKey) -> H256 {
         }
     }
 
-    let shared = SharedSecret::<DummyHasher>::new(public_key, secret_key).unwrap();
+    let shared = SharedSecret::<DummyHasher>::new(&public_key, &secret_key).unwrap();
     H256::from_slice(shared.as_ref())
 }
 
@@ -117,11 +117,11 @@ pub struct ECIES {
 
 impl ECIES {
     pub fn new_client(secret_key: SecretKey, remote_id: H512) -> Result<Self, ECIESError> {
-        let public_key = PublicKey::from_secret_key(secret_key);
+        let public_key = PublicKey::from_secret_key(&secret_key);
         let remote_public_key = id2pk(remote_id)?;
         let nonce = H256::random();
         let ephemeral_secret_key = SecretKey::random(&mut OsRng);
-        let ephemeral_public_key = PublicKey::from_secret_key(ephemeral_secret_key);
+        let ephemeral_public_key = PublicKey::from_secret_key(&ephemeral_secret_key);
 
         Ok(Self {
             secret_key,
@@ -148,10 +148,10 @@ impl ECIES {
     }
 
     pub fn new_server(secret_key: SecretKey) -> Result<Self, ECIESError> {
-        let public_key = PublicKey::from_secret_key(secret_key);
+        let public_key = PublicKey::from_secret_key(&secret_key);
         let nonce = H256::random();
         let ephemeral_secret_key = SecretKey::random(&mut OsRng);
-        let ephemeral_public_key = PublicKey::from_secret_key(ephemeral_secret_key);
+        let ephemeral_public_key = PublicKey::from_secret_key(&ephemeral_secret_key);
 
         Ok(Self {
             secret_key,
@@ -201,7 +201,7 @@ impl ECIES {
         iv_encrypted[16..].copy_from_slice(&encrypted);
 
         let tag = hmac_sha256(mac_key.as_ref(), iv_encrypted.as_ref());
-        let public_key = PublicKey::from_secret_key(secret_key);
+        let public_key = PublicKey::from_secret_key(&secret_key);
 
         let mut ret = vec![0_u8; 65 + 16 + data.len() + 32];
         ret[0..65].copy_from_slice(&public_key.serialize());
@@ -240,7 +240,7 @@ impl ECIES {
     fn create_auth_unencrypted(&self) -> Result<[u8; AUTH_LEN], ECIESError> {
         let x = ecdh_x(self.remote_public_key.unwrap(), self.secret_key);
         let msg = Message::parse_slice((x ^ self.nonce).as_ref())?;
-        let (sig, rec) = libsecp256k1::sign(msg, self.ephemeral_secret_key);
+        let (sig, rec) = libsecp256k1::sign(&msg, &self.ephemeral_secret_key);
         let mut out = [0_u8; AUTH_LEN];
 
         out[0..64].copy_from_slice(&sig.serialize());
@@ -272,7 +272,7 @@ impl ECIES {
 
         let x = ecdh_x(self.remote_public_key.unwrap(), self.secret_key);
         let msg = Message::parse_slice((x ^ self.remote_nonce.unwrap()).as_ref())?;
-        self.remote_ephemeral_public_key = Some(libsecp256k1::recover(msg, signature, rec)?);
+        self.remote_ephemeral_public_key = Some(libsecp256k1::recover(&msg, &signature, &rec)?);
         self.ephemeral_shared_secret = Some(ecdh_x(
             self.remote_ephemeral_public_key.unwrap(),
             self.ephemeral_secret_key,
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn ecdh() {
-        let our_secret_key = SecretKey::parse(hex!(
+        let our_secret_key = SecretKey::parse(&hex!(
             "202a36e24c3eb39513335ec99a7619bad0e7dc68d69401b016253c7d26dc92f8"
         ))
         .unwrap();
@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn communicate() {
         let server_secret_key = SecretKey::random(&mut OsRng);
-        let server_public_key = PublicKey::from_secret_key(server_secret_key);
+        let server_public_key = PublicKey::from_secret_key(&server_secret_key);
         let client_secret_key = SecretKey::random(&mut OsRng);
 
         let mut server_ecies = ECIES::new_server(server_secret_key).unwrap();

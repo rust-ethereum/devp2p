@@ -1,6 +1,6 @@
-use bigint::{H256, U256};
-use block::{Block, Header, Transaction};
-use rlp::{DecoderError, Encodable, RlpStream, UntrustedRlp};
+use ethereum::{Block, Header, Transaction};
+use ethereum_types::{H256, U256};
+use rlp::{DecoderError, Encodable, Rlp, RlpStream};
 
 pub enum EthGossipMessage {
     NewBlockHashes(Vec<(H256, U256)>),
@@ -68,7 +68,7 @@ impl ETHMessage {
     ///
     /// # Errors
     /// Errors out on failure to decode contents based on provided `id`.
-    pub fn decode(rlp: &UntrustedRlp, id: usize) -> Result<Self, DecoderError> {
+    pub fn decode(rlp: &Rlp, id: usize) -> Result<Self, DecoderError> {
         Ok(match id {
             0 => Self::Status {
                 protocol_version: rlp.val_at(0)?,
@@ -206,8 +206,8 @@ impl Encodable for ETHMessage {
 #[cfg(test)]
 mod tests {
     use super::ETHMessage;
-    use bigint::H256;
-    use rlp::{self, UntrustedRlp};
+    use ethereum_types::H256;
+    use rlp::{self, Rlp};
 
     #[test]
     fn test_new_block_hashes_message() {
@@ -216,13 +216,13 @@ mod tests {
             179, 73, 226, 76, 239, 254, 249, 176, 45, 113, 180, 213, 192, 189, 117, 194, 131, 62,
             213, 12,
         ];
-        ETHMessage::decode(&UntrustedRlp::new(&data), 1).unwrap();
+        ETHMessage::decode(&Rlp::new(&data), 1).unwrap();
     }
 
     #[test]
     fn test_get_block_headers_message() {
         let data: [u8; 8] = [199, 131, 29, 76, 0, 1, 128, 128];
-        ETHMessage::decode(&UntrustedRlp::new(&data), 3).unwrap();
+        ETHMessage::decode(&Rlp::new(&data), 3).unwrap();
     }
 
     #[test]
@@ -236,7 +236,7 @@ mod tests {
         };
         assert_eq!(
             message,
-            ETHMessage::decode(&UntrustedRlp::new(&rlp::encode(&message)), 3).unwrap()
+            ETHMessage::decode(&Rlp::new(&rlp::encode(&message)), 3).unwrap()
         );
     }
 
@@ -337,6 +337,6 @@ mod tests {
             35, 254, 101, 85, 230, 188, 219, 71, 170, 37, 38, 154, 225, 6, 229, 241, 107, 84, 225,
             233, 45, 206, 226, 94, 28, 138, 208, 55, 136, 46, 147, 68, 224, 203, 222, 131, 206,
         ];
-        ETHMessage::decode(&UntrustedRlp::new(&data), 4).unwrap();
+        ETHMessage::decode(&Rlp::new(&data), 4).unwrap();
     }
 }

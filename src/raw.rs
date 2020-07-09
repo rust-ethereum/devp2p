@@ -1,15 +1,15 @@
 use async_trait::async_trait;
-use bigint::{H512, H512 as PeerId};
 use bytes::Bytes;
 use discv5::Discv5;
+use ethereum_types::{H512, H512 as PeerId};
 use futures::prelude::*;
+use libsecp256k1::SecretKey;
 use log::*;
 use rand::{thread_rng, Rng};
 use rlpx::*;
-use secp256k1::key::SecretKey;
 use std::{
     cmp::min,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     io,
     net::{IpAddr, SocketAddr},
     pin::Pin,
@@ -39,7 +39,7 @@ pub struct PeerHandleImpl {
     capability: CapabilityName,
     capability_version: u8,
     peer_id: PeerId,
-    pool: Weak<AsyncMutex<RLPxStream>>,
+    pool: Weak<RLPxStream>,
 }
 
 #[async_trait]
@@ -48,21 +48,20 @@ impl PeerHandle for PeerHandleImpl {
         self.capability_version
     }
     fn peer_id(&self) -> PeerId {
-        self.peer_id.clone()
+        self.peer_id
     }
     async fn send_message(self, message: Bytes) -> Result<(), PeerSendError> {
         self.pool
             .upgrade()
             .ok_or(PeerSendError::Shutdown)?
-            .lock()
-            .await
             .send(RLPxSendMessage {
                 id: todo!(),
-                peer: self.peer_id.clone(),
+                peer: self.peer_id,
                 capability_name: self.capability.clone(),
                 data: message,
             })
-            .await?;
+            .await
+            .map_err(|_| PeerSendError::PeerGone);
 
         Ok(())
     }
@@ -73,9 +72,17 @@ impl PeerHandle for PeerHandleImpl {
 pub trait ServerHandle: Send + Sync {
     type PeerHandle: PeerHandle;
     /// Get random peer that matches the specified capability version. Returns peer ID and actual capability version.
-    async fn get_peer(&self, min_capability_version: usize) -> Result<Self::PeerHandle, Shutdown>;
+    async fn get_peer(
+        &self,
+        name: CapabilityName,
+        versions: BTreeSet<usize>,
+    ) -> Result<Option<Self::PeerHandle>, Shutdown>;
     /// Number of peers that support the specified capability version.
-    async fn num_peers(&self, min_capability_version: usize) -> Result<usize, Shutdown>;
+    async fn num_peers(
+        &self,
+        name: CapabilityName,
+        versions: BTreeSet<usize>,
+    ) -> Result<usize, Shutdown>;
 }
 
 pub struct ServerHandleImpl {
@@ -86,40 +93,52 @@ pub struct ServerHandleImpl {
 impl ServerHandle for ServerHandleImpl {
     type PeerHandle = PeerHandleImpl;
 
-    async fn get_peer(&self, min_capability_version: usize) -> Result<Self::PeerHandle, Shutdown> {
+    async fn get_peer(
+        &self,
+        name: CapabilityName,
+        versions: BTreeSet<usize>,
+    ) -> Result<Option<Self::PeerHandle>, Shutdown> {
         let peer_id = {
             let pool = self.pool.upgrade().ok_or(Shutdown)?;
-            pool.get_peers(
-                1,
-                PeerFilter {
-                    is_connected: Some(true),
-                    capability: Some(CapabilityFilter {
-                        name: "eth".to_string(),
-                        versions: std::iter::once(min_capability_version).collect(),
-                    }),
-                },
-            )
+            match pool
+                .get_peers(
+                    1,
+                    &PeerFilter::Connected {
+                        capabilities: Some(CapabilityFilter { name, versions }),
+                    },
+                )
+                .into_iter()
+                .next()
+            {
+                Some(peer_id) => peer_id,
+                None => return Ok(None),
+            }
         };
 
-        Self::PeerHandle {
+        Ok(Some(PeerHandleImpl {
+            capability: name,
             capability_version: unimplemented!(),
             peer_id,
             pool: self.pool.clone(),
-        }
+        }))
     }
 
-    async fn num_peers(&self, min_capability_version: usize) -> Result<usize, Shutdown> {
+    async fn num_peers(
+        &self,
+        name: CapabilityName,
+        versions: BTreeSet<usize>,
+    ) -> Result<usize, Shutdown> {
         unimplemented!()
     }
 }
 
-pub struct IncomingMessage {
+pub struct IngressMessage {
     pub peer_id: PeerId,
-    pub message: Vec<u8>,
+    pub message: Bytes,
 }
 
-pub type IncomingHandler =
-    Pin<Box<dyn Sink<IncomingMessage, Error = std::convert::Infallible> + Send + 'static>>;
+pub type IngressHandler =
+    Pin<Box<dyn Sink<IngressMessage, Error = std::convert::Infallible> + Send + 'static>>;
 
 #[async_trait]
 pub trait ProtocolRegistrar: Send + Sync {
@@ -129,17 +148,17 @@ pub trait ProtocolRegistrar: Send + Sync {
     fn register_incoming_handler(
         &self,
         protocol: CapabilityName,
-        handler: IncomingHandler,
+        handler: IngressHandler,
     ) -> Self::ServerHandle;
 }
 
 impl ProtocolRegistrar for Server {
     type ServerHandle = ServerHandleImpl;
 
-    fn register_handler(
+    fn register_incoming_handler(
         &self,
         protocol: CapabilityName,
-        handler: IncomingHandler,
+        handler: IngressHandler,
     ) -> Self::ServerHandle {
         self.protocol_handlers
             .lock()
@@ -166,9 +185,9 @@ pub struct Config {
 /// An Ethereum devp2p stream that handles peers management
 pub struct Server {
     discovery: Arc<Mutex<Discv5>>,
-    rlpx: Arc<AsyncMutex<RLPxStream>>,
+    rlpx: Arc<RLPxStream>,
     config: Config,
-    protocol_handlers: Arc<Mutex<HashMap<String, IncomingHandler>>>,
+    protocol_handlers: Arc<Mutex<HashMap<CapabilityName, IngressHandler>>>,
 }
 
 // impl DevP2PServer {

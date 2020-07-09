@@ -431,7 +431,7 @@ impl RLPxStream {
         })
     }
 
-    /// Add a new peer to this `RLPx` stream. Returns `true` if it did not exist before.
+    /// Add a new peer to this `RLPx` stream. Returns `true` if it was inserted successfully (did not exist before, accepted by node filter).
     pub fn add_peer(
         &self,
         addr: SocketAddr,

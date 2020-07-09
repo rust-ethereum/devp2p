@@ -2,17 +2,17 @@ mod proto;
 
 pub use self::proto::*;
 use super::raw::*;
+use arrayvec::ArrayString;
 use async_trait::async_trait;
-use bigint::{H256, H512, U256};
-use block::Block;
+use ethereum::{Block, Transaction};
 use ethereum_types::*;
-use futures::prelude::*;
-use log::*;
-use rlp::{self, UntrustedRlp};
-use rlpx::{CapabilityInfo, RLPxReceiveMessage, RLPxSendMessage};
-use secp256k1::key::SecretKey;
+use maplit::btreeset;
+use once_cell::sync::Lazy;
+use rlp::{self, Rlp};
+use rlpx::{CapabilityInfo, CapabilityName, RLPxReceiveMessage, RLPxSendMessage};
 use std::{
     collections::{HashMap, HashSet},
+    convert::TryInto,
     io,
     marker::PhantomData,
     net::{IpAddr, SocketAddr},
@@ -20,7 +20,20 @@ use std::{
 };
 use tokio::{prelude::*, sync::oneshot::Sender as OneshotSender};
 
-pub struct PooledTransactionHashes();
+static ETH_PROTOCOL_ID: Lazy<CapabilityName> =
+    Lazy::new(|| CapabilityName(ArrayString::from("eth").unwrap()));
+
+pub enum Error {
+    NoPeers,
+    PeerGone,
+    Shutdown,
+}
+
+impl From<Shutdown> for Error {
+    fn from(_: Shutdown) -> Self {
+        Self::Shutdown
+    }
+}
 
 #[async_trait]
 pub trait EthRequestHandler: Send + Sync {
@@ -31,35 +44,36 @@ pub trait EthRequestHandler: Send + Sync {
 
 #[async_trait]
 pub trait EthProtocol {
-    async fn new_block_hashes(&self, hashes: Vec<(H256, U256)>) -> Result<(), Shutdown>;
+    async fn new_block_hashes(&self, hashes: Vec<(H256, U256)>) -> Result<(), Error>;
     async fn get_pooled_transactions(
         &self,
         hashes: HashSet<H256>,
-    ) -> Result<Vec<Transaction>, Shutdown>;
+    ) -> Result<Vec<Transaction>, Error>;
 }
 
 pub struct Server<P2P: ProtocolRegistrar, RH: EthRequestHandler> {
     inflight_requests: Arc<Mutex<HashMap<H512, HashMap<u64, OneshotSender<Vec<u8>>>>>>,
 
-    gossip_handler: Arc<RH>,
+    request_handler: Arc<RH>,
     devp2p_handle: Arc<P2P::ServerHandle>,
     devp2p_owned_handle: Option<Arc<P2P>>,
 }
 
 impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
+    /// Register the protocol server with the devp2p client
     pub fn new(registrar: &P2P, request_handler: Arc<RH>) -> Self {
         let devp2p_handle = Arc::new(
-            registrar
-                .register_incoming_handler("eth".to_string(), Box::pin(futures::sink::drain())),
+            registrar.register_incoming_handler(*ETH_PROTOCOL_ID, Box::pin(futures::sink::drain())),
         );
         Self {
             inflight_requests: Default::default(),
-            gossip_handler,
+            request_handler,
             devp2p_handle,
             devp2p_owned_handle: None,
         }
     }
 
+    /// Register the protocol server with the devp2p client and make protocol server the owner of devp2p instance
     pub fn new_owned(registrar: Arc<P2P>, request_handler: Arc<RH>) -> Self {
         let mut this = Self::new(&*registrar, request_handler);
         this.devp2p_owned_handle = Some(registrar);
@@ -68,12 +82,20 @@ impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
 }
 
 #[async_trait]
-impl<P2P: ProtocolRegistrar, G: EthGossipHandler> EthProtocol for Server<P2P, G> {
-    async fn get_pooled_transaction_hashes(
+impl<P2P: ProtocolRegistrar, G: EthRequestHandler> EthProtocol for Server<P2P, G> {
+    async fn new_block_hashes(&self, hashes: Vec<(H256, U256)>) -> Result<(), Error> {
+        todo!()
+    }
+
+    async fn get_pooled_transactions(
         &self,
         _hashes: HashSet<H256>,
-    ) -> Result<PooledTransactionHashes, Shutdown> {
-        let peer_handle = self.devp2p_handle.get_peer(65).await?;
+    ) -> Result<Vec<Transaction>, Error> {
+        let peer_handle = self
+            .devp2p_handle
+            .get_peer(*ETH_PROTOCOL_ID, btreeset![65])
+            .await?
+            .ok_or(Error::NoPeers)?;
 
         let request_id = rand::random();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -85,15 +107,14 @@ impl<P2P: ProtocolRegistrar, G: EthGossipHandler> EthProtocol for Server<P2P, G>
             .insert(request_id, tx);
 
         // Make a GetPooledTransactions message
-        let msg = Arc::new(request_id.to_be_bytes().to_vec());
+        let msg = request_id.to_be_bytes().to_vec().into();
 
         peer_handle.send_message(msg).await;
 
         let msg = rx.await.unwrap();
 
         // Parse PooledTransactionHashes
-
-        unimplemented!()
+        todo!()
     }
 }
 

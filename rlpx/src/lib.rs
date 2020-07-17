@@ -337,18 +337,54 @@ pub struct CapabilityFilter {
     pub versions: BTreeSet<usize>,
 }
 
+pub struct TaskHandle<T>(
+    tokio::task::JoinHandle<Pin<Box<dyn Future<Output = T> + Send + 'static>>>,
+);
+
+impl<T> Future for TaskHandle<T>
+where
+    T: Send + 'static,
+{
+    type Output = Result<T, Shutdown>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.0).poll(cx).map(|result| {
+            Ok(result.map_err(|_| {
+                trace!("Runtime shutdown");
+                Shutdown
+            })?)
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Shutdown;
+
 #[derive(Default, Debug)]
-pub struct TaskGroup(Arc<Mutex<Vec<futures::future::AbortHandle>>>);
+pub struct TaskGroup(Mutex<Vec<futures::future::AbortHandle>>);
 
 impl TaskGroup {
-    pub fn spawn<T>(&self, future: T)
+    pub fn spawn<Fut, T>(&self, future: Fut) -> TaskHandle<Result<T, ()>>
     where
-        T: Future<Output = ()> + Send + 'static,
+        Fut: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
     {
         let mut group = self.0.lock();
         let (t, handle) = abortable(future);
         group.push(handle);
-        tokio::spawn(t);
+        let spawned_handle = tokio::spawn(t);
+        TaskHandle(Box::pin(async move {
+            Ok(spawned_handle
+                .await
+                .map_err(|_| {
+                    trace!("Runtime shutdown");
+                    Shutdown
+                })?
+                .map_err(|_| {
+                    trace!("Task group shutdown");
+                    Shutdown
+                })?)
+        }))
     }
 }
 
@@ -535,7 +571,7 @@ impl RLPxStream {
                                                     return;
                                                 }
                                             }
-                                        })
+                                        });
                                     }
                                     assert!(streams.insert(remote_id, stream.into()).is_none());
                                     *peer_state.get_mut() = PeerState::Connected(StreamHandle {

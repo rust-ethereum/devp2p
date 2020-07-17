@@ -6,13 +6,13 @@ use rand::rngs::OsRng;
 use rlpx::{CapabilityInfo, CapabilityName, RLPxStream};
 use tokio::stream::StreamExt;
 
-const REMOTE_ID: H512 = H512(hex!("103858bdb88756c71f15e9b5e09b56dc1be52f0a5021d46301dbbfb7e130029cc9d0d6f73f693bc29b665770fff7da4d34f3c6379fe12721b5d7a0bcb5ca1fc1"));
+const REMOTE_ID: H512 = H512(hex!("d860a01f9722d78051619d1e2351aba3f43f943f6f00718d1b9baa4101932a1f5011f16bb2b1bb35db20d6fe28fa0bf09636d26a87d31de9ec6203eeedb1f666"));
 
 #[tokio::main]
 async fn main() {
     let _ = env_logger::init();
 
-    let addr = "127.0.0.1:30303".parse().unwrap();
+    let addr = "18.138.108.67:30303".parse().unwrap();
     let mut client = RLPxStream::new(
         SecretKey::random(&mut OsRng),
         4,

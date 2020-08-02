@@ -1,3 +1,4 @@
+use crate::types::*;
 use ethereum::{Block, Header, Transaction};
 use ethereum_types::{H256, U256};
 use rlp::{DecoderError, Encodable, Rlp, RlpStream};

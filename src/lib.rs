@@ -2,6 +2,7 @@
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 #![allow(
+    unreachable_code,
     clippy::cast_possible_truncation,
     clippy::default_trait_access,
     clippy::filter_map,
@@ -14,9 +15,16 @@
     clippy::wildcard_imports
 )]
 
+pub mod ecies;
+mod errors;
 mod eth;
-mod raw;
-pub mod rlpx;
+mod mac;
+mod peer;
+mod rlpx;
+mod types;
+mod util;
 
-pub use eth::Server as ETHServer;
-pub use raw::Server as DevP2PServer;
+pub use eth::Server as EthServer;
+pub use peer::PeerStream;
+pub use rlpx::Server as RLPxNode;
+pub use types::{CapabilityInfo, CapabilityName};

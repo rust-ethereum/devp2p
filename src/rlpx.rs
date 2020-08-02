@@ -1,33 +1,122 @@
 //! `RLPx` protocol implementation in Rust
 
-pub mod ecies;
-mod errors;
-mod mac;
-mod peer;
-mod util;
-
-pub use peer::{CapabilityInfo, CapabilityName, PeerStream};
-
+use crate::{peer::*, types::*, util::*};
+use async_trait::async_trait;
 use bytes::Bytes;
-use ethereum_types::H512;
-use futures::{future::abortable, stream::SplitStream, SinkExt};
+use discv5::Discv5;
+use ethereum_types::{H512, H512 as PeerId};
+use futures::{
+    future::abortable,
+    sink::{Sink, SinkExt},
+    stream::SplitStream,
+};
 use libsecp256k1::SecretKey;
 use log::*;
 use parking_lot::Mutex;
+use rand::{thread_rng, Rng};
 use std::{
+    cmp::min,
     collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
     future::Future,
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{Arc, Weak},
     task::{Context, Poll},
+    time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     stream::{Stream, StreamExt, StreamMap},
 };
+
+pub type Enr = enr::Enr<SecretKey>;
+
+pub struct PeerHandleImpl {
+    capability: CapabilityName,
+    capability_version: u8,
+    peer_id: PeerId,
+    sender: tokio::sync::mpsc::Sender<RLPxSendMessage>,
+}
+
+#[async_trait]
+impl PeerHandle for PeerHandleImpl {
+    fn capability_version(&self) -> u8 {
+        self.capability_version
+    }
+    fn peer_id(&self) -> PeerId {
+        self.peer_id
+    }
+    async fn send_message(mut self, message: Bytes) -> Result<(), PeerSendError> {
+        self.sender
+            .send(RLPxSendMessage {
+                id: todo!(),
+                capability_name: self.capability.clone(),
+                data: message,
+            })
+            .await
+            .map_err(|_| PeerSendError::PeerGone);
+
+        Ok(())
+    }
+}
+
+pub struct ServerHandleImpl {
+    pool: Weak<Server>,
+}
+
+#[async_trait]
+impl ServerHandle for ServerHandleImpl {
+    type PeerHandle = PeerHandleImpl;
+
+    async fn get_peer(
+        &self,
+        name: CapabilityName,
+        versions: BTreeSet<usize>,
+    ) -> Result<Option<Self::PeerHandle>, Shutdown> {
+        let (peer_id, sender) = {
+            let pool = self.pool.upgrade().ok_or(Shutdown)?;
+            match pool
+                .connected_peers(|_| 1, Some(&CapabilityFilter { name, versions }))
+                .into_iter()
+                .next()
+            {
+                Some(peer_id) => peer_id,
+                None => return Ok(None),
+            }
+        };
+
+        Ok(Some(PeerHandleImpl {
+            capability: name,
+            capability_version: todo!(),
+            peer_id,
+            sender,
+        }))
+    }
+
+    async fn num_peers(
+        &self,
+        name: CapabilityName,
+        versions: BTreeSet<usize>,
+    ) -> Result<usize, Shutdown> {
+        unimplemented!()
+    }
+}
+
+pub struct IngressPeerTokenImpl {
+    id: PeerId,
+}
+
+impl IngressPeerToken for IngressPeerTokenImpl {
+    fn id(&self) -> PeerId {
+        self.id
+    }
+
+    fn penalize(self) {
+        todo!()
+    }
+}
 
 /// Sending message for `RLPx`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,14 +386,16 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin>(
 
 pub type NodeFilter = Box<dyn Fn(usize, H512) -> bool + Send + 'static>;
 
-/// A `RLPx` stream and sink
-pub struct RLPxStream {
+/// RLPx server
+pub struct Server {
     #[allow(unused)]
     tasks: Arc<TaskGroup>,
 
     streams: Arc<Mutex<PeerStreams<TcpStream>>>,
 
     node_filter: Arc<Mutex<NodeFilter>>,
+
+    protocol_handlers: Arc<Mutex<HashMap<CapabilityName, IngressHandler<IngressPeerTokenImpl>>>>,
 
     newly_connected_tx: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
     newly_connected: tokio::sync::mpsc::Receiver<(H512, Vec<CapabilityInfo>)>,
@@ -323,78 +414,20 @@ pub struct CapabilityFilter {
     pub versions: BTreeSet<usize>,
 }
 
-pub struct TaskHandle<T>(
-    tokio::task::JoinHandle<Pin<Box<dyn Future<Output = T> + Send + 'static>>>,
-);
-
-impl<T> Future for TaskHandle<T>
-where
-    T: Send + 'static,
-{
-    type Output = Result<T, Shutdown>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0).poll(cx).map(|result| {
-            Ok(result.map_err(|_| {
-                trace!("Runtime shutdown");
-                Shutdown
-            })?)
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Shutdown;
-
-#[derive(Default, Debug)]
-pub struct TaskGroup(Mutex<Vec<futures::future::AbortHandle>>);
-
-impl TaskGroup {
-    pub fn spawn<Fut, T>(&self, future: Fut) -> TaskHandle<Result<T, ()>>
-    where
-        Fut: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
-    {
-        let mut group = self.0.lock();
-        let (t, handle) = abortable(future);
-        group.push(handle);
-        let spawned_handle = tokio::spawn(t);
-        TaskHandle(Box::pin(async move {
-            Ok(spawned_handle
-                .await
-                .map_err(|_| {
-                    trace!("Runtime shutdown");
-                    Shutdown
-                })?
-                .map_err(|_| {
-                    trace!("Task group shutdown");
-                    Shutdown
-                })?)
-        }))
-    }
-}
-
-impl Drop for TaskGroup {
-    fn drop(&mut self) {
-        for handle in &*self.0.lock() {
-            handle.abort();
-        }
-    }
-}
-
-// This is a Tokio-based RLPx server implementation.
+// This is a Tokio-based devp2p server implementation.
 //
-// RLPxStream is the server handle that supports adding and removing peers and
-// it also provides Stream and Sink interfaces.
+// `Server` is the RLPx server handle that supports adding and removing peers and
+// supports registration for capability servers.
 //
 // This implementation is based on the concept of structured concurrency.
 // Internal state is managed by a multitude of workers that run in separate runtime tasks
 // spawned on the running executor during the server creation and addition of new peers.
 // All continuously running workers are inside the task scope owned by the server struct.
 
-impl RLPxStream {
-    /// Create a new `RLPx` stream
-    pub async fn new(
+impl Server {
+    /// Create a new devp2p server
+    pub async fn new<R>(
+        runtime: R,
         secret_key: SecretKey,
         protocol_version: usize,
         client_version: String,
@@ -409,6 +442,8 @@ impl RLPxStream {
 
         let streams = Arc::new(Mutex::new(PeerStreams::default()));
         let node_filter = Arc::new(Mutex::new(Box::new(|_, _| true) as NodeFilter));
+
+        let protocol_handlers = Arc::new(Mutex::new(Default::default()));
 
         let (disconnect_cmd_tx, disconnect_requests) =
             tokio::sync::mpsc::unbounded_channel::<(_, Option<DisconnectCb>)>();
@@ -441,6 +476,7 @@ impl RLPxStream {
             tasks,
             streams,
             node_filter,
+            protocol_handlers,
             secret_key,
             protocol_version,
             client_version,
@@ -651,25 +687,26 @@ impl RLPxStream {
             .iter()
             .filter(|(_, peer)| {
                 match peer {
-                    // Simple case: peer is connecting, info unknown
                     PeerState::Connecting => {
+                        // Peer is connecting, not yet live
                         return false;
                     }
-                    // Peer is connected, let's dig him further
                     PeerState::Connected(handle) => {
                         // Check if peer supports capability
                         if let Some(cap_filter) = &filter {
                             if let Some(versions) = handle.capabilities.get(&cap_filter.name) {
-                                // Check if peer supports cap version
                                 if cap_filter.versions.is_empty() {
+                                    // No cap version filter
                                     return true;
                                 }
 
                                 if !cap_filter.versions.is_disjoint(versions) {
+                                    // We have an intersection of at least *some* versions
                                     return true;
                                 }
                             }
                         } else {
+                            // No cap filter
                             return true;
                         }
                     }
@@ -683,7 +720,7 @@ impl RLPxStream {
     }
 }
 
-impl Stream for RLPxStream {
+impl Stream for Server {
     type Item = RLPxReceiveMessage;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -722,5 +759,20 @@ impl Stream for RLPxStream {
 
             Poll::Pending
         }
+    }
+}
+
+impl ProtocolRegistrar for Arc<Server> {
+    type ServerHandle = ServerHandleImpl;
+    type IngressPeerToken = IngressPeerTokenImpl;
+
+    fn register_incoming_handler(
+        &self,
+        protocol: CapabilityName,
+        handler: IngressHandler<Self::IngressPeerToken>,
+    ) -> Self::ServerHandle {
+        self.protocol_handlers.lock().insert(protocol, handler);
+        let pool = Arc::downgrade(&self);
+        Self::ServerHandle { pool }
     }
 }

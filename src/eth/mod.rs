@@ -1,24 +1,28 @@
 mod proto;
 
 pub use self::proto::*;
-use super::raw::*;
+use crate::{rlpx::*, types::*, CapabilityInfo, CapabilityName};
 use arrayvec::ArrayString;
 use async_trait::async_trait;
+use bytes::BytesMut;
 use ethereum::{Block, Transaction};
 use ethereum_types::*;
 use maplit::btreeset;
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use rlp::{self, Rlp};
-use rlpx::{CapabilityInfo, CapabilityName, RLPxReceiveMessage, RLPxSendMessage};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap, HashSet},
     convert::TryInto,
     io,
     marker::PhantomData,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
-use tokio::{prelude::*, sync::oneshot::Sender as OneshotSender};
+use tokio::{
+    prelude::*,
+    sync::oneshot::{channel as oneshot, Receiver as OneshotReceiver, Sender as OneshotSender},
+};
 
 static ETH_PROTOCOL_ID: Lazy<CapabilityName> =
     Lazy::new(|| CapabilityName(ArrayString::from("eth").unwrap()));
@@ -51,8 +55,42 @@ pub trait EthProtocol {
     ) -> Result<Vec<Transaction>, Error>;
 }
 
+type RequestCallback = OneshotSender<(BytesMut, OneshotSender<()>)>;
+
+#[derive(Debug, Default)]
+struct Demultiplexer {
+    inner: HashMap<H512, HashMap<u64, RequestCallback>>,
+}
+
+impl Demultiplexer {
+    fn save_callback(&mut self, peer_id: PeerId, sender: RequestCallback) -> u64 {
+        let peer = self.inner.entry(peer_id).or_default();
+        loop {
+            let request_id = rand::random();
+
+            if let Entry::Vacant(vacant) = peer.entry(request_id) {
+                vacant.insert(sender);
+                return request_id;
+            }
+        }
+    }
+
+    fn retrieve_callback(&mut self, peer_id: PeerId, request_id: u64) -> Option<RequestCallback> {
+        if let Entry::Occupied(mut entry) = self.inner.entry(peer_id) {
+            if let Some(sender) = entry.get_mut().remove(&request_id) {
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+                return Some(sender);
+            }
+        }
+
+        None
+    }
+}
+
 pub struct Server<P2P: ProtocolRegistrar, RH: EthRequestHandler> {
-    inflight_requests: Arc<Mutex<HashMap<H512, HashMap<u64, OneshotSender<Vec<u8>>>>>>,
+    inflight_requests: Arc<Mutex<Demultiplexer>>,
 
     request_handler: Arc<RH>,
     devp2p_handle: Arc<P2P::ServerHandle>,
@@ -60,13 +98,34 @@ pub struct Server<P2P: ProtocolRegistrar, RH: EthRequestHandler> {
 }
 
 impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
-    /// Register the protocol server with the devp2p client
+    /// Register the protocol server with the RLPx node.
     pub fn new(registrar: &P2P, request_handler: Arc<RH>) -> Self {
-        let devp2p_handle = Arc::new(
-            registrar.register_incoming_handler(*ETH_PROTOCOL_ID, Box::pin(futures::sink::drain())),
-        );
+        let inflight_requests = Arc::new(Mutex::new(Demultiplexer::default()));
+        let ingress_handler = {
+            let inflight_requests = inflight_requests.clone();
+            Box::new(move |peer: P2P::IngressPeerToken, message| {
+                let inflight_requests = inflight_requests.clone();
+                Box::pin(async move {
+                    let request_id: u64 = todo!();
+
+                    let sender = inflight_requests
+                        .lock()
+                        .retrieve_callback(peer.id(), request_id);
+
+                    // TODO: handle gossip and incoming requests.
+                    if let Some(sender) = sender {
+                        let (tx, rx) = oneshot();
+                        sender.send((message, tx));
+                        rx.await;
+                    }
+                }) as IngressHandlerFuture
+            }) as IngressHandler<P2P::IngressPeerToken>
+        };
+
+        let devp2p_handle =
+            Arc::new(registrar.register_incoming_handler(*ETH_PROTOCOL_ID, ingress_handler));
         Self {
-            inflight_requests: Default::default(),
+            inflight_requests,
             request_handler,
             devp2p_handle,
             devp2p_owned_handle: None,
@@ -97,14 +156,11 @@ impl<P2P: ProtocolRegistrar, G: EthRequestHandler> EthProtocol for Server<P2P, G
             .await?
             .ok_or(Error::NoPeers)?;
 
-        let request_id = rand::random();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.inflight_requests
+        let request_id = self
+            .inflight_requests
             .lock()
-            .unwrap()
-            .entry(peer_handle.peer_id())
-            .or_default()
-            .insert(request_id, tx);
+            .save_callback(peer_handle.peer_id(), tx);
 
         // Make a GetPooledTransactions message
         let msg = request_id.to_be_bytes().to_vec().into();

@@ -1,7 +1,5 @@
 use crate::{ecies::ECIESStream, types::*, util::pk2id};
-use arrayvec::ArrayString;
 use bytes::Bytes;
-use ethereum_types::H512;
 use futures::{ready, Sink, SinkExt};
 use libsecp256k1::{PublicKey, SecretKey};
 use log::*;
@@ -45,7 +43,7 @@ pub struct HelloMessage {
     pub client_version: String,
     pub capabilities: Vec<CapabilityMessage>,
     pub port: u16,
-    pub id: H512,
+    pub id: PeerId,
 }
 
 impl Encodable for HelloMessage {
@@ -79,8 +77,8 @@ pub struct PeerStream<Io> {
     client_version: String,
     shared_capabilities: Vec<CapabilityInfo>,
     port: u16,
-    id: H512,
-    remote_id: H512,
+    id: PeerId,
+    remote_id: PeerId,
 
     pending_pong: bool,
 }
@@ -90,7 +88,7 @@ where
     Io: AsyncRead + AsyncWrite + Send + Unpin,
 {
     /// Remote public id of this peer
-    pub fn remote_id(&self) -> H512 {
+    pub fn remote_id(&self) -> PeerId {
         self.remote_id
     }
 
@@ -103,7 +101,7 @@ where
     pub async fn connect(
         transport: Io,
         secret_key: SecretKey,
-        remote_id: H512,
+        remote_id: PeerId,
         protocol_version: usize,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,

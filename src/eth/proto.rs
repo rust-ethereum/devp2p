@@ -3,6 +3,7 @@ use ethereum::{Block, Header, Transaction};
 use ethereum_types::{H256, U256};
 use rlp::{DecoderError, Encodable, Rlp, RlpStream};
 
+#[allow(clippy::pub_enum_variant_names)]
 pub enum EthGossipMessage {
     NewBlockHashes(Vec<(H256, U256)>),
     NewTransactionHashes,

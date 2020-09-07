@@ -1,10 +1,17 @@
 pub use crate::util::Shutdown;
 use arrayvec::ArrayString;
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 pub use ethereum_types::H512 as PeerId;
 use rlp::{DecoderError, Rlp, RlpStream};
-use std::{collections::BTreeSet, future::Future, io, net::SocketAddr, pin::Pin};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CapabilityName(pub ArrayString<[u8; 4]>);
@@ -35,6 +42,18 @@ pub struct CapabilityInfo {
     pub length: usize,
 }
 
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CapabilityId {
+    pub name: CapabilityName,
+    pub version: usize,
+}
+
+impl From<CapabilityInfo> for CapabilityId {
+    fn from(CapabilityInfo { name, version, .. }: CapabilityInfo) -> Self {
+        Self { name, version }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum ReputationReport {
     Good,
@@ -54,7 +73,7 @@ pub trait IngressPeerToken: Send + Sync + 'static {
 pub type IngressHandlerFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 pub type IngressHandler<Peer: IngressPeerToken> =
-    Box<dyn Fn(Peer, BytesMut) -> IngressHandlerFuture + Send + 'static>;
+    Arc<dyn Fn(Peer, usize, Bytes) -> IngressHandlerFuture + Send + Sync + 'static>;
 
 #[async_trait]
 pub trait Discovery: Send + Sync + 'static {
@@ -98,9 +117,9 @@ pub trait ProtocolRegistrar: Send + Sync {
     type IngressPeerToken: IngressPeerToken;
 
     /// Register support for the protocol. Takes the sink as incoming handler for the protocol. Returns personal handle to the peer pool.
-    fn register_incoming_handler(
+    fn register_protocol_server(
         &self,
-        protocol: CapabilityName,
-        handler: IngressHandler<Self::IngressPeerToken>,
+        capabilities: BTreeMap<CapabilityId, usize>,
+        incoming_handler: IngressHandler<Self::IngressPeerToken>,
     ) -> Self::ServerHandle;
 }

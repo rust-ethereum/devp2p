@@ -5,21 +5,15 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use discv5::Discv5;
 use ethereum_types::H512;
-use futures::{
-    future::abortable,
-    sink::{Sink, SinkExt},
-    stream::SplitStream,
-};
+use futures::{sink::SinkExt, stream::SplitStream};
 use libsecp256k1::SecretKey;
 use log::*;
 use parking_lot::Mutex;
-use rand::{thread_rng, Rng};
 use std::{
-    cmp::min,
-    collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
+    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
     future::Future,
     io,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     pin::Pin,
     sync::{Arc, Weak},
     task::{Context, Poll},
@@ -28,7 +22,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
-    stream::{Stream, StreamExt, StreamMap},
+    stream::{Stream, StreamExt},
     sync::Mutex as AsyncMutex,
 };
 
@@ -152,7 +146,8 @@ pub type PeerSender = tokio::sync::mpsc::Sender<RLPxSendMessage>;
 
 struct StreamHandle {
     sender: PeerSender,
-    capabilities: HashMap<CapabilityName, BTreeSet<usize>>,
+    tasks: TaskGroup,
+    capabilities: BTreeSet<CapabilityId>,
 }
 
 enum PeerState {
@@ -222,32 +217,22 @@ impl<Io: AsyncRead + AsyncWrite + Unpin> Stream for StreamMapEntry<Io> {
     }
 }
 
-struct PeerStreams<Io> {
-    streams: StreamMap<H512, StreamMapEntry<Io>>,
+struct PeerStreams {
     /// Mapping of remote IDs to streams in `StreamMap`
     mapping: HashMap<H512, PeerState>,
 }
 
-impl<Io> PeerStreams<Io> {
+impl PeerStreams {
     fn disconnect_peer(&mut self, remote_id: PeerId) -> bool {
         debug!("disconnecting peer {}", remote_id);
 
-        let Self { streams, mapping } = &mut *self;
-        // If this was a known peer, remove it.
-        if mapping.remove(&remote_id).is_some() {
-            // If the connection was successfully established, drop it.
-            streams.remove(&remote_id).unwrap();
-            true
-        } else {
-            false
-        }
+        self.mapping.remove(&remote_id).is_some()
     }
 }
 
-impl<Io> Default for PeerStreams<Io> {
+impl Default for PeerStreams {
     fn default() -> Self {
         Self {
-            streams: StreamMap::new(),
             mapping: HashMap::new(),
         }
     }
@@ -259,15 +244,14 @@ struct PeerStreamHandshakeData {
     protocol_version: usize,
     secret_key: SecretKey,
     client_version: String,
-    capabilities: Vec<CapabilityInfo>,
+    capabilities: Arc<Mutex<CapabilityMap>>,
 }
 
 async fn handle_incoming(
     task_group: Weak<TaskGroup>,
     mut tcp_incoming: TcpListener,
     handshake_data: PeerStreamHandshakeData,
-    streams: Arc<Mutex<PeerStreams<TcpStream>>>,
-    newly_connected: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
+    streams: Arc<Mutex<PeerStreams>>,
 ) {
     loop {
         match tcp_incoming.accept().await {
@@ -277,12 +261,8 @@ async fn handle_incoming(
             }
             Ok((stream, _remote_addr)) => {
                 if let Some(tasks) = task_group.upgrade() {
-                    let f = handle_incoming_request(
-                        stream,
-                        handshake_data.clone(),
-                        streams.clone(),
-                        newly_connected.clone(),
-                    );
+                    let f =
+                        handle_incoming_request(stream, handshake_data.clone(), streams.clone());
                     tasks.spawn(f);
                 }
             }
@@ -290,65 +270,46 @@ async fn handle_incoming(
     }
 }
 
-/// Establishes the connection with peer and adds them to internal state.
-async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin>(
-    stream: Io,
-    handshake_data: PeerStreamHandshakeData,
-    streams: Arc<Mutex<PeerStreams<Io>>>,
-
-    mut newly_connected: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
-) {
-    let PeerStreamHandshakeData {
-        secret_key,
-        protocol_version,
-        client_version,
-        capabilities,
-        port,
-    } = handshake_data;
-    // Do handshake and convert incoming connection into stream.
-    let peer_res = PeerStream::incoming(
-        stream,
-        secret_key,
-        protocol_version,
-        client_version,
-        capabilities,
-        port,
-    )
-    .await;
-    match peer_res {
-        Ok(peer) => {
-            let (remote_id, capabilities, mut peer_sender_rx, mut sink) = {
-                let remote_id = peer.remote_id();
-                let mut s = streams.lock();
-                let PeerStreams { streams, mapping } = &mut *s;
-                let peer_state = mapping.entry(remote_id).or_insert(PeerState::Connecting);
-                if peer_state.is_connected() {
-                    // Turns out that remote peer's already connected. Drop connection request.
-                    warn!("we are already connected to remote peer {}!", remote_id);
-                    return;
-                }
-                // If we are connecting, incoming connection request takes precedence
-                debug!("new peer connected: {}", remote_id);
-                let capabilities = peer.capabilities().to_vec();
-                let (sink, stream) = futures::StreamExt::split(peer);
-                let (peer_sender_tx, peer_sender_rx) = tokio::sync::mpsc::channel(1);
-
-                assert!(streams.insert(remote_id, stream.into()).is_none());
-                *peer_state = PeerState::Connected(StreamHandle {
-                    sender: peer_sender_tx,
-                    capabilities: {
-                        let mut v = HashMap::<CapabilityName, BTreeSet<usize>>::new();
-                        for cap in &capabilities {
-                            v.entry(cap.name).or_default().insert(cap.version);
+fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
+    streams: Arc<Mutex<PeerStreams>>,
+    capabilities: Arc<Mutex<CapabilityMap>>,
+    remote_id: PeerId,
+    peer: PeerStream<Io>,
+) -> StreamHandle {
+    let capability_set = peer.capabilities().to_vec();
+    let (mut sink, mut stream) = futures::StreamExt::split(peer);
+    let (peer_sender_tx, mut peer_sender_rx) = tokio::sync::mpsc::channel(1);
+    let tasks = TaskGroup::default();
+    // Ingress router
+    tasks.spawn({
+        let streams = streams.clone();
+        async move {
+            while let Some(message) = stream.next().await {
+                match message {
+                    Ok((capability, message_id, message)) => {
+                        let handler = capabilities
+                            .lock()
+                            .get_inner()
+                            .get(&capability.into())
+                            .map(|(_, handler)| handler.clone());
+                        if let Some(handler) = handler {
+                            (handler)(IngressPeerTokenImpl { id: remote_id }, message_id, message)
+                                .await;
                         }
-                        v
-                    },
-                });
+                    }
+                    Err(e) => {
+                        debug!("Peer incoming error: {}", e);
+                        break;
+                    }
+                }
+            }
 
-                (remote_id, capabilities, peer_sender_rx, sink)
-            };
-            let _ = newly_connected.send((remote_id, capabilities)).await;
-
+            streams.lock().disconnect_peer(remote_id);
+        }
+    });
+    // Egress router
+    tasks.spawn({
+        async move {
             while let Some(RLPxSendMessage {
                 capability_name,
                 id,
@@ -361,9 +322,100 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin>(
                 }
             }
         }
+    });
+    StreamHandle {
+        sender: peer_sender_tx,
+        tasks,
+        capabilities: capability_set.into_iter().map(From::from).collect(),
+    }
+}
+
+/// Establishes the connection with peer and adds them to internal state.
+async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
+    stream: Io,
+    handshake_data: PeerStreamHandshakeData,
+    streams: Arc<Mutex<PeerStreams>>,
+) {
+    let PeerStreamHandshakeData {
+        secret_key,
+        protocol_version,
+        client_version,
+        capabilities,
+        port,
+    } = handshake_data;
+    let capability_set = capabilities.lock().get_capabilities().to_vec();
+    // Do handshake and convert incoming connection into stream.
+    let peer_res = PeerStream::incoming(
+        stream,
+        secret_key,
+        protocol_version,
+        client_version,
+        capability_set,
+        port,
+    )
+    .await;
+    match peer_res {
+        Ok(peer) => {
+            let remote_id = {
+                let remote_id = peer.remote_id();
+                let s = streams.clone();
+                let mut s = s.lock();
+                let PeerStreams { mapping } = &mut *s;
+                let peer_state = mapping.entry(remote_id).or_insert(PeerState::Connecting);
+                if peer_state.is_connected() {
+                    // Turns out that remote peer's already connected. Drop connection request.
+                    warn!("we are already connected to remote peer {}!", remote_id);
+                    return;
+                }
+                // If we are connecting, incoming connection request takes precedence
+                debug!("new peer connected: {}", remote_id);
+                *peer_state =
+                    PeerState::Connected(setup_peer_state(streams, capabilities, remote_id, peer));
+
+                remote_id
+            };
+        }
         Err(e) => {
             error!("peer disconnected with error {}", e);
         }
+    }
+}
+
+#[derive(Default)]
+struct CapabilityMap {
+    inner: BTreeMap<CapabilityId, (usize, IngressHandler<IngressPeerTokenImpl>)>,
+
+    capability_cache: Vec<CapabilityInfo>,
+}
+
+impl CapabilityMap {
+    fn register_capability(
+        &mut self,
+        id: CapabilityId,
+        length: usize,
+        incoming_handler: IngressHandler<IngressPeerTokenImpl>,
+    ) {
+        self.inner.insert(id, (length, incoming_handler));
+
+        self.capability_cache = self
+            .inner
+            .iter()
+            .map(
+                |(&CapabilityId { name, version }, &(length, _))| CapabilityInfo {
+                    name,
+                    version,
+                    length,
+                },
+            )
+            .collect()
+    }
+
+    fn get_capabilities(&self) -> &[CapabilityInfo] {
+        &self.capability_cache
+    }
+
+    fn get_inner(&self) -> &BTreeMap<CapabilityId, (usize, IngressHandler<IngressPeerTokenImpl>)> {
+        &self.inner
     }
 }
 
@@ -372,19 +424,15 @@ pub struct Server {
     #[allow(unused)]
     tasks: Arc<TaskGroup>,
 
-    streams: Arc<Mutex<PeerStreams<TcpStream>>>,
+    streams: Arc<Mutex<PeerStreams>>,
 
     node_filter: Arc<Mutex<dyn NodeFilter>>,
 
-    protocol_handlers: Arc<Mutex<HashMap<CapabilityName, IngressHandler<IngressPeerTokenImpl>>>>,
-
-    newly_connected_tx: tokio::sync::mpsc::Sender<(H512, Vec<CapabilityInfo>)>,
-    newly_connected: tokio::sync::mpsc::Receiver<(H512, Vec<CapabilityInfo>)>,
+    protocols: Arc<Mutex<CapabilityMap>>,
 
     secret_key: SecretKey,
     protocol_version: usize,
     client_version: String,
-    capabilities: Vec<CapabilityInfo>,
     port: u16,
 }
 
@@ -416,11 +464,9 @@ impl Server {
         // runtime: R,
         secret_key: SecretKey,
         client_version: String,
-        capabilities: Vec<CapabilityInfo>,
         listen_options: Option<ListenOptions>,
     ) -> Result<Arc<Self>, io::Error> {
         let tasks = Arc::new(TaskGroup::default());
-        let (newly_connected_tx, newly_connected) = tokio::sync::mpsc::channel(1);
 
         let port = listen_options
             .as_ref()
@@ -433,7 +479,7 @@ impl Server {
                 .map_or(0.into(), |options| options.max_peers.into()),
         ))));
 
-        let protocol_handlers = Arc::new(Mutex::new(Default::default()));
+        let protocols = Arc::new(Mutex::new(Default::default()));
 
         if let Some(options) = &listen_options {
             let tcp_incoming = TcpListener::bind(options.addr).await?;
@@ -445,10 +491,9 @@ impl Server {
                     protocol_version: PROTOCOL_VERSION,
                     secret_key,
                     client_version: client_version.clone(),
-                    capabilities: capabilities.clone(),
+                    capabilities: protocols.clone(),
                 },
                 streams.clone(),
-                newly_connected_tx.clone(),
             ));
         }
 
@@ -456,13 +501,10 @@ impl Server {
             tasks: tasks.clone(),
             streams,
             node_filter,
-            protocol_handlers,
+            protocols,
             secret_key,
             protocol_version: PROTOCOL_VERSION,
             client_version,
-            capabilities,
-            newly_connected,
-            newly_connected_tx,
             port,
         });
 
@@ -513,22 +555,21 @@ impl Server {
         addr: SocketAddr,
         remote_id: H512,
     ) -> impl Future<Output = io::Result<bool>> + Send + 'static {
-        let tasks_handle = Arc::downgrade(&self.tasks);
-
+        let streams = self.streams.clone();
         let node_filter = self.node_filter.clone();
-        let peer_streams = self.streams.clone();
-        let mut newly_connected = self.newly_connected_tx.clone();
+
+        let capabilities = self.protocols.clone();
+        let capability_set = capabilities.lock().get_capabilities().to_vec();
 
         let secret_key = self.secret_key;
         let protocol_version = self.protocol_version;
         let client_version = self.client_version.clone();
-        let capabilities = self.capabilities.clone();
         let port = self.port;
 
         async move {
             let mut inserted = false;
             {
-                let mut streams = peer_streams.lock();
+                let mut streams = streams.lock();
                 let node_filter = node_filter.lock();
 
                 let connection_num = streams.mapping.len();
@@ -568,84 +609,45 @@ impl Server {
                     remote_id,
                     protocol_version,
                     client_version,
-                    capabilities,
+                    capability_set.clone(),
                     port,
                 )
                 .await
             }
             .await;
-            let newly_connected_data = {
-                let streams = peer_streams.clone();
-                let mut s = streams.lock();
-                let PeerStreams { streams, mapping } = &mut *s;
 
-                // Adopt the new connection if the peer has not been dropped or superseded by incoming connection.
-                if let Entry::Occupied(mut peer_state) = mapping.entry(remote_id) {
-                    if !peer_state.get().is_connected() {
-                        match peer_res {
-                            Ok(peer) => {
-                                assert_eq!(peer.remote_id(), remote_id);
-                                debug!("new peer connected: {}", remote_id);
-                                let capabilities = peer.capabilities().to_vec();
-                                let (mut sink, stream) = futures::StreamExt::split(peer);
-                                let (peer_sender_tx, mut peer_sender_rx) =
-                                    tokio::sync::mpsc::channel(1);
+            let mut newly_connected_info = None;
+            let s = streams.clone();
+            let mut s = s.lock();
+            let PeerStreams { mapping } = &mut *s;
 
-                                // Outgoing router -> PeerStream connector
-                                if let Some(tasks) = tasks_handle.upgrade() {
-                                    tasks.spawn(async move {
-                                        while let Some(RLPxSendMessage {
-                                            capability_name,
-                                            id,
-                                            data,
-                                        }) = peer_sender_rx.recv().await
-                                        {
-                                            if let Err(e) =
-                                                sink.send((capability_name, id, data)).await
-                                            {
-                                                debug!("peer disconnected with error {:?}", e);
-                                                peer_streams.lock().disconnect_peer(remote_id);
-                                                return;
-                                            }
-                                        }
-                                    });
-                                }
-                                assert!(streams.insert(remote_id, stream.into()).is_none());
-                                *peer_state.get_mut() = PeerState::Connected(StreamHandle {
-                                    sender: peer_sender_tx,
-                                    capabilities: {
-                                        let mut v =
-                                            HashMap::<CapabilityName, BTreeSet<usize>>::new();
-                                        for cap in &capabilities {
-                                            v.entry(cap.name).or_default().insert(cap.version);
-                                        }
-                                        v
-                                    },
-                                });
-                                drop(s);
+            // Adopt the new connection if the peer has not been dropped or superseded by incoming connection.
+            if let Entry::Occupied(mut peer_state) = mapping.entry(remote_id) {
+                if !peer_state.get().is_connected() {
+                    match peer_res {
+                        Ok(peer) => {
+                            assert_eq!(peer.remote_id(), remote_id);
+                            debug!("new peer connected: {}", remote_id);
 
-                                Some((remote_id, capabilities))
-                            }
-                            Err(e) => {
-                                error!("peer disconnected with error {}", e);
-                                peer_state.remove();
-                                return Err(e);
-                            }
+                            *peer_state.get_mut() = PeerState::Connected(setup_peer_state(
+                                streams,
+                                capabilities,
+                                remote_id,
+                                peer,
+                            ));
+
+                            newly_connected_info = Some((remote_id, capability_set));
                         }
-                    } else {
-                        None
+                        Err(e) => {
+                            error!("peer disconnected with error {}", e);
+                            peer_state.remove();
+                            return Err(e);
+                        }
                     }
-                } else {
-                    None
                 }
-            };
-
-            if let Some((remote_id, capabilities)) = newly_connected_data {
-                let _ = newly_connected.send((remote_id, capabilities)).await;
-                Ok(true)
-            } else {
-                Ok(false)
             }
+
+            Ok(newly_connected_info.is_some())
         }
     }
 
@@ -686,16 +688,25 @@ impl Server {
                     PeerState::Connected(handle) => {
                         // Check if peer supports capability
                         if let Some(cap_filter) = &filter {
-                            if let Some(versions) = handle.capabilities.get(&cap_filter.name) {
-                                if cap_filter.versions.is_empty() {
-                                    // No cap version filter
-                                    return true;
+                            if cap_filter.versions.is_empty() {
+                                // No cap version filter
+                                for cap in &handle.capabilities {
+                                    if cap.name == cap_filter.name {
+                                        return true;
+                                    }
                                 }
-
-                                if !cap_filter.versions.is_disjoint(versions) {
-                                    // We have an intersection of at least *some* versions
-                                    return true;
-                                }
+                            } else if !handle.capabilities.is_disjoint(
+                                &cap_filter
+                                    .versions
+                                    .iter()
+                                    .map(|&version| CapabilityId {
+                                        name: cap_filter.name,
+                                        version,
+                                    })
+                                    .collect(),
+                            ) {
+                                // We have an intersection of at least *some* versions
+                                return true;
                             }
                         } else {
                             // No cap filter
@@ -716,13 +727,16 @@ impl ProtocolRegistrar for Arc<Server> {
     type ServerHandle = ServerHandleImpl;
     type IngressPeerToken = IngressPeerTokenImpl;
 
-    fn register_incoming_handler(
+    fn register_protocol_server(
         &self,
-        protocol: CapabilityName,
-        handler: IngressHandler<Self::IngressPeerToken>,
+        capabilities: BTreeMap<CapabilityId, usize>,
+        incoming_handler: IngressHandler<Self::IngressPeerToken>,
     ) -> Self::ServerHandle {
-        self.protocol_handlers.lock().insert(protocol, handler);
-        let pool = Arc::downgrade(&self);
+        let mut protocols = self.protocols.lock();
+        for (capability, length) in capabilities {
+            protocols.register_capability(capability, length, incoming_handler.clone());
+        }
+        let pool = Arc::downgrade(self);
         Self::ServerHandle { pool }
     }
 }

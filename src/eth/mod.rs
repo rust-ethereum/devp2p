@@ -1,28 +1,20 @@
 mod proto;
 
 pub use self::proto::*;
-use crate::{rlpx::*, types::*, CapabilityInfo, CapabilityName};
+use crate::types::*;
 use arrayvec::ArrayString;
 use async_trait::async_trait;
-use bytes::BytesMut;
+use bytes::Bytes;
 use ethereum::{Block, Transaction};
 use ethereum_types::*;
-use maplit::btreeset;
+use maplit::{btreemap, btreeset};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
-use rlp::{self, Rlp};
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
-    convert::TryInto,
-    io,
-    marker::PhantomData,
-    net::{IpAddr, SocketAddr},
     sync::Arc,
 };
-use tokio::{
-    prelude::*,
-    sync::oneshot::{channel as oneshot, Receiver as OneshotReceiver, Sender as OneshotSender},
-};
+use tokio::sync::oneshot::{channel as oneshot, Sender as OneshotSender};
 
 static ETH_PROTOCOL_ID: Lazy<CapabilityName> =
     Lazy::new(|| CapabilityName(ArrayString::from("eth").unwrap()));
@@ -55,7 +47,7 @@ pub trait EthProtocol {
     ) -> Result<Vec<Transaction>, Error>;
 }
 
-type RequestCallback = OneshotSender<(BytesMut, OneshotSender<()>)>;
+type RequestCallback = OneshotSender<(Bytes, OneshotSender<()>)>;
 
 #[derive(Debug, Default)]
 struct Demultiplexer {
@@ -103,7 +95,7 @@ impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
         let inflight_requests = Arc::new(Mutex::new(Demultiplexer::default()));
         let ingress_handler = {
             let inflight_requests = inflight_requests.clone();
-            Box::new(move |peer: P2P::IngressPeerToken, message| {
+            Arc::new(move |peer: P2P::IngressPeerToken, id, message| {
                 let inflight_requests = inflight_requests.clone();
                 Box::pin(async move {
                     let request_id: u64 = todo!();
@@ -122,8 +114,10 @@ impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
             }) as IngressHandler<P2P::IngressPeerToken>
         };
 
-        let devp2p_handle =
-            Arc::new(registrar.register_incoming_handler(*ETH_PROTOCOL_ID, ingress_handler));
+        let devp2p_handle = Arc::new(registrar.register_protocol_server(
+            btreemap! { CapabilityId { name: *ETH_PROTOCOL_ID, version: 66 } => 17 },
+            ingress_handler,
+        ));
         Self {
             inflight_requests,
             request_handler,

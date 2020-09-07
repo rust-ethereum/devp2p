@@ -1,5 +1,4 @@
-use arrayvec::ArrayString;
-use devp2p::{CapabilityInfo, CapabilityName, RLPxNode};
+use devp2p::RLPxNode;
 use ethereum_types::H512;
 use hex_literal::hex;
 use libsecp256k1::SecretKey;
@@ -15,18 +14,6 @@ async fn main() {
     let client = RLPxNode::new(
         SecretKey::random(&mut OsRng),
         "rust-devp2p/0.1.0".to_string(),
-        vec![
-            CapabilityInfo {
-                name: CapabilityName(ArrayString::from("eth").unwrap()),
-                version: 62,
-                length: 8,
-            },
-            CapabilityInfo {
-                name: CapabilityName(ArrayString::from("eth").unwrap()),
-                version: 63,
-                length: 17,
-            },
-        ],
         None,
     )
     .await

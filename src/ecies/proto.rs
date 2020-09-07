@@ -1,6 +1,6 @@
 use super::algorithm::ECIES;
 use crate::errors::ECIESError;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use ethereum_types::H512;
 use futures::{ready, Sink, SinkExt};
 use libsecp256k1::SecretKey;
@@ -231,7 +231,7 @@ impl<Io> Stream for ECIESStream<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Item = Result<Vec<u8>, io::Error>;
+    type Item = Result<Bytes, io::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
@@ -259,7 +259,7 @@ where
             None => return Poll::Ready(None),
         };
         this.polled_header = false;
-        Poll::Ready(Some(Ok(body)))
+        Poll::Ready(Some(Ok(body.into())))
     }
 }
 

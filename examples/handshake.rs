@@ -1,4 +1,4 @@
-use crate::ecies::ECIESStream;
+use devp2p::ecies::ECIESStream;
 use ethereum_types::H512;
 use hex_literal::hex;
 use libsecp256k1::SecretKey;

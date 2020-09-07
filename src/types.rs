@@ -2,9 +2,9 @@ pub use crate::util::Shutdown;
 use arrayvec::ArrayString;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use ethereum_types::H512;
+pub use ethereum_types::H512 as PeerId;
 use rlp::{DecoderError, Rlp, RlpStream};
-use std::{collections::BTreeSet, future::Future, pin::Pin};
+use std::{collections::BTreeSet, future::Future, io, net::SocketAddr, pin::Pin};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CapabilityName(pub ArrayString<[u8; 4]>);
@@ -35,25 +35,40 @@ pub struct CapabilityInfo {
     pub length: usize,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub enum ReputationReport {
+    Good,
+    Bad,
+    Kick,
+    Ban,
+}
+
+/// Represents a peers that sent us a message.
 pub trait IngressPeerToken: Send + Sync + 'static {
+    /// Get peer ID
     fn id(&self) -> PeerId;
-    fn penalize(self);
+    /// Send a response and make a reputation report about the peer.
+    fn finalize(self, response: Bytes, report: ReputationReport);
 }
 
 pub type IngressHandlerFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-pub type IngressHandler<Peer: IngressPeerToken> = Box<dyn Fn(Peer, BytesMut) -> IngressHandlerFuture + Send + 'static>;
+pub type IngressHandler<Peer: IngressPeerToken> =
+    Box<dyn Fn(Peer, BytesMut) -> IngressHandlerFuture + Send + 'static>;
 
-pub type PeerId = H512;
+#[async_trait]
+pub trait Discovery: Send + Sync + 'static {
+    async fn get_new_peer(&mut self) -> Result<(SocketAddr, PeerId), io::Error>;
+}
 
 pub enum PeerSendError {
     Shutdown,
     PeerGone,
 }
 
-/// Peer handle that freezes the peer in the pool.
+/// Represents a peer that we requested ourselves from the pool.
 #[async_trait]
-pub trait PeerHandle: Send + Sync {
+pub trait EgressPeerHandle: Send + Sync {
     fn capability_version(&self) -> u8;
     fn peer_id(&self) -> PeerId;
     async fn send_message(self, message: Bytes) -> Result<(), PeerSendError>;
@@ -62,13 +77,13 @@ pub trait PeerHandle: Send + Sync {
 /// DevP2P server handle that can be used by the owning protocol server to access peer pool.
 #[async_trait]
 pub trait ServerHandle: Send + Sync {
-    type PeerHandle: PeerHandle;
+    type EgressPeerHandle: EgressPeerHandle;
     /// Get random peer that matches the specified capability version. Returns peer ID and actual capability version.
     async fn get_peer(
         &self,
         name: CapabilityName,
         versions: BTreeSet<usize>,
-    ) -> Result<Option<Self::PeerHandle>, Shutdown>;
+    ) -> Result<Option<Self::EgressPeerHandle>, Shutdown>;
     /// Number of peers that support the specified capability version.
     async fn num_peers(
         &self,

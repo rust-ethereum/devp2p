@@ -1,10 +1,10 @@
 //! `RLPx` protocol implementation in Rust
 
-use crate::{peer::*, types::*, util::*};
+use crate::{node_filter::*, peer::*, types::*, util::*};
 use async_trait::async_trait;
 use bytes::Bytes;
 use discv5::Discv5;
-use ethereum_types::{H512, H512 as PeerId};
+use ethereum_types::H512;
 use futures::{
     future::abortable,
     sink::{Sink, SinkExt},
@@ -29,11 +29,10 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     stream::{Stream, StreamExt, StreamMap},
+    sync::Mutex as AsyncMutex,
 };
 
-pub type Enr = enr::Enr<SecretKey>;
-
-pub struct PeerHandleImpl {
+pub struct EgressPeerHandleImpl {
     capability: CapabilityName,
     capability_version: u8,
     peer_id: PeerId,
@@ -41,7 +40,7 @@ pub struct PeerHandleImpl {
 }
 
 #[async_trait]
-impl PeerHandle for PeerHandleImpl {
+impl EgressPeerHandle for EgressPeerHandleImpl {
     fn capability_version(&self) -> u8 {
         self.capability_version
     }
@@ -68,13 +67,13 @@ pub struct ServerHandleImpl {
 
 #[async_trait]
 impl ServerHandle for ServerHandleImpl {
-    type PeerHandle = PeerHandleImpl;
+    type EgressPeerHandle = EgressPeerHandleImpl;
 
     async fn get_peer(
         &self,
         name: CapabilityName,
         versions: BTreeSet<usize>,
-    ) -> Result<Option<Self::PeerHandle>, Shutdown> {
+    ) -> Result<Option<Self::EgressPeerHandle>, Shutdown> {
         let (peer_id, sender) = {
             let pool = self.pool.upgrade().ok_or(Shutdown)?;
             match pool
@@ -87,7 +86,7 @@ impl ServerHandle for ServerHandleImpl {
             }
         };
 
-        Ok(Some(PeerHandleImpl {
+        Ok(Some(EgressPeerHandleImpl {
             capability: name,
             capability_version: todo!(),
             peer_id,
@@ -113,7 +112,7 @@ impl IngressPeerToken for IngressPeerTokenImpl {
         self.id
     }
 
-    fn penalize(self) {
+    fn finalize(self, response: Bytes, report: ReputationReport) {
         todo!()
     }
 }
@@ -126,22 +125,27 @@ pub struct RLPxSendMessage {
     pub data: Bytes,
 }
 
-/// Receiving message for `RLPx`
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RLPxReceiveMessage {
-    Connected {
-        node: H512,
-        capabilities: Vec<CapabilityInfo>,
-    },
-    Disconnected {
-        node: H512,
-    },
-    Normal {
-        node: H512,
-        capability: CapabilityInfo,
-        id: usize,
-        data: Bytes,
-    },
+#[async_trait]
+impl Discovery for Discv5 {
+    async fn get_new_peer(&mut self) -> Result<(SocketAddr, PeerId), io::Error> {
+        loop {
+            for node in self.find_node(enr::NodeId::random()).await.map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("Discovery error: {}", e))
+            })? {
+                if let Some(ip) = node.ip() {
+                    if let Some(port) = node.tcp() {
+                        if let enr::CombinedPublicKey::Secp256k1(pk) = node.public_key() {
+                            return Ok((
+                                (ip, port).into(),
+                                // TODO: remove after version harmonization
+                                pk2id(&libsecp256k1::PublicKey::parse(&pk.serialize()).unwrap()),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub type PeerSender = tokio::sync::mpsc::Sender<RLPxSendMessage>;
@@ -232,8 +236,6 @@ impl<Io> Default for PeerStreams<Io> {
         }
     }
 }
-
-pub type CancellationToken = tokio::sync::watch::Receiver<()>;
 
 type DisconnectCb = Box<dyn FnOnce(bool) + Send + 'static>;
 
@@ -384,8 +386,6 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin>(
     }
 }
 
-pub type NodeFilter = Box<dyn Fn(usize, H512) -> bool + Send + 'static>;
-
 /// RLPx server
 pub struct Server {
     #[allow(unused)]
@@ -393,7 +393,7 @@ pub struct Server {
 
     streams: Arc<Mutex<PeerStreams<TcpStream>>>,
 
-    node_filter: Arc<Mutex<NodeFilter>>,
+    node_filter: Arc<Mutex<dyn NodeFilter>>,
 
     protocol_handlers: Arc<Mutex<HashMap<CapabilityName, IngressHandler<IngressPeerTokenImpl>>>>,
 
@@ -414,34 +414,46 @@ pub struct CapabilityFilter {
     pub versions: BTreeSet<usize>,
 }
 
-// This is a Tokio-based devp2p server implementation.
-//
-// `Server` is the RLPx server handle that supports adding and removing peers and
-// supports registration for capability servers.
-//
-// This implementation is based on the concept of structured concurrency.
-// Internal state is managed by a multitude of workers that run in separate runtime tasks
-// spawned on the running executor during the server creation and addition of new peers.
-// All continuously running workers are inside the task scope owned by the server struct.
+const PROTOCOL_VERSION: usize = 4;
 
+pub struct ListenOptions {
+    pub discovery: Option<Arc<AsyncMutex<dyn Discovery>>>,
+    pub max_peers: usize,
+    pub addr: SocketAddr,
+}
+
+/// This is an asynchronous devp2p server implementation.
+///
+/// `Server` is the RLPx server handle that supports adding and removing peers and
+/// supports registration for capability servers.
+///
+/// This implementation is based on the concept of structured concurrency.
+/// Internal state is managed by a multitude of workers that run in separate runtime tasks
+/// spawned on the running executor during the server creation and addition of new peers.
+/// All continuously running workers are inside the task scope owned by the server struct.
 impl Server {
     /// Create a new devp2p server
-    pub async fn new<R>(
-        runtime: R,
+    pub async fn new(
+        // runtime: R,
         secret_key: SecretKey,
-        protocol_version: usize,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
-        listen: Option<SocketAddr>,
-    ) -> Result<Self, io::Error> {
+        listen_options: Option<ListenOptions>,
+    ) -> Result<Arc<Self>, io::Error> {
         let tasks = Arc::new(TaskGroup::default());
         let (newly_connected_tx, newly_connected) = tokio::sync::mpsc::channel(1);
         let (newly_disconnected_tx, newly_disconnected) = tokio::sync::mpsc::channel(1);
 
-        let port = listen.map_or(0, |addr| addr.port());
+        let port = listen_options
+            .as_ref()
+            .map_or(0, |options| options.addr.port());
 
         let streams = Arc::new(Mutex::new(PeerStreams::default()));
-        let node_filter = Arc::new(Mutex::new(Box::new(|_, _| true) as NodeFilter));
+        let node_filter = Arc::new(Mutex::new(MemoryNodeFilter::new(Arc::new(
+            listen_options
+                .as_ref()
+                .map_or(0.into(), |options| options.max_peers.into()),
+        ))));
 
         let protocol_handlers = Arc::new(Mutex::new(Default::default()));
 
@@ -454,14 +466,14 @@ impl Server {
             newly_disconnected_tx.clone(),
         ));
 
-        if let Some(addr) = listen {
-            let tcp_incoming = TcpListener::bind(addr).await?;
+        if let Some(options) = &listen_options {
+            let tcp_incoming = TcpListener::bind(options.addr).await?;
             tasks.spawn(handle_incoming(
                 Arc::downgrade(&tasks),
                 tcp_incoming,
                 PeerStreamHandshakeData {
                     port,
-                    protocol_version,
+                    protocol_version: PROTOCOL_VERSION,
                     secret_key,
                     client_version: client_version.clone(),
                     capabilities: capabilities.clone(),
@@ -472,13 +484,13 @@ impl Server {
             ));
         }
 
-        Ok(Self {
-            tasks,
+        let server = Arc::new(Self {
+            tasks: tasks.clone(),
             streams,
             node_filter,
             protocol_handlers,
             secret_key,
-            protocol_version,
+            protocol_version: PROTOCOL_VERSION,
             client_version,
             capabilities,
             newly_connected,
@@ -486,7 +498,47 @@ impl Server {
             newly_disconnected,
             disconnect_cmd_tx,
             port,
-        })
+        });
+
+        // TODO: Use semaphore
+        if let Some(discovery) = listen_options.and_then(|options| options.discovery) {
+            tasks.spawn({
+                let server = Arc::downgrade(&server);
+                async move {
+                    loop {
+                        if let Some(server) = server.upgrade() {
+                            let mut discovery = discovery.lock().await;
+
+                            let streams_len = server.streams.lock().mapping.len();
+
+                            if streams_len < server.node_filter.lock().max_peers() {
+                                match tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    discovery.get_new_peer(),
+                                )
+                                .await
+                                .unwrap_or_else(|_| {
+                                    Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"))
+                                }) {
+                                    Ok((addr, remote_id)) => {
+                                        if let Err(e) = server.add_peer(addr, remote_id).await {
+                                            warn!("Failed to add new peer: {}", e);
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed to get new peer: {}", e),
+                                }
+                            }
+
+                            tokio::time::delay_for(Duration::from_secs(2)).await;
+                        } else {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+
+        Ok(server)
     }
 
     /// Add a new peer to this `RLPx` stream. Returns `true` if it was inserted successfully (did not exist before, accepted by node filter).
@@ -509,131 +561,127 @@ impl Server {
         let port = self.port;
 
         async move {
-            tokio::spawn(async move {
-                let mut inserted = false;
-                {
-                    let mut streams = streams.lock();
-                    let node_filter = node_filter.lock();
+            let mut inserted = false;
+            {
+                let mut streams = streams.lock();
+                let node_filter = node_filter.lock();
 
-                    let connection_num = streams.mapping.len();
+                let connection_num = streams.mapping.len();
 
-                    match streams.mapping.entry(remote_id) {
-                        Entry::Occupied(key) => {
-                            warn!(
-                                "we are already {} to remote peer {}!",
-                                if key.get().is_connected() {
-                                    "connected"
-                                } else {
-                                    "connecting"
-                                },
-                                remote_id
-                            );
-                        }
-                        Entry::Vacant(vacant) => {
-                            if (node_filter)(connection_num, remote_id) {
-                                info!("connecting to peer {}", remote_id);
-                                vacant.insert(PeerState::Connecting);
-                                inserted = true;
-                            }
+                match streams.mapping.entry(remote_id) {
+                    Entry::Occupied(key) => {
+                        warn!(
+                            "we are already {} to remote peer {}!",
+                            if key.get().is_connected() {
+                                "connected"
+                            } else {
+                                "connecting"
+                            },
+                            remote_id
+                        );
+                    }
+                    Entry::Vacant(vacant) => {
+                        if node_filter.allow(connection_num, remote_id) {
+                            info!("connecting to peer {}", remote_id);
+                            vacant.insert(PeerState::Connecting);
+                            inserted = true;
                         }
                     }
                 }
+            }
 
-                if !inserted {
-                    return Ok(false);
-                }
+            if !inserted {
+                return Ok(false);
+            }
 
-                // Connecting to peer is a long running operation so we have to break the mutex lock.
-                let peer_res = async {
-                    let transport = TcpStream::connect(addr).await?;
-                    PeerStream::connect(
-                        transport,
-                        secret_key,
-                        remote_id,
-                        protocol_version,
-                        client_version,
-                        capabilities,
-                        port,
-                    )
-                    .await
-                }
-                .await;
-                let newly_connected_data = {
-                    let mut s = streams.lock();
-                    let PeerStreams { streams, mapping } = &mut *s;
+            // Connecting to peer is a long running operation so we have to break the mutex lock.
+            let peer_res = async {
+                let transport = TcpStream::connect(addr).await?;
+                PeerStream::connect(
+                    transport,
+                    secret_key,
+                    remote_id,
+                    protocol_version,
+                    client_version,
+                    capabilities,
+                    port,
+                )
+                .await
+            }
+            .await;
+            let newly_connected_data = {
+                let mut s = streams.lock();
+                let PeerStreams { streams, mapping } = &mut *s;
 
-                    // Adopt the new connection if the peer has not been dropped or superseded by incoming connection.
-                    if let Entry::Occupied(mut peer_state) = mapping.entry(remote_id) {
-                        if !peer_state.get().is_connected() {
-                            match peer_res {
-                                Ok(peer) => {
-                                    assert_eq!(peer.remote_id(), remote_id);
-                                    debug!("new peer connected: {}", remote_id);
-                                    let capabilities = peer.capabilities().to_vec();
-                                    let (mut sink, stream) = futures::StreamExt::split(peer);
-                                    let (peer_sender_tx, mut peer_sender_rx) =
-                                        tokio::sync::mpsc::channel(1);
+                // Adopt the new connection if the peer has not been dropped or superseded by incoming connection.
+                if let Entry::Occupied(mut peer_state) = mapping.entry(remote_id) {
+                    if !peer_state.get().is_connected() {
+                        match peer_res {
+                            Ok(peer) => {
+                                assert_eq!(peer.remote_id(), remote_id);
+                                debug!("new peer connected: {}", remote_id);
+                                let capabilities = peer.capabilities().to_vec();
+                                let (mut sink, stream) = futures::StreamExt::split(peer);
+                                let (peer_sender_tx, mut peer_sender_rx) =
+                                    tokio::sync::mpsc::channel(1);
 
-                                    // Outgoing router -> PeerStream connector
-                                    if let Some(tasks) = tasks_handle.upgrade() {
-                                        tasks.spawn(async move {
-                                            while let Some(RLPxSendMessage {
-                                                capability_name,
-                                                id,
-                                                data,
-                                            }) = peer_sender_rx.recv().await
+                                // Outgoing router -> PeerStream connector
+                                if let Some(tasks) = tasks_handle.upgrade() {
+                                    tasks.spawn(async move {
+                                        while let Some(RLPxSendMessage {
+                                            capability_name,
+                                            id,
+                                            data,
+                                        }) = peer_sender_rx.recv().await
+                                        {
+                                            if let Err(e) =
+                                                sink.send((capability_name, id, data)).await
                                             {
-                                                if let Err(e) =
-                                                    sink.send((capability_name, id, data)).await
-                                                {
-                                                    debug!("peer disconnected with error {:?}", e);
-                                                    let _ = disconnect_cmd_tx
-                                                        .clone()
-                                                        .send((remote_id, None));
-                                                    return;
-                                                }
+                                                debug!("peer disconnected with error {:?}", e);
+                                                let _ = disconnect_cmd_tx
+                                                    .clone()
+                                                    .send((remote_id, None));
+                                                return;
                                             }
-                                        });
-                                    }
-                                    assert!(streams.insert(remote_id, stream.into()).is_none());
-                                    *peer_state.get_mut() = PeerState::Connected(StreamHandle {
-                                        sender: peer_sender_tx,
-                                        capabilities: {
-                                            let mut v =
-                                                HashMap::<CapabilityName, BTreeSet<usize>>::new();
-                                            for cap in &capabilities {
-                                                v.entry(cap.name).or_default().insert(cap.version);
-                                            }
-                                            v
-                                        },
+                                        }
                                     });
-                                    drop(s);
+                                }
+                                assert!(streams.insert(remote_id, stream.into()).is_none());
+                                *peer_state.get_mut() = PeerState::Connected(StreamHandle {
+                                    sender: peer_sender_tx,
+                                    capabilities: {
+                                        let mut v =
+                                            HashMap::<CapabilityName, BTreeSet<usize>>::new();
+                                        for cap in &capabilities {
+                                            v.entry(cap.name).or_default().insert(cap.version);
+                                        }
+                                        v
+                                    },
+                                });
+                                drop(s);
 
-                                    Some((remote_id, capabilities))
-                                }
-                                Err(e) => {
-                                    error!("peer disconnected with error {}", e);
-                                    peer_state.remove();
-                                    return Err(e);
-                                }
+                                Some((remote_id, capabilities))
                             }
-                        } else {
-                            None
+                            Err(e) => {
+                                error!("peer disconnected with error {}", e);
+                                peer_state.remove();
+                                return Err(e);
+                            }
                         }
                     } else {
                         None
                     }
-                };
-
-                if let Some((remote_id, capabilities)) = newly_connected_data {
-                    let _ = newly_connected.send((remote_id, capabilities)).await;
-                    Ok(true)
                 } else {
-                    Ok(false)
+                    None
                 }
-            })
-            .await
-            .unwrap()
+            };
+
+            if let Some((remote_id, capabilities)) = newly_connected_data {
+                let _ = newly_connected.send((remote_id, capabilities)).await;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
         }
     }
 
@@ -658,11 +706,6 @@ impl Server {
             }
             disconnection_res.await.unwrap_or(false)
         }
-    }
-
-    /// Set the node filter.
-    pub fn set_node_filter<F: Fn(usize, H512) -> bool + Send + 'static>(&self, node_filter: F) {
-        *self.node_filter.lock() = Box::new(node_filter);
     }
 
     /// Active peers
@@ -717,48 +760,6 @@ impl Server {
             .map(|(remote_id, state)| (*remote_id, state.get_handle().unwrap().sender.clone()))
             .take((limit)(peer_num))
             .collect()
-    }
-}
-
-impl Stream for Server {
-    type Item = RLPxReceiveMessage;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if let Poll::Ready(Some(connected)) = this.newly_connected.poll_recv(cx) {
-            Poll::Ready(Some(RLPxReceiveMessage::Connected {
-                node: connected.0,
-                capabilities: connected.1,
-            }))
-        } else if let Poll::Ready(Some(node)) = this.newly_disconnected.poll_recv(cx) {
-            Poll::Ready(Some(RLPxReceiveMessage::Disconnected { node }))
-        } else {
-            let mut streams = this.streams.lock();
-            if let Poll::Ready(Some((node, res))) = Pin::new(&mut streams.streams).poll_next(cx) {
-                match res {
-                    PeerStreamUpdate::Data((capability, id, data)) => {
-                        debug!("received RLPx data {:?}", data);
-                        return Poll::Ready(Some(Self::Item::Normal {
-                            node,
-                            capability,
-                            id,
-                            data,
-                        }));
-                    }
-                    PeerStreamUpdate::Error(e) => {
-                        debug!("Peer {} disconnected with error: {}", node, e);
-                    }
-                    PeerStreamUpdate::Finished => {
-                        debug!("Peer {} disconnected without error", node);
-                    }
-                }
-
-                let _ = this.disconnect_cmd_tx.send((node, None));
-                cx.waker().wake_by_ref();
-            }
-
-            Poll::Pending
-        }
     }
 }
 

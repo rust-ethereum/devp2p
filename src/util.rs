@@ -38,7 +38,7 @@ pub trait Runtime {
     type TcpStream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
     type TcpServer: Stream<Item = Self::TcpStream> + Unpin + Send + 'static;
 
-    fn spawn<F: Future<Output = ()> + Send + 'static>(&self, fut: F);
+    fn spawn(&self, fut: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
     async fn sleep(&self, duration: Duration);
     async fn connect_tcp(&self, target: String) -> io::Result<Self::TcpStream>;
     async fn tcp_server(&self, addr: String) -> io::Result<Self::TcpServer>;

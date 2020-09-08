@@ -26,6 +26,9 @@ use tokio::{
     sync::Mutex as AsyncMutex,
 };
 
+const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+const DISCOVERY_TIMEOUT_SECS: u64 = 5;
+
 pub struct EgressPeerHandleImpl {
     capability: CapabilityName,
     capability_version: u8,
@@ -249,9 +252,9 @@ struct PeerStreamHandshakeData {
 
 async fn handle_incoming(
     task_group: Weak<TaskGroup>,
+    streams: Arc<Mutex<PeerStreams>>,
     mut tcp_incoming: TcpListener,
     handshake_data: PeerStreamHandshakeData,
-    streams: Arc<Mutex<PeerStreams>>,
 ) {
     loop {
         match tcp_incoming.accept().await {
@@ -262,7 +265,7 @@ async fn handle_incoming(
             Ok((stream, _remote_addr)) => {
                 if let Some(tasks) = task_group.upgrade() {
                     let f =
-                        handle_incoming_request(stream, handshake_data.clone(), streams.clone());
+                        handle_incoming_request(streams.clone(), stream, handshake_data.clone());
                     tasks.spawn(f);
                 }
             }
@@ -332,9 +335,9 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
 
 /// Establishes the connection with peer and adds them to internal state.
 async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
+    streams: Arc<Mutex<PeerStreams>>,
     stream: Io,
     handshake_data: PeerStreamHandshakeData,
-    streams: Arc<Mutex<PeerStreams>>,
 ) {
     let PeerStreamHandshakeData {
         secret_key,
@@ -345,35 +348,40 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'st
     } = handshake_data;
     let capability_set = capabilities.lock().get_capabilities().to_vec();
     // Do handshake and convert incoming connection into stream.
-    let peer_res = PeerStream::incoming(
-        stream,
-        secret_key,
-        protocol_version,
-        client_version,
-        capability_set,
-        port,
+    let peer_res = tokio::time::timeout(
+        Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
+        PeerStream::incoming(
+            stream,
+            secret_key,
+            protocol_version,
+            client_version,
+            capability_set,
+            port,
+        ),
     )
-    .await;
+    .await
+    .unwrap_or_else(|_| {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "incoming connection timeout",
+        ))
+    });
     match peer_res {
         Ok(peer) => {
-            let remote_id = {
-                let remote_id = peer.remote_id();
-                let s = streams.clone();
-                let mut s = s.lock();
-                let PeerStreams { mapping } = &mut *s;
-                let peer_state = mapping.entry(remote_id).or_insert(PeerState::Connecting);
-                if peer_state.is_connected() {
-                    // Turns out that remote peer's already connected. Drop connection request.
-                    warn!("we are already connected to remote peer {}!", remote_id);
-                    return;
-                }
-                // If we are connecting, incoming connection request takes precedence
-                debug!("new peer connected: {}", remote_id);
-                *peer_state =
-                    PeerState::Connected(setup_peer_state(streams, capabilities, remote_id, peer));
-
-                remote_id
-            };
+            let remote_id = peer.remote_id();
+            let s = streams.clone();
+            let mut s = s.lock();
+            let PeerStreams { mapping } = &mut *s;
+            let peer_state = mapping.entry(remote_id).or_insert(PeerState::Connecting);
+            if peer_state.is_connected() {
+                // Turns out that remote peer's already connected. Drop connection request.
+                warn!("we are already connected to remote peer {}!", remote_id);
+                return;
+            }
+            // If we are connecting, incoming connection request takes precedence
+            debug!("new peer connected: {}", remote_id);
+            *peer_state =
+                PeerState::Connected(setup_peer_state(streams, capabilities, remote_id, peer));
         }
         Err(e) => {
             error!("peer disconnected with error {}", e);
@@ -485,6 +493,7 @@ impl Server {
             let tcp_incoming = TcpListener::bind(options.addr).await?;
             tasks.spawn(handle_incoming(
                 Arc::downgrade(&tasks),
+                streams.clone(),
                 tcp_incoming,
                 PeerStreamHandshakeData {
                     port,
@@ -493,7 +502,6 @@ impl Server {
                     client_version: client_version.clone(),
                     capabilities: protocols.clone(),
                 },
-                streams.clone(),
             ));
         }
 
@@ -521,7 +529,7 @@ impl Server {
 
                             if streams_len < server.node_filter.lock().max_peers() {
                                 match tokio::time::timeout(
-                                    Duration::from_secs(5),
+                                    Duration::from_secs(DISCOVERY_TIMEOUT_SECS),
                                     discovery.get_new_peer(),
                                 )
                                 .await

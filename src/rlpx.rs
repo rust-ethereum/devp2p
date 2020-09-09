@@ -656,7 +656,6 @@ impl Server {
             }
             .await;
 
-            let mut newly_connected_info = None;
             let s = streams.clone();
             let mut s = s.lock();
             let PeerStreams { mapping } = &mut *s;
@@ -676,7 +675,7 @@ impl Server {
                                 peer,
                             ));
 
-                            newly_connected_info = Some((remote_id, capability_set));
+                            return Ok(true);
                         }
                         Err(e) => {
                             error!("peer disconnected with error {}", e);
@@ -687,7 +686,7 @@ impl Server {
                 }
             }
 
-            Ok(newly_connected_info.is_some())
+            Ok(false)
         }
     }
 

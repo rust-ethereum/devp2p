@@ -59,7 +59,26 @@ impl EgressPeerHandle for EgressPeerHandleImpl {
 }
 
 pub struct ServerHandleImpl {
+    capabilities: BTreeSet<CapabilityId>,
     pool: Weak<Server>,
+}
+
+impl Drop for ServerHandleImpl {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool.upgrade() {
+            let mut streams = pool.streams.lock();
+            let mut protocols = pool.protocols.lock();
+
+            // Kick all peers with capability
+            streams.mapping.retain(|_, state| match state {
+                PeerState::Connecting => false,
+                PeerState::Connected(handle) => handle.capabilities.is_disjoint(&self.capabilities),
+            });
+
+            // Remove protocol handler
+            protocols.delete_capabilities(&self.capabilities)
+        }
+    }
 }
 
 #[async_trait]
@@ -397,14 +416,7 @@ struct CapabilityMap {
 }
 
 impl CapabilityMap {
-    fn register_capability(
-        &mut self,
-        id: CapabilityId,
-        length: usize,
-        incoming_handler: IngressHandler<IngressPeerTokenImpl>,
-    ) {
-        self.inner.insert(id, (length, incoming_handler));
-
+    fn update_cache(&mut self) {
         self.capability_cache = self
             .inner
             .iter()
@@ -415,7 +427,27 @@ impl CapabilityMap {
                     length,
                 },
             )
-            .collect()
+            .collect();
+    }
+
+    fn register_capabilities(
+        &mut self,
+        caps: BTreeMap<CapabilityId, usize>,
+        incoming_handler: &IngressHandler<IngressPeerTokenImpl>,
+    ) {
+        for (id, length) in caps {
+            self.inner.insert(id, (length, incoming_handler.clone()));
+        }
+
+        self.update_cache()
+    }
+
+    fn delete_capabilities<'a>(&mut self, caps: impl IntoIterator<Item = &'a CapabilityId>) {
+        for cap in caps {
+            self.inner.remove(cap);
+        }
+
+        self.update_cache()
     }
 
     fn get_capabilities(&self) -> &[CapabilityInfo] {
@@ -741,10 +773,11 @@ impl ProtocolRegistrar for Arc<Server> {
         incoming_handler: IngressHandler<Self::IngressPeerToken>,
     ) -> Self::ServerHandle {
         let mut protocols = self.protocols.lock();
-        for (capability, length) in capabilities {
-            protocols.register_capability(capability, length, incoming_handler.clone());
-        }
+        protocols.register_capabilities(capabilities.clone(), &incoming_handler);
         let pool = Arc::downgrade(self);
-        Self::ServerHandle { pool }
+        Self::ServerHandle {
+            pool,
+            capabilities: capabilities.keys().copied().collect(),
+        }
     }
 }

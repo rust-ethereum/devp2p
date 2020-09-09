@@ -127,10 +127,6 @@ impl IngressPeerToken for IngressPeerTokenImpl {
     fn id(&self) -> PeerId {
         self.id
     }
-
-    fn finalize(self, response: Bytes, report: ReputationReport) {
-        todo!()
-    }
 }
 
 /// Sending message for `RLPx`
@@ -305,18 +301,48 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     // Ingress router
     tasks.spawn({
         let streams = streams.clone();
+        let mut peer_sender_tx = peer_sender_tx.clone();
         async move {
             while let Some(message) = stream.next().await {
                 match message {
                     Ok((capability, message_id, message)) => {
+                        // Extract capability's ingress handler
                         let handler = capabilities
                             .lock()
                             .get_inner()
                             .get(&capability.into())
                             .map(|(_, handler)| handler.clone());
+
+                        // Actually handle the message
                         if let Some(handler) = handler {
-                            (handler)(IngressPeerTokenImpl { id: remote_id }, message_id, message)
-                                .await;
+                            let (message, report) = (handler)(
+                                IngressPeerTokenImpl { id: remote_id },
+                                message_id,
+                                message,
+                            )
+                            .await;
+
+                            // Check reputation report
+                            match report {
+                                ReputationReport::Kick | ReputationReport::Ban => {
+                                    debug!("Received damning report about peer, disconnecting");
+                                    break;
+                                }
+                                _ => {
+                                    // TODO: ignore other reputation reports for now
+                                }
+                            }
+
+                            // And send any reply if necessary
+                            if let Some((id, data)) = message {
+                                let _ = peer_sender_tx
+                                    .send(RLPxSendMessage {
+                                        capability_name: capability.name,
+                                        id,
+                                        data,
+                                    })
+                                    .await;
+                            }
                         }
                     }
                     Err(e) => {

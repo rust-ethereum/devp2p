@@ -8,11 +8,12 @@ use bytes::Bytes;
 use ethereum::{Block, Transaction};
 use ethereum_types::*;
 use log::*;
-use maplit::{btreemap, btreeset};
+use maplit::btreemap;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
+    fmt::Debug,
     sync::Arc,
 };
 use tokio::sync::oneshot::{channel as oneshot, Sender as OneshotSender};
@@ -33,11 +34,6 @@ impl From<Shutdown> for Error {
 }
 
 #[async_trait]
-pub trait EthNodeFilter: Send + Sync + 'static {
-    async fn allow(&self, status: ()) -> bool;
-}
-
-#[async_trait]
 pub trait EthRequestHandler: Send + Sync + 'static {
     async fn handle_status(&self, status: ());
     async fn handle_new_block_hashes(&self, hashes: Vec<(H256, U256)>);
@@ -54,33 +50,51 @@ pub trait EthProtocol {
     ) -> Result<Vec<Transaction>, Error>;
 }
 
-type RequestCallback = OneshotSender<(Bytes, OneshotSender<()>)>;
-
-#[derive(Debug, Default)]
-struct Demultiplexer {
-    inner: HashMap<H512, HashMap<u64, RequestCallback>>,
+#[derive(Debug)]
+struct RequestCallbackData<ResponseKind: Debug> {
+    data: RequestCallback,
+    expected_response_id: ResponseKind,
 }
 
-impl Demultiplexer {
-    fn save_callback(&mut self, peer_id: PeerId, sender: RequestCallback) -> u64 {
+type RequestCallback = OneshotSender<(Bytes, OneshotSender<()>)>;
+
+#[derive(Debug)]
+struct RequestMultiplexer<RK: Debug> {
+    inner: HashMap<H512, HashMap<u64, RequestCallbackData<RK>>>,
+}
+
+impl<RK: Debug> Default for RequestMultiplexer<RK> {
+    fn default() -> Self {
+        Self {
+            inner: Default::default(),
+        }
+    }
+}
+
+impl<RK: Debug> RequestMultiplexer<RK> {
+    fn save_callback(&mut self, peer_id: PeerId, callback: RequestCallbackData<RK>) -> u64 {
         let peer = self.inner.entry(peer_id).or_default();
         loop {
             let request_id = rand::random();
 
             if let Entry::Vacant(vacant) = peer.entry(request_id) {
-                vacant.insert(sender);
+                vacant.insert(callback);
                 return request_id;
             }
         }
     }
 
-    fn retrieve_callback(&mut self, peer_id: PeerId, request_id: u64) -> Option<RequestCallback> {
+    fn retrieve_callback(
+        &mut self,
+        peer_id: PeerId,
+        request_id: u64,
+    ) -> Option<RequestCallbackData<RK>> {
         if let Entry::Occupied(mut entry) = self.inner.entry(peer_id) {
-            if let Some(sender) = entry.get_mut().remove(&request_id) {
+            if let Some(callback) = entry.get_mut().remove(&request_id) {
                 if entry.get().is_empty() {
                     entry.remove();
                 }
-                return Some(sender);
+                return Some(callback);
             }
         }
 
@@ -88,40 +102,66 @@ impl Demultiplexer {
     }
 }
 
-pub struct Server<P2P: ProtocolRegistrar, RH: EthRequestHandler> {
-    inflight_requests: Arc<Mutex<Demultiplexer>>,
+pub enum MessageKind<Request, Response, Gossip> {
+    Request(Request),
+    Response(Response),
+    Gossip(Gossip),
+}
 
-    node_filter: Arc<dyn EthNodeFilter>,
-    request_handler: Arc<RH>,
+#[async_trait]
+pub trait MuxProtocol: Send + Sync + 'static {
+    type RequestKind: Send;
+    type ResponseKind: From<Self::ResponseKind> + PartialEq + Eq + Debug + Send;
+    type GossipKind: Send;
+
+    fn capabilities(&self) -> BTreeMap<CapabilityId, usize>;
+    fn message_kind(
+        &self,
+        id: usize,
+    ) -> Option<MessageKind<Self::RequestKind, Self::ResponseKind, Self::GossipKind>>;
+    async fn handle_request(
+        &self,
+        id: Self::RequestKind,
+        cap: CapabilityId,
+        payload: Bytes,
+    ) -> (Option<(usize, Bytes)>, ReputationReport);
+    async fn handle_response(
+        &self,
+        id: Self::ResponseKind,
+        cap: CapabilityId,
+        payload: Bytes,
+    ) -> ReputationReport;
+    async fn handle_gossip(
+        &self,
+        id: Self::GossipKind,
+        cap: CapabilityId,
+        payload: Bytes,
+    ) -> ReputationReport;
+}
+
+/// Generic multiplexing protocol server shim.
+pub struct Mux<P2P: ProtocolRegistrar, Protocol: MuxProtocol> {
+    inflight_requests: Arc<Mutex<RequestMultiplexer<<Protocol as MuxProtocol>::ResponseKind>>>,
+
+    protocol: Arc<Protocol>,
     devp2p_handle: Arc<P2P::ServerHandle>,
     devp2p_owned_handle: Option<Arc<P2P>>,
 }
 
-impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
+impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> Mux<P2P, Protocol> {
     /// Register the protocol server with the RLPx node.
-    pub fn new(registrar: &P2P, request_handler: Arc<RH>, node_filter: impl EthNodeFilter) -> Self {
-        let inflight_requests = Arc::new(Mutex::new(Demultiplexer::default()));
-        let node_filter = Arc::new(node_filter);
+    pub fn new(registrar: &P2P, protocol: Arc<Protocol>) -> Self {
+        let inflight_requests = Arc::new(Mutex::new(RequestMultiplexer::default()));
         let ingress_handler = {
             let inflight_requests = inflight_requests.clone();
-            let node_filter = Arc::downgrade(&node_filter);
+            let protocol = protocol.clone();
             Arc::new(move |peer: P2P::IngressPeerToken, id, message| {
                 let inflight_requests = inflight_requests.clone();
-                let node_filter = node_filter.clone();
+                let protocol = protocol.clone();
                 Box::pin(async move {
-                    match MessageId::from_id(id) {
+                    match protocol.message_kind(id) {
                         None => debug!("Skipping unidentified message from with id {}", id),
-                        Some(MessageId::Status) => {
-                            // TODO: parse status payload
-                            let status = todo!();
-
-                            if let Some(node_filter) = node_filter.upgrade() {
-                                if !node_filter.allow(status).await {
-                                    // TODO: drop peer
-                                }
-                            }
-                        }
-                        Some(MessageId::Response(message_id)) => {
+                        Some(MessageKind::Response(response)) => {
                             let request_id: u64 = todo!();
 
                             let sender = inflight_requests
@@ -129,77 +169,147 @@ impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
                                 .retrieve_callback(peer.id(), request_id);
 
                             // TODO: handle gossip and incoming requests.
-                            if let Some(sender) = sender {
-                                let (tx, rx) = oneshot();
-                                sender.send((message, tx));
-                                rx.await;
+                            if let Some(RequestCallbackData {
+                                data: sender,
+                                expected_response_id,
+                            }) = sender
+                            {
+                                if expected_response_id != response {
+                                    debug!(
+                                        "Peer sent us wrong reply! Expected: {:?}, Got: {:?}",
+                                        expected_response_id, response
+                                    );
+                                    return (None, ReputationReport::Kick);
+                                } else {
+                                    let (tx, rx) = oneshot();
+                                    sender.send((message, tx));
+                                    rx.await;
+                                }
                             }
                         }
-                        Some(MessageId::Request(request)) => todo!(),
-                        Some(MessageId::Gossip(gossip)) => todo!(),
+                        Some(MessageKind::Request(request)) => todo!(),
+                        Some(MessageKind::Gossip(gossip)) => todo!(),
                     }
+
+                    return (None, ReputationReport::Good);
                 }) as IngressHandlerFuture
             }) as IngressHandler<P2P::IngressPeerToken>
         };
 
-        let devp2p_handle = Arc::new(registrar.register_protocol_server(
-            btreemap! { CapabilityId { name: *ETH_PROTOCOL_ID, version: 66 } => 17 },
-            ingress_handler,
-        ));
+        let devp2p_handle =
+            Arc::new(registrar.register_protocol_server(protocol.capabilities(), ingress_handler));
         Self {
             inflight_requests,
-            node_filter,
-            request_handler,
+            protocol,
             devp2p_handle,
             devp2p_owned_handle: None,
         }
     }
 
     /// Register the protocol server with the devp2p client and make protocol server the owner of devp2p instance
-    pub fn new_owned(
-        registrar: Arc<P2P>,
-        request_handler: Arc<RH>,
-        node_filter: impl EthNodeFilter,
-    ) -> Self {
-        let mut this = Self::new(&*registrar, request_handler, node_filter);
+    pub fn new_owned(registrar: Arc<P2P>, request_handler: Arc<Protocol>) -> Self {
+        let mut this = Self::new(&*registrar, request_handler);
         this.devp2p_owned_handle = Some(registrar);
         this
     }
 }
 
+pub struct Server;
+
 #[async_trait]
-impl<P2P: ProtocolRegistrar, G: EthRequestHandler> EthProtocol for Server<P2P, G> {
-    async fn new_block_hashes(&self, hashes: Vec<(H256, U256)>) -> Result<(), Error> {
-        todo!()
+impl MuxProtocol for Server {
+    type RequestKind = proto::RequestMessageId;
+    type ResponseKind = proto::ResponseMessageId;
+    type GossipKind = proto::GossipMessageId;
+
+    fn capabilities(&self) -> BTreeMap<CapabilityId, usize> {
+        btreemap! { CapabilityId { name: *ETH_PROTOCOL_ID, version: 66 } => 17 }
     }
-
-    async fn get_pooled_transactions(
+    fn message_kind(
         &self,
-        _hashes: HashSet<H256>,
-    ) -> Result<Vec<Transaction>, Error> {
-        let peer_handle = self
-            .devp2p_handle
-            .get_peer(*ETH_PROTOCOL_ID, btreeset![65])
-            .await?
-            .ok_or(Error::NoPeers)?;
-
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let request_id = self
-            .inflight_requests
-            .lock()
-            .save_callback(peer_handle.peer_id(), tx);
-
-        // Make a GetPooledTransactions message
-        let msg = request_id.to_be_bytes().to_vec().into();
-
-        peer_handle.send_message(msg).await;
-
-        let msg = rx.await.unwrap();
-
-        // Parse PooledTransactionHashes
-        todo!()
+        id: usize,
+    ) -> Option<MessageKind<Self::RequestKind, Self::ResponseKind, Self::GossipKind>> {
+        Some(match id {
+            0x00 => MessageKind::Gossip(Self::GossipKind::Status),
+            0x01 => MessageKind::Gossip(Self::GossipKind::NewBlockHashes),
+            0x02 => MessageKind::Gossip(Self::GossipKind::Transactions),
+            0x03 => MessageKind::Request(Self::RequestKind::GetBlockHeaders),
+            0x04 => MessageKind::Response(Self::ResponseKind::BlockHeaders),
+            0x05 => MessageKind::Request(Self::RequestKind::GetBlockBodies),
+            0x06 => MessageKind::Response(Self::ResponseKind::BlockBodies),
+            0x07 => MessageKind::Gossip(Self::GossipKind::NewBlock),
+            0x08 => MessageKind::Gossip(Self::GossipKind::NewPooledTransactionHashes),
+            0x09 => MessageKind::Request(Self::RequestKind::GetPooledTransactions),
+            0x0a => MessageKind::Response(Self::ResponseKind::PooledTransactions),
+            0x0d => MessageKind::Request(Self::RequestKind::GetNodeData),
+            0x0e => MessageKind::Response(Self::ResponseKind::NodeData),
+            0x0f => MessageKind::Request(Self::RequestKind::GetReceipts),
+            0x10 => MessageKind::Response(Self::ResponseKind::Receipts),
+            _ => return None,
+        })
+    }
+    async fn handle_request(
+        &self,
+        id: Self::RequestKind,
+        cap: CapabilityId,
+        payload: Bytes,
+    ) -> (Option<(usize, Bytes)>, ReputationReport) {
+        // TODO
+        (None, ReputationReport::Good)
+    }
+    async fn handle_response(
+        &self,
+        id: Self::ResponseKind,
+        cap: CapabilityId,
+        payload: Bytes,
+    ) -> ReputationReport {
+        // TODO
+        ReputationReport::Good
+    }
+    async fn handle_gossip(
+        &self,
+        id: Self::GossipKind,
+        cap: CapabilityId,
+        payload: Bytes,
+    ) -> ReputationReport {
+        // TODO
+        ReputationReport::Good
     }
 }
+
+// #[async_trait]
+// impl<P2P: ProtocolRegistrar, G: EthRequestHandler> EthProtocol for Mux<P2P, G> {
+//     async fn new_block_hashes(&self, hashes: Vec<(H256, U256)>) -> Result<(), Error> {
+//         todo!()
+//     }
+
+//     async fn get_pooled_transactions(
+//         &self,
+//         _hashes: HashSet<H256>,
+//     ) -> Result<Vec<Transaction>, Error> {
+//         let peer_handle = self
+//             .devp2p_handle
+//             .get_peer(*ETH_PROTOCOL_ID, btreeset![65])
+//             .await?
+//             .ok_or(Error::NoPeers)?;
+
+//         let (tx, rx) = tokio::sync::oneshot::channel();
+//         let request_id = self
+//             .inflight_requests
+//             .lock()
+//             .save_callback(peer_handle.peer_id(), tx);
+
+//         // Make a GetPooledTransactions message
+//         let msg = request_id.to_be_bytes().to_vec().into();
+
+//         peer_handle.send_message(msg).await;
+
+//         let msg = rx.await.unwrap();
+
+//         // Parse PooledTransactionHashes
+//         todo!()
+//     }
+// }
 
 /// Receiving message of ETH
 #[derive(Debug, Clone, PartialEq, Eq)]

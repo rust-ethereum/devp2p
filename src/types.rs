@@ -66,11 +66,10 @@ pub enum ReputationReport {
 pub trait IngressPeerToken: Send + Sync + 'static {
     /// Get peer ID
     fn id(&self) -> PeerId;
-    /// Send a response and make a reputation report about the peer.
-    fn finalize(self, response: Bytes, report: ReputationReport);
 }
 
-pub type IngressHandlerFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+pub type IngressHandlerFuture =
+    Pin<Box<dyn Future<Output = (Option<(usize, Bytes)>, ReputationReport)> + Send + 'static>>;
 
 pub type IngressHandler<Peer: IngressPeerToken> =
     Arc<dyn Fn(Peer, usize, Bytes) -> IngressHandlerFuture + Send + Sync + 'static>;

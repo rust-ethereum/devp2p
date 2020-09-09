@@ -37,41 +37,11 @@ pub enum ResponseMessageId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GossipMessageId {
+    Status,
     NewBlockHashes,
     Transactions,
     NewBlock,
     NewPooledTransactionHashes,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MessageId {
-    Status,
-    Request(RequestMessageId),
-    Response(ResponseMessageId),
-    Gossip(GossipMessageId),
-}
-
-impl MessageId {
-    pub const fn from_id(id: usize) -> Option<Self> {
-        Some(match id {
-            0x00 => Self::Status,
-            0x01 => Self::Gossip(GossipMessageId::NewBlockHashes),
-            0x02 => Self::Gossip(GossipMessageId::Transactions),
-            0x03 => Self::Request(RequestMessageId::GetBlockHeaders),
-            0x04 => Self::Response(ResponseMessageId::BlockHeaders),
-            0x05 => Self::Request(RequestMessageId::GetBlockBodies),
-            0x06 => Self::Response(ResponseMessageId::BlockBodies),
-            0x07 => Self::Gossip(GossipMessageId::NewBlock),
-            0x08 => Self::Gossip(GossipMessageId::NewPooledTransactionHashes),
-            0x09 => Self::Request(RequestMessageId::GetPooledTransactions),
-            0x0a => Self::Response(ResponseMessageId::PooledTransactions),
-            0x0d => Self::Request(RequestMessageId::GetNodeData),
-            0x0e => Self::Response(ResponseMessageId::NodeData),
-            0x0f => Self::Request(RequestMessageId::GetReceipts),
-            0x10 => Self::Response(ResponseMessageId::Receipts),
-            _ => return None,
-        })
-    }
 }
 
 #[allow(clippy::pub_enum_variant_names)]

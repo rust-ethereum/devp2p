@@ -25,7 +25,7 @@ mod rlpx;
 mod types;
 mod util;
 
-pub use eth::Server as EthServer;
+pub use eth::{proto as eth_proto, Server as EthServer};
 pub use peer::PeerStream;
 pub use rlpx::Server as RLPxNode;
 pub use types::{CapabilityInfo, CapabilityName, Discovery};

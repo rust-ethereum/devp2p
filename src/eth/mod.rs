@@ -1,12 +1,13 @@
-mod proto;
+pub mod proto;
 
-pub use self::proto::*;
+use self::proto::*;
 use crate::types::*;
 use arrayvec::ArrayString;
 use async_trait::async_trait;
 use bytes::Bytes;
 use ethereum::{Block, Transaction};
 use ethereum_types::*;
+use log::*;
 use maplit::{btreemap, btreeset};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -32,9 +33,15 @@ impl From<Shutdown> for Error {
 }
 
 #[async_trait]
-pub trait EthRequestHandler: Send + Sync {
+pub trait EthNodeFilter: Send + Sync + 'static {
+    async fn allow(&self, status: ()) -> bool;
+}
+
+#[async_trait]
+pub trait EthRequestHandler: Send + Sync + 'static {
+    async fn handle_status(&self, status: ());
     async fn handle_new_block_hashes(&self, hashes: Vec<(H256, U256)>);
-    async fn handle_new_transaction_hashes(&self, hashes: ());
+    async fn handle_new_pooled_transaction_hashes(&self, hashes: ());
     async fn handle_new_block(&self, block: Block, total_difficulty: U256);
 }
 
@@ -84,6 +91,7 @@ impl Demultiplexer {
 pub struct Server<P2P: ProtocolRegistrar, RH: EthRequestHandler> {
     inflight_requests: Arc<Mutex<Demultiplexer>>,
 
+    node_filter: Arc<dyn EthNodeFilter>,
     request_handler: Arc<RH>,
     devp2p_handle: Arc<P2P::ServerHandle>,
     devp2p_owned_handle: Option<Arc<P2P>>,
@@ -91,24 +99,44 @@ pub struct Server<P2P: ProtocolRegistrar, RH: EthRequestHandler> {
 
 impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
     /// Register the protocol server with the RLPx node.
-    pub fn new(registrar: &P2P, request_handler: Arc<RH>) -> Self {
+    pub fn new(registrar: &P2P, request_handler: Arc<RH>, node_filter: impl EthNodeFilter) -> Self {
         let inflight_requests = Arc::new(Mutex::new(Demultiplexer::default()));
+        let node_filter = Arc::new(node_filter);
         let ingress_handler = {
             let inflight_requests = inflight_requests.clone();
+            let node_filter = Arc::downgrade(&node_filter);
             Arc::new(move |peer: P2P::IngressPeerToken, id, message| {
                 let inflight_requests = inflight_requests.clone();
+                let node_filter = node_filter.clone();
                 Box::pin(async move {
-                    let request_id: u64 = todo!();
+                    match MessageId::from_id(id) {
+                        None => debug!("Skipping unidentified message from with id {}", id),
+                        Some(MessageId::Status) => {
+                            // TODO: parse status payload
+                            let status = todo!();
 
-                    let sender = inflight_requests
-                        .lock()
-                        .retrieve_callback(peer.id(), request_id);
+                            if let Some(node_filter) = node_filter.upgrade() {
+                                if !node_filter.allow(status).await {
+                                    // TODO: drop peer
+                                }
+                            }
+                        }
+                        Some(MessageId::Response(message_id)) => {
+                            let request_id: u64 = todo!();
 
-                    // TODO: handle gossip and incoming requests.
-                    if let Some(sender) = sender {
-                        let (tx, rx) = oneshot();
-                        sender.send((message, tx));
-                        rx.await;
+                            let sender = inflight_requests
+                                .lock()
+                                .retrieve_callback(peer.id(), request_id);
+
+                            // TODO: handle gossip and incoming requests.
+                            if let Some(sender) = sender {
+                                let (tx, rx) = oneshot();
+                                sender.send((message, tx));
+                                rx.await;
+                            }
+                        }
+                        Some(MessageId::Request(request)) => todo!(),
+                        Some(MessageId::Gossip(gossip)) => todo!(),
                     }
                 }) as IngressHandlerFuture
             }) as IngressHandler<P2P::IngressPeerToken>
@@ -120,6 +148,7 @@ impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
         ));
         Self {
             inflight_requests,
+            node_filter,
             request_handler,
             devp2p_handle,
             devp2p_owned_handle: None,
@@ -127,8 +156,12 @@ impl<P2P: ProtocolRegistrar, RH: EthRequestHandler> Server<P2P, RH> {
     }
 
     /// Register the protocol server with the devp2p client and make protocol server the owner of devp2p instance
-    pub fn new_owned(registrar: Arc<P2P>, request_handler: Arc<RH>) -> Self {
-        let mut this = Self::new(&*registrar, request_handler);
+    pub fn new_owned(
+        registrar: Arc<P2P>,
+        request_handler: Arc<RH>,
+        node_filter: impl EthNodeFilter,
+    ) -> Self {
+        let mut this = Self::new(&*registrar, request_handler, node_filter);
         this.devp2p_owned_handle = Some(registrar);
         this
     }

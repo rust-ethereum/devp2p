@@ -63,16 +63,44 @@ pub enum ReputationReport {
 }
 
 /// Represents a peers that sent us a message.
-pub trait IngressPeerToken: Send + Sync + 'static {
-    /// Get peer ID
-    fn id(&self) -> PeerId;
+pub struct IngressPeer {
+    /// Peer ID
+    pub id: PeerId,
+    /// Capability of this inbound message
+    pub capability: CapabilityId,
 }
 
-pub type IngressHandlerFuture =
-    Pin<Box<dyn Future<Output = (Option<(usize, Bytes)>, ReputationReport)> + Send + 'static>>;
+#[derive(Debug)]
+pub enum HandleError {
+    Rlp(rlp::DecoderError),
+    Other(Box<dyn std::error::Error + Send + Sync>),
+}
 
-pub type IngressHandler<Peer: IngressPeerToken> =
-    Arc<dyn Fn(Peer, usize, Bytes) -> IngressHandlerFuture + Send + Sync + 'static>;
+impl From<rlp::DecoderError> for HandleError {
+    fn from(err: rlp::DecoderError) -> Self {
+        Self::Rlp(err)
+    }
+}
+
+impl HandleError {
+    pub fn to_reputation_report(&self) -> Option<ReputationReport> {
+        Some(match self {
+            Self::Rlp(_) => ReputationReport::Bad,
+            Self::Other(_) => return None,
+        })
+    }
+}
+
+pub type IngressHandlerFuture = Pin<
+    Box<
+        dyn Future<Output = Result<(Option<(usize, Bytes)>, Option<ReputationReport>), HandleError>>
+            + Send
+            + 'static,
+    >,
+>;
+
+pub type IngressHandler =
+    Arc<dyn Fn(IngressPeer, usize, Bytes) -> IngressHandlerFuture + Send + Sync + 'static>;
 
 #[async_trait]
 pub trait Discovery: Send + Sync + 'static {
@@ -113,12 +141,11 @@ pub trait ServerHandle: Send + Sync {
 #[async_trait]
 pub trait ProtocolRegistrar: Send + Sync {
     type ServerHandle: ServerHandle;
-    type IngressPeerToken: IngressPeerToken;
 
     /// Register support for the protocol. Takes the sink as incoming handler for the protocol. Returns personal handle to the peer pool.
     fn register_protocol_server(
         &self,
         capabilities: BTreeMap<CapabilityId, usize>,
-        incoming_handler: IngressHandler<Self::IngressPeerToken>,
+        incoming_handler: IngressHandler,
     ) -> Self::ServerHandle;
 }

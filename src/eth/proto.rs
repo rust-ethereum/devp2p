@@ -35,6 +35,18 @@ pub enum ResponseMessageId {
     Receipts,
 }
 
+impl From<RequestMessageId> for ResponseMessageId {
+    fn from(id: RequestMessageId) -> Self {
+        match id {
+            RequestMessageId::GetBlockHeaders => Self::BlockHeaders,
+            RequestMessageId::GetBlockBodies => Self::BlockBodies,
+            RequestMessageId::GetPooledTransactions => Self::PooledTransactions,
+            RequestMessageId::GetNodeData => Self::NodeData,
+            RequestMessageId::GetReceipts => Self::Receipts,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GossipMessageId {
     Status,

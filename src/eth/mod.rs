@@ -1,26 +1,23 @@
 pub mod proto;
 
 use self::proto::*;
-use crate::types::*;
+use crate::{mux::*, types::*};
 use arrayvec::ArrayString;
 use async_trait::async_trait;
 use bytes::Bytes;
 use ethereum::{Block, Transaction};
 use ethereum_types::*;
-use log::*;
 use maplit::btreemap;
 use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
     fmt::Debug,
-    sync::Arc,
 };
-use tokio::sync::oneshot::{channel as oneshot, Sender as OneshotSender};
 
 static ETH_PROTOCOL_ID: Lazy<CapabilityName> =
     Lazy::new(|| CapabilityName(ArrayString::from("eth").unwrap()));
 
+#[allow(dead_code)]
 pub enum Error {
     NoPeers,
     PeerGone,
@@ -50,170 +47,6 @@ pub trait EthProtocol {
     ) -> Result<Vec<Transaction>, Error>;
 }
 
-#[derive(Debug)]
-struct RequestCallbackData<ResponseKind: Debug> {
-    data: RequestCallback,
-    expected_response_id: ResponseKind,
-}
-
-type RequestCallback = OneshotSender<(Bytes, OneshotSender<()>)>;
-
-#[derive(Debug)]
-struct RequestMultiplexer<RK: Debug> {
-    inner: HashMap<H512, HashMap<u64, RequestCallbackData<RK>>>,
-}
-
-impl<RK: Debug> Default for RequestMultiplexer<RK> {
-    fn default() -> Self {
-        Self {
-            inner: Default::default(),
-        }
-    }
-}
-
-impl<RK: Debug> RequestMultiplexer<RK> {
-    fn save_callback(&mut self, peer_id: PeerId, callback: RequestCallbackData<RK>) -> u64 {
-        let peer = self.inner.entry(peer_id).or_default();
-        loop {
-            let request_id = rand::random();
-
-            if let Entry::Vacant(vacant) = peer.entry(request_id) {
-                vacant.insert(callback);
-                return request_id;
-            }
-        }
-    }
-
-    fn retrieve_callback(
-        &mut self,
-        peer_id: PeerId,
-        request_id: u64,
-    ) -> Option<RequestCallbackData<RK>> {
-        if let Entry::Occupied(mut entry) = self.inner.entry(peer_id) {
-            if let Some(callback) = entry.get_mut().remove(&request_id) {
-                if entry.get().is_empty() {
-                    entry.remove();
-                }
-                return Some(callback);
-            }
-        }
-
-        None
-    }
-}
-
-pub enum MessageKind<Request, Response, Gossip> {
-    Request(Request),
-    Response(Response),
-    Gossip(Gossip),
-}
-
-#[async_trait]
-pub trait MuxProtocol: Send + Sync + 'static {
-    type RequestKind: Send;
-    type ResponseKind: From<Self::ResponseKind> + PartialEq + Eq + Debug + Send;
-    type GossipKind: Send;
-
-    fn capabilities(&self) -> BTreeMap<CapabilityId, usize>;
-    fn message_kind(
-        &self,
-        id: usize,
-    ) -> Option<MessageKind<Self::RequestKind, Self::ResponseKind, Self::GossipKind>>;
-    async fn handle_request(
-        &self,
-        id: Self::RequestKind,
-        cap: CapabilityId,
-        payload: Bytes,
-    ) -> (Option<(usize, Bytes)>, ReputationReport);
-    async fn handle_response(
-        &self,
-        id: Self::ResponseKind,
-        cap: CapabilityId,
-        payload: Bytes,
-    ) -> ReputationReport;
-    async fn handle_gossip(
-        &self,
-        id: Self::GossipKind,
-        cap: CapabilityId,
-        payload: Bytes,
-    ) -> ReputationReport;
-}
-
-/// Generic multiplexing protocol server shim.
-pub struct Mux<P2P: ProtocolRegistrar, Protocol: MuxProtocol> {
-    inflight_requests: Arc<Mutex<RequestMultiplexer<<Protocol as MuxProtocol>::ResponseKind>>>,
-
-    protocol: Arc<Protocol>,
-    devp2p_handle: Arc<P2P::ServerHandle>,
-    devp2p_owned_handle: Option<Arc<P2P>>,
-}
-
-impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> Mux<P2P, Protocol> {
-    /// Register the protocol server with the RLPx node.
-    pub fn new(registrar: &P2P, protocol: Arc<Protocol>) -> Self {
-        let inflight_requests = Arc::new(Mutex::new(RequestMultiplexer::default()));
-        let ingress_handler = {
-            let inflight_requests = inflight_requests.clone();
-            let protocol = protocol.clone();
-            Arc::new(move |peer: P2P::IngressPeerToken, id, message| {
-                let inflight_requests = inflight_requests.clone();
-                let protocol = protocol.clone();
-                Box::pin(async move {
-                    match protocol.message_kind(id) {
-                        None => debug!("Skipping unidentified message from with id {}", id),
-                        Some(MessageKind::Response(response)) => {
-                            let request_id: u64 = todo!();
-
-                            let sender = inflight_requests
-                                .lock()
-                                .retrieve_callback(peer.id(), request_id);
-
-                            // TODO: handle gossip and incoming requests.
-                            if let Some(RequestCallbackData {
-                                data: sender,
-                                expected_response_id,
-                            }) = sender
-                            {
-                                if expected_response_id != response {
-                                    debug!(
-                                        "Peer sent us wrong reply! Expected: {:?}, Got: {:?}",
-                                        expected_response_id, response
-                                    );
-                                    return (None, ReputationReport::Kick);
-                                } else {
-                                    let (tx, rx) = oneshot();
-                                    sender.send((message, tx));
-                                    rx.await;
-                                }
-                            }
-                        }
-                        Some(MessageKind::Request(request)) => todo!(),
-                        Some(MessageKind::Gossip(gossip)) => todo!(),
-                    }
-
-                    return (None, ReputationReport::Good);
-                }) as IngressHandlerFuture
-            }) as IngressHandler<P2P::IngressPeerToken>
-        };
-
-        let devp2p_handle =
-            Arc::new(registrar.register_protocol_server(protocol.capabilities(), ingress_handler));
-        Self {
-            inflight_requests,
-            protocol,
-            devp2p_handle,
-            devp2p_owned_handle: None,
-        }
-    }
-
-    /// Register the protocol server with the devp2p client and make protocol server the owner of devp2p instance
-    pub fn new_owned(registrar: Arc<P2P>, request_handler: Arc<Protocol>) -> Self {
-        let mut this = Self::new(&*registrar, request_handler);
-        this.devp2p_owned_handle = Some(registrar);
-        this
-    }
-}
-
 pub struct Server;
 
 #[async_trait]
@@ -225,7 +58,7 @@ impl MuxProtocol for Server {
     fn capabilities(&self) -> BTreeMap<CapabilityId, usize> {
         btreemap! { CapabilityId { name: *ETH_PROTOCOL_ID, version: 66 } => 17 }
     }
-    fn message_kind(
+    fn parse_message_id(
         &self,
         id: usize,
     ) -> Option<MessageKind<Self::RequestKind, Self::ResponseKind, Self::GossipKind>> {
@@ -248,32 +81,48 @@ impl MuxProtocol for Server {
             _ => return None,
         })
     }
+    fn to_message_id(
+        &self,
+        kind: MessageKind<Self::RequestKind, Self::ResponseKind, Self::GossipKind>,
+    ) -> usize {
+        match kind {
+            MessageKind::Gossip(Self::GossipKind::Status) => 0x00,
+            MessageKind::Gossip(Self::GossipKind::NewBlockHashes) => 0x01,
+            MessageKind::Gossip(Self::GossipKind::Transactions) => 0x02,
+            MessageKind::Request(Self::RequestKind::GetBlockHeaders) => 0x03,
+            MessageKind::Response(Self::ResponseKind::BlockHeaders) => 0x04,
+            MessageKind::Request(Self::RequestKind::GetBlockBodies) => 0x05,
+            MessageKind::Response(Self::ResponseKind::BlockBodies) => 0x06,
+            MessageKind::Gossip(Self::GossipKind::NewBlock) => 0x07,
+            MessageKind::Gossip(Self::GossipKind::NewPooledTransactionHashes) => 0x08,
+            MessageKind::Request(Self::RequestKind::GetPooledTransactions) => 0x09,
+            MessageKind::Response(Self::ResponseKind::PooledTransactions) => 0x0a,
+            MessageKind::Request(Self::RequestKind::GetNodeData) => 0x0d,
+            MessageKind::Response(Self::ResponseKind::NodeData) => 0x0e,
+            MessageKind::Request(Self::RequestKind::GetReceipts) => 0x0f,
+            MessageKind::Response(Self::ResponseKind::Receipts) => 0x10,
+        }
+    }
     async fn handle_request(
         &self,
         id: Self::RequestKind,
-        cap: CapabilityId,
+        peer: IngressPeer,
         payload: Bytes,
-    ) -> (Option<(usize, Bytes)>, ReputationReport) {
+    ) -> (
+        Option<Vec<Box<dyn rlp::Encodable>>>,
+        Option<ReputationReport>,
+    ) {
         // TODO
-        (None, ReputationReport::Good)
-    }
-    async fn handle_response(
-        &self,
-        id: Self::ResponseKind,
-        cap: CapabilityId,
-        payload: Bytes,
-    ) -> ReputationReport {
-        // TODO
-        ReputationReport::Good
+        (None, None)
     }
     async fn handle_gossip(
         &self,
         id: Self::GossipKind,
-        cap: CapabilityId,
+        peer: IngressPeer,
         payload: Bytes,
-    ) -> ReputationReport {
+    ) -> Option<ReputationReport> {
         // TODO
-        ReputationReport::Good
+        None
     }
 }
 

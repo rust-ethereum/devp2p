@@ -119,16 +119,6 @@ impl ServerHandle for ServerHandleImpl {
     }
 }
 
-pub struct IngressPeerTokenImpl {
-    id: PeerId,
-}
-
-impl IngressPeerToken for IngressPeerTokenImpl {
-    fn id(&self) -> PeerId {
-        self.id
-    }
-}
-
 /// Sending message for `RLPx`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RLPxSendMessage {
@@ -316,15 +306,22 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
                         // Actually handle the message
                         if let Some(handler) = handler {
                             let (message, report) = (handler)(
-                                IngressPeerTokenImpl { id: remote_id },
+                                IngressPeer {
+                                    id: remote_id,
+                                    capability: capability.into(),
+                                },
                                 message_id,
                                 message,
                             )
-                            .await;
+                            .await
+                            .unwrap_or_else(|err| {
+                                debug!("Ingress handler error: {:?}", err);
+                                (None, err.to_reputation_report())
+                            });
 
                             // Check reputation report
                             match report {
-                                ReputationReport::Kick | ReputationReport::Ban => {
+                                Some(ReputationReport::Kick) | Some(ReputationReport::Ban) => {
                                     debug!("Received damning report about peer, disconnecting");
                                     break;
                                 }
@@ -436,7 +433,7 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'st
 
 #[derive(Default)]
 struct CapabilityMap {
-    inner: BTreeMap<CapabilityId, (usize, IngressHandler<IngressPeerTokenImpl>)>,
+    inner: BTreeMap<CapabilityId, (usize, IngressHandler)>,
 
     capability_cache: Vec<CapabilityInfo>,
 }
@@ -459,7 +456,7 @@ impl CapabilityMap {
     fn register_capabilities(
         &mut self,
         caps: BTreeMap<CapabilityId, usize>,
-        incoming_handler: &IngressHandler<IngressPeerTokenImpl>,
+        incoming_handler: &IngressHandler,
     ) {
         for (id, length) in caps {
             self.inner.insert(id, (length, incoming_handler.clone()));
@@ -480,7 +477,7 @@ impl CapabilityMap {
         &self.capability_cache
     }
 
-    fn get_inner(&self) -> &BTreeMap<CapabilityId, (usize, IngressHandler<IngressPeerTokenImpl>)> {
+    fn get_inner(&self) -> &BTreeMap<CapabilityId, (usize, IngressHandler)> {
         &self.inner
     }
 }
@@ -790,12 +787,11 @@ impl Server {
 
 impl ProtocolRegistrar for Arc<Server> {
     type ServerHandle = ServerHandleImpl;
-    type IngressPeerToken = IngressPeerTokenImpl;
 
     fn register_protocol_server(
         &self,
         capabilities: BTreeMap<CapabilityId, usize>,
-        incoming_handler: IngressHandler<Self::IngressPeerToken>,
+        incoming_handler: IngressHandler,
     ) -> Self::ServerHandle {
         let mut protocols = self.protocols.lock();
         protocols.register_capabilities(capabilities.clone(), &incoming_handler);

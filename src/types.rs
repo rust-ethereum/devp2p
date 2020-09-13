@@ -10,8 +10,42 @@ use std::{
     io,
     net::SocketAddr,
     pin::Pin,
+    str::FromStr,
     sync::Arc,
 };
+
+/// Record that specifies information necessary to connect to RLPx node
+pub struct NodeRecord {
+    /// Node ID.
+    pub id: PeerId,
+    /// Address of RLPx TCP server.
+    pub addr: SocketAddr,
+}
+
+impl FromStr for NodeRecord {
+    type Err = Box<dyn std::error::Error + Send + Sync>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const PREFIX: &str = "enode://";
+
+        let (prefix, data) = s.split_at(PREFIX.len());
+        if prefix != PREFIX {
+            return Err("Not an enode".into());
+        }
+
+        let mut parts = data.split("@");
+        let id = parts
+            .next()
+            .ok_or_else(|| "Failed to read remote ID")?
+            .parse()?;
+        let addr = parts
+            .next()
+            .ok_or_else(|| "Failed to read address")?
+            .parse()?;
+
+        Ok(Self { id, addr })
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CapabilityName(pub ArrayString<[u8; 4]>);

@@ -643,16 +643,16 @@ impl Server {
     /// Add a new peer to this `RLPx` stream. Returns `true` if it was inserted successfully (did not exist before, accepted by node filter).
     pub fn add_peer(
         &self,
-        addr: SocketAddr,
-        remote_id: H512,
+        node_record: NodeRecord,
     ) -> impl Future<Output = io::Result<bool>> + Send + 'static {
-        self.add_peer_inner(addr, remote_id, false)
+        let NodeRecord { addr, id } = node_record;
+        self.add_peer_inner(addr, id, false)
     }
 
     fn add_peer_inner(
         &self,
         addr: SocketAddr,
-        remote_id: H512,
+        remote_id: PeerId,
         check_peer: bool,
     ) -> impl Future<Output = io::Result<bool>> + Send + 'static {
         let streams = self.streams.clone();

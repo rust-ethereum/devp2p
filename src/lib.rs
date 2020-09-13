@@ -30,4 +30,4 @@ pub use eth::{proto as eth_proto, Server as EthServer};
 pub use mux::MuxServer;
 pub use peer::PeerStream;
 pub use rlpx::Server as RLPxNode;
-pub use types::{CapabilityInfo, CapabilityName, Discovery};
+pub use types::{CapabilityInfo, CapabilityName, Discovery, NodeRecord};

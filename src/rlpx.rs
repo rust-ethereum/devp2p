@@ -258,6 +258,7 @@ struct PeerStreamHandshakeData {
 async fn handle_incoming(
     task_group: Weak<TaskGroup>,
     streams: Arc<Mutex<PeerStreams>>,
+    node_filter: Arc<Mutex<dyn NodeFilter>>,
     mut tcp_incoming: TcpListener,
     handshake_data: PeerStreamHandshakeData,
 ) {
@@ -269,8 +270,12 @@ async fn handle_incoming(
             }
             Ok((stream, _remote_addr)) => {
                 if let Some(tasks) = task_group.upgrade() {
-                    let f =
-                        handle_incoming_request(streams.clone(), stream, handshake_data.clone());
+                    let f = handle_incoming_request(
+                        streams.clone(),
+                        node_filter.clone(),
+                        stream,
+                        handshake_data.clone(),
+                    );
                     tasks.spawn(f);
                 }
             }
@@ -378,6 +383,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
 /// Establishes the connection with peer and adds them to internal state.
 async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     streams: Arc<Mutex<PeerStreams>>,
+    node_filter: Arc<Mutex<dyn NodeFilter>>,
     stream: Io,
     handshake_data: PeerStreamHandshakeData,
 ) {
@@ -413,20 +419,39 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'st
             let remote_id = peer.remote_id();
             let s = streams.clone();
             let mut s = s.lock();
+            let node_filter = node_filter.clone();
             let PeerStreams { mapping } = &mut *s;
-            let peer_state = mapping.entry(remote_id).or_insert(PeerState::Connecting);
-            if peer_state.is_connected() {
-                // Turns out that remote peer's already connected. Drop connection request.
-                warn!("we are already connected to remote peer {}!", remote_id);
-                return;
+            let total_connections = mapping.len();
+
+            match mapping.entry(remote_id) {
+                Entry::Occupied(entry) => {
+                    warn!(
+                        "We are already {} to remote peer {}!",
+                        if entry.get().is_connected() {
+                            "connected"
+                        } else {
+                            "connecting"
+                        },
+                        remote_id
+                    );
+                }
+                Entry::Vacant(entry) => {
+                    if node_filter.lock().allow(total_connections, remote_id) {
+                        debug!("New peer connected: {}", remote_id);
+                        entry.insert(PeerState::Connected(setup_peer_state(
+                            streams,
+                            capabilities,
+                            remote_id,
+                            peer,
+                        )));
+                    } else {
+                        trace!("Node filter rejected peer {}, disconnecting", remote_id);
+                    }
+                }
             }
-            // If we are connecting, incoming connection request takes precedence
-            debug!("new peer connected: {}", remote_id);
-            *peer_state =
-                PeerState::Connected(setup_peer_state(streams, capabilities, remote_id, peer));
         }
         Err(e) => {
-            error!("peer disconnected with error {}", e);
+            error!("Peer disconnected with error {}", e);
         }
     }
 }
@@ -549,6 +574,7 @@ impl Server {
             tasks.spawn(handle_incoming(
                 Arc::downgrade(&tasks),
                 streams.clone(),
+                node_filter.clone(),
                 tcp_incoming,
                 PeerStreamHandshakeData {
                     port,
@@ -592,7 +618,9 @@ impl Server {
                                     Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"))
                                 }) {
                                     Ok((addr, remote_id)) => {
-                                        if let Err(e) = server.add_peer(addr, remote_id).await {
+                                        if let Err(e) =
+                                            server.add_peer_inner(addr, remote_id, true).await
+                                        {
                                             warn!("Failed to add new peer: {}", e);
                                         }
                                     }
@@ -618,6 +646,15 @@ impl Server {
         addr: SocketAddr,
         remote_id: H512,
     ) -> impl Future<Output = io::Result<bool>> + Send + 'static {
+        self.add_peer_inner(addr, remote_id, false)
+    }
+
+    fn add_peer_inner(
+        &self,
+        addr: SocketAddr,
+        remote_id: H512,
+        check_peer: bool,
+    ) -> impl Future<Output = io::Result<bool>> + Send + 'static {
         let streams = self.streams.clone();
         let node_filter = self.node_filter.clone();
 
@@ -630,9 +667,12 @@ impl Server {
         let port = self.port;
 
         async move {
+            trace!("Received request to add peer {}", remote_id);
             let mut inserted = false;
             {
+                trace!("locking streams");
                 let mut streams = streams.lock();
+                trace!("locking node_filter");
                 let node_filter = node_filter.lock();
 
                 let connection_num = streams.mapping.len();
@@ -650,7 +690,9 @@ impl Server {
                         );
                     }
                     Entry::Vacant(vacant) => {
-                        if node_filter.allow(connection_num, remote_id) {
+                        if check_peer && !node_filter.allow(connection_num, remote_id) {
+                            trace!("rejecting peer {}", remote_id);
+                        } else {
                             info!("connecting to peer {}", remote_id);
                             vacant.insert(PeerState::Connecting);
                             inserted = true;

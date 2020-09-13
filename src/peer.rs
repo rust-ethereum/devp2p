@@ -195,8 +195,9 @@ where
             Ok(message_id) => {
                 if message_id != 0 {
                     error!(
-                        "hello failed because message id is not 0 but {}",
-                        message_id
+                        "hello failed because message id is not 0 but {}: {:x?}",
+                        message_id,
+                        &hello[1..]
                     );
                     return Err(io::Error::new(
                         io::ErrorKind::Other,

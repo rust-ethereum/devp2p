@@ -151,12 +151,12 @@ pub enum PeerSendError {
 pub trait EgressPeerHandle: Send + Sync {
     fn capability_version(&self) -> u8;
     fn peer_id(&self) -> PeerId;
-    async fn send_message(self, message: Bytes) -> Result<(), PeerSendError>;
+    async fn send_message(self, id: usize, message: Bytes) -> Result<(), PeerSendError>;
 }
 
 /// DevP2P server handle that can be used by the owning protocol server to access peer pool.
 #[async_trait]
-pub trait ServerHandle: Send + Sync {
+pub trait ServerHandle: Send + Sync + 'static {
     type EgressPeerHandle: EgressPeerHandle;
     /// Get random peer that matches the specified capability version. Returns peer ID and actual capability version.
     async fn get_peer(

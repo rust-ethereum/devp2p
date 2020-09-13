@@ -1,18 +1,19 @@
-use crate::types::*;
-
+use crate::{types::*, util::*};
 use async_trait::async_trait;
 use bytes::Bytes;
 use log::*;
 use parking_lot::Mutex;
-use rlp::{Rlp, RlpStream};
+use rlp::{Encodable, Rlp, RlpStream};
 use std::{
     collections::{hash_map::Entry, BTreeMap, HashMap},
     fmt::Debug,
+    future::Future,
     sync::Arc,
+    time::Duration,
 };
 use tokio::sync::oneshot::{channel as oneshot, Sender as OneshotSender};
 
-pub type RequestCallback = OneshotSender<(Bytes, OneshotSender<()>)>;
+pub type RequestCallback = OneshotSender<(Bytes, OneshotSender<ReputationReport>)>;
 
 #[derive(Debug)]
 struct RequestCallbackData<ResponseKind: Debug> {
@@ -91,10 +92,7 @@ pub trait MuxProtocol: Send + Sync + 'static {
         id: Self::RequestKind,
         peer: IngressPeer,
         payload: Bytes,
-    ) -> (
-        Option<Vec<Box<dyn rlp::Encodable>>>,
-        Option<ReputationReport>,
-    );
+    ) -> (Option<Vec<EncodableObject>>, Option<ReputationReport>);
     async fn handle_gossip(
         &self,
         id: Self::GossipKind,
@@ -103,8 +101,11 @@ pub trait MuxProtocol: Send + Sync + 'static {
     ) -> Option<ReputationReport>;
 }
 
+pub type EncodableObject = Box<dyn Encodable + Send + 'static>;
+
 /// Multiplexing server which enables request-response logic over generic bytes.
 pub struct MuxServer<P2P: ProtocolRegistrar, Protocol: MuxProtocol> {
+    tasks: Arc<TaskGroup>,
     inflight_requests: Arc<Mutex<RequestMultiplexer<<Protocol as MuxProtocol>::ResponseKind>>>,
 
     protocol: Arc<Protocol>,
@@ -116,6 +117,7 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
     /// Register the protocol server with the RLPx node.
     #[must_use]
     pub fn new(registrar: &P2P, protocol: Arc<Protocol>) -> Self {
+        let tasks = Default::default();
         let inflight_requests = Arc::new(Mutex::new(RequestMultiplexer::default()));
         let ingress_handler = {
             let inflight_requests = inflight_requests.clone();
@@ -153,8 +155,11 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
                                     let payload = message
                                         .slice_ref(Rlp::new(message.as_ref()).at(1)?.data()?);
                                     let (tx, rx) = oneshot();
-                                    sender.send((payload, tx));
-                                    rx.await;
+                                    // No-op if dropped.
+                                    let _ = sender.send((payload, tx));
+                                    if let Ok(v) = rx.await {
+                                        reputation_report = Some(v)
+                                    }
                                 }
                             }
                         }
@@ -193,6 +198,7 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
         let devp2p_handle =
             Arc::new(registrar.register_protocol_server(protocol.capabilities(), ingress_handler));
         Self {
+            tasks,
             inflight_requests,
             protocol,
             devp2p_handle,
@@ -206,5 +212,87 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
         let mut this = Self::new(&*registrar, request_handler);
         this.devp2p_owned_handle = Some(registrar);
         this
+    }
+
+    // Send request
+    pub fn send_request<RequestBuilder, DataHandler>(
+        &self,
+        retry_timeout: Duration,
+        request_builder: Arc<RequestBuilder>,
+        data_handler: Arc<DataHandler>,
+    ) -> impl Future<Output = Result<(), Shutdown>> + Send + 'static
+    where
+        RequestBuilder: Fn(
+                Arc<P2P::ServerHandle>,
+            ) -> Option<(
+                <P2P::ServerHandle as ServerHandle>::EgressPeerHandle,
+                Protocol::RequestKind,
+                Vec<EncodableObject>,
+            )> + Send
+            + Sync
+            + 'static,
+        DataHandler: Fn(Bytes) -> Option<ReputationReport> + Send + Sync + 'static,
+    {
+        let tasks = self.tasks.clone();
+        let inflight_requests = self.inflight_requests.clone();
+        let devp2p_handle = self.devp2p_handle.clone();
+        let protocol = self.protocol.clone();
+        async move {
+            loop {
+                if let Some((peer, message_id, data)) = (request_builder)(devp2p_handle.clone()) {
+                    let (tx, rx) = oneshot();
+
+                    let peer_id = peer.peer_id();
+                    let request_id = inflight_requests.lock().save_callback(
+                        peer_id,
+                        RequestCallbackData {
+                            data: tx,
+                            expected_response_id: message_id.clone().into(),
+                        },
+                    );
+
+                    let mut out = RlpStream::new();
+                    out.append(&request_id);
+                    for obj in data {
+                        out.append(&obj);
+                    }
+                    match peer
+                        .send_message(
+                            protocol.to_message_id(MessageKind::Request(message_id)),
+                            Bytes::from(out.out()),
+                        )
+                        .await
+                    {
+                        Err(PeerSendError::PeerGone) => {
+                            continue;
+                        }
+                        Err(PeerSendError::Shutdown) => return Err(Shutdown),
+                        Ok(()) => {}
+                    }
+
+                    // Reap on timeout
+                    tasks.spawn({
+                        let inflight_requests = inflight_requests.clone();
+                        async move {
+                            tokio::time::delay_for(retry_timeout).await;
+                            let _ = inflight_requests
+                                .lock()
+                                .retrieve_callback(peer_id, request_id);
+                            // TODO: penalize the peer
+                        }
+                    });
+
+                    if let Ok((bytes, reputation_callback)) = rx.await {
+                        if let Some(report) = (data_handler)(bytes) {
+                            reputation_callback.send(report);
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+
+                return Ok(());
+            }
+        }
     }
 }

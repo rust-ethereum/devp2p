@@ -1,8 +1,10 @@
 use crate::{ecies::ECIESStream, types::*, util::pk2id};
 use bytes::Bytes;
+use enum_primitive_derive::Primitive;
 use futures::{ready, Sink, SinkExt};
 use libsecp256k1::{PublicKey, SecretKey};
 use log::*;
+use num_traits::*;
 use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
 use std::{
     io,
@@ -13,6 +15,15 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     stream::{Stream, StreamExt},
 };
+
+const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024;
+
+/// `RLPx` protocol version.
+#[derive(Copy, Clone, Debug, Primitive)]
+pub enum ProtocolVersion {
+    V4 = 4,
+    V5 = 5,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapabilityMessage {
@@ -69,16 +80,22 @@ impl Decodable for HelloMessage {
     }
 }
 
+struct Snappy {
+    encoder: snap::raw::Encoder,
+    decoder: snap::raw::Decoder,
+}
+
 /// `RLPx` transport peer stream
 #[allow(unused)]
 pub struct PeerStream<Io> {
     stream: ECIESStream<Io>,
-    protocol_version: usize,
     client_version: String,
     shared_capabilities: Vec<CapabilityInfo>,
     port: u16,
     id: PeerId,
     remote_id: PeerId,
+
+    snappy: Option<Snappy>,
 
     pending_pong: bool,
 }
@@ -102,7 +119,7 @@ where
         transport: Io,
         secret_key: SecretKey,
         remote_id: PeerId,
-        protocol_version: usize,
+        protocol_version: ProtocolVersion,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
@@ -122,7 +139,7 @@ where
     pub async fn incoming(
         transport: Io,
         secret_key: SecretKey,
-        protocol_version: usize,
+        protocol_version: ProtocolVersion,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
@@ -142,7 +159,7 @@ where
     pub async fn new(
         mut transport: ECIESStream<Io>,
         secret_key: SecretKey,
-        protocol_version: usize,
+        protocol_version: ProtocolVersion,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
@@ -158,7 +175,7 @@ where
         let hello = rlp::encode(&HelloMessage {
             port,
             id,
-            protocol_version,
+            protocol_version: protocol_version.to_usize().unwrap(),
             client_version,
             capabilities: {
                 let mut caps = Vec::new();
@@ -240,14 +257,22 @@ where
 
                 shared_capabilities.sort_by_key(|v| v.name);
 
+                let snappy = match protocol_version {
+                    V4 => None,
+                    V5 => Some(Snappy {
+                        encoder: snap::raw::Encoder::new(),
+                        decoder: snap::raw::Decoder::new(),
+                    }),
+                };
+
                 Ok(Self {
                     remote_id: transport.remote_id(),
                     stream: transport,
                     client_version: nonhello_client_version,
-                    protocol_version,
                     port,
                     id,
                     shared_capabilities,
+                    snappy,
                     pending_pong: false,
                 })
             }
@@ -285,13 +310,30 @@ where
                 let message_id_rlp = Rlp::new(&val[0..1]);
                 let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
 
-                let (cap, id) = match message_id {
+                let (cap, id, data) = match message_id {
                     Ok(message_id) => {
+                        let data = if let Some(snappy) = &mut s.snappy {
+                            let input = &val[1..];
+                            let payload_len = snap::raw::decompress_len(input)?;
+                            if payload_len > MAX_PAYLOAD_SIZE {
+                                return Poll::Ready(Some(Err(io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    format!(
+                                        "payload size ({}) exceeds limit ({} bytes)",
+                                        payload_len, MAX_PAYLOAD_SIZE
+                                    ),
+                                ))));
+                            }
+                            snappy.decoder.decompress_vec(input)?.into()
+                        } else {
+                            Bytes::copy_from_slice(&val[1..])
+                        };
+
                         if message_id < 0x10 {
                             let data = &val[1..];
                             match message_id {
                                 0x01 /* disconnect */ => {
-                                    let reason: Result<usize, rlp::DecoderError> = Rlp::new(data).val_at(0);
+                                    let reason: Result<usize, rlp::DecoderError> = Rlp::new(&*data).val_at(0);
                                     debug!("received disconnect message, reason: {:?}", reason);
                                     return Poll::Ready(Some(Err(io::Error::new(io::ErrorKind::Other,
                                                                                "explicit disconnect"))));
@@ -328,7 +370,7 @@ where
                                 "message id parsing failed (too big)",
                             ))));
                         }
-                        (s.shared_capabilities[index], message_id)
+                        (s.shared_capabilities[index], message_id, data)
                     }
                     Err(e) => {
                         return Poll::Ready(Some(Err(io::Error::new(
@@ -338,7 +380,7 @@ where
                     }
                 };
 
-                Poll::Ready(Some(Ok((cap, id, Bytes::copy_from_slice(&val[1..])))))
+                Poll::Ready(Some(Ok((cap, id, data))))
             }
             Some(Err(e)) => Poll::Ready(Some(Err(e))),
             None => Poll::Ready(None),
@@ -402,8 +444,10 @@ where
 
         let mut ret: Vec<u8> = Vec::new();
         ret.push(first[0]);
-        for d in &data {
-            ret.push(*d);
+        if let Some(snappy) = &mut this.snappy {
+            ret.append(&mut snappy.encoder.compress_vec(&*data).unwrap());
+        } else {
+            ret.extend_from_slice(&*data)
         }
 
         Pin::new(&mut this.stream).start_send(ret)

@@ -44,10 +44,10 @@ impl EgressPeerHandle for EgressPeerHandleImpl {
     fn peer_id(&self) -> PeerId {
         self.peer_id
     }
-    async fn send_message(mut self, message: Bytes) -> Result<(), PeerSendError> {
+    async fn send_message(mut self, id: usize, message: Bytes) -> Result<(), PeerSendError> {
         self.sender
             .send(RLPxSendMessage {
-                id: todo!(),
+                id,
                 capability_name: self.capability.clone(),
                 data: message,
             })
@@ -249,7 +249,7 @@ impl Default for PeerStreams {
 #[derive(Clone)]
 struct PeerStreamHandshakeData {
     port: u16,
-    protocol_version: usize,
+    protocol_version: ProtocolVersion,
     secret_key: SecretKey,
     client_version: String,
     capabilities: Arc<Mutex<CapabilityMap>>,
@@ -519,7 +519,7 @@ pub struct Server {
     protocols: Arc<Mutex<CapabilityMap>>,
 
     secret_key: SecretKey,
-    protocol_version: usize,
+    protocol_version: ProtocolVersion,
     client_version: String,
     port: u16,
 }
@@ -578,7 +578,7 @@ impl Server {
                 tcp_incoming,
                 PeerStreamHandshakeData {
                     port,
-                    protocol_version: PROTOCOL_VERSION,
+                    protocol_version: ProtocolVersion::V5,
                     secret_key,
                     client_version: client_version.clone(),
                     capabilities: protocols.clone(),
@@ -592,7 +592,7 @@ impl Server {
             node_filter,
             protocols,
             secret_key,
-            protocol_version: PROTOCOL_VERSION,
+            protocol_version: ProtocolVersion::V5,
             client_version,
             port,
         });

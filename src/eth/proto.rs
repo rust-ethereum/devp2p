@@ -1,7 +1,9 @@
 use crate::types::*;
 use ethereum::{Block, Header, Transaction};
+use ethereum_forkid::ForkId;
 use ethereum_types::{H256, U256};
 use rlp::{DecoderError, Encodable, Rlp, RlpStream};
+use rlp_derive::{RlpDecodable, RlpEncodable};
 
 #[allow(clippy::pub_enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -67,6 +69,16 @@ pub enum EthGossipMessage {
 }
 
 pub struct Transactions(pub Vec<Transaction>);
+
+#[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct Status {
+    pub protocol_version: usize,
+    pub network_id: usize,
+    pub total_difficulty: U256,
+    pub best_hash: H256,
+    pub genesis_hash: H256,
+    pub fork_id: ForkId,
+}
 
 /// ETH message version 62 and 63
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use ethereum::{Block, Transaction};
 use ethereum_types::*;
+use log::*;
 use maplit::btreemap;
 use once_cell::sync::Lazy;
 use std::{
@@ -108,10 +109,14 @@ impl MuxProtocol for Server {
         id: Self::RequestKind,
         peer: IngressPeer,
         payload: Bytes,
-    ) -> (
-        Option<Vec<Box<dyn rlp::Encodable>>>,
-        Option<ReputationReport>,
-    ) {
+    ) -> (Option<Vec<EncodableObject>>, Option<ReputationReport>) {
+        trace!(
+            "Received request {:?} from peer {} with payload {:02x?}",
+            id,
+            peer.id,
+            payload
+        );
+
         // TODO
         (None, None)
     }
@@ -121,6 +126,13 @@ impl MuxProtocol for Server {
         peer: IngressPeer,
         payload: Bytes,
     ) -> Option<ReputationReport> {
+        trace!(
+            "Received gossip message {:?} from peer {} with payload {:02x?}",
+            id,
+            peer.id,
+            payload
+        );
+
         // TODO
         None
     }

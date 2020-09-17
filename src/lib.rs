@@ -1,4 +1,10 @@
 //! Ethereum devp2p protocol implementation
+//!
+//! It is layered in the following way:
+//! * `RLPxNode` which represents the whole pool of connected peers. It handles message routing and peer management.
+//! * `MuxServer` which provides a request-response API to otherwise stateless P2P protocol.
+//! * `EthIngressServer` which `MuxServer` calls into when new requests and gossip messages arrive.
+//! * `MuxServer` itself implements `EthProtocol` which is a simple gateway to abstract Ethereum network.
 
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 #![allow(

@@ -136,6 +136,8 @@ pub type IngressHandlerFuture = Pin<
 pub type IngressHandler =
     Arc<dyn Fn(IngressPeer, usize, Bytes) -> IngressHandlerFuture + Send + Sync + 'static>;
 
+pub type OnPeerConnect = Arc<dyn Fn() -> Message + Send + Sync + 'static>;
+
 #[async_trait]
 pub trait Discovery: Send + Sync + 'static {
     async fn get_new_peer(&mut self) -> Result<(SocketAddr, PeerId), io::Error>;
@@ -146,30 +148,30 @@ pub enum PeerSendError {
     PeerGone,
 }
 
+#[derive(Clone, Debug)]
+pub struct Message {
+    pub id: usize,
+    pub data: Bytes,
+}
+
 /// Represents a peer that we requested ourselves from the pool.
 #[async_trait]
 pub trait EgressPeerHandle: Send + Sync {
-    fn capability_version(&self) -> u8;
+    fn capability_version(&self) -> usize;
     fn peer_id(&self) -> PeerId;
-    async fn send_message(self, id: usize, message: Bytes) -> Result<(), PeerSendError>;
+    async fn send_message(self, message: Message) -> Result<(), PeerSendError>;
 }
 
 /// DevP2P server handle that can be used by the owning protocol server to access peer pool.
 #[async_trait]
 pub trait ServerHandle: Send + Sync + 'static {
     type EgressPeerHandle: EgressPeerHandle;
-    /// Get random peer that matches the specified capability version. Returns peer ID and actual capability version.
-    async fn get_peer(
+    /// Get peers that match the specified capability version. Returns peer ID and actual capability version.
+    async fn get_peers(
         &self,
         name: CapabilityName,
         versions: BTreeSet<usize>,
-    ) -> Result<Option<Self::EgressPeerHandle>, Shutdown>;
-    /// Number of peers that support the specified capability version.
-    async fn num_peers(
-        &self,
-        name: CapabilityName,
-        versions: BTreeSet<usize>,
-    ) -> Result<usize, Shutdown>;
+    ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown>;
 }
 
 #[async_trait]
@@ -181,5 +183,6 @@ pub trait ProtocolRegistrar: Send + Sync {
         &self,
         capabilities: BTreeMap<CapabilityId, usize>,
         incoming_handler: IngressHandler,
+        on_peer_connect: OnPeerConnect,
     ) -> Self::ServerHandle;
 }

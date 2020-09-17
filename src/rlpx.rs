@@ -31,25 +31,25 @@ const DISCOVERY_TIMEOUT_SECS: u64 = 5;
 
 pub struct EgressPeerHandleImpl {
     capability: CapabilityName,
-    capability_version: u8,
+    capability_version: usize,
     peer_id: PeerId,
     sender: tokio::sync::mpsc::Sender<RLPxSendMessage>,
 }
 
 #[async_trait]
 impl EgressPeerHandle for EgressPeerHandleImpl {
-    fn capability_version(&self) -> u8 {
+    fn capability_version(&self) -> usize {
         self.capability_version
     }
     fn peer_id(&self) -> PeerId {
         self.peer_id
     }
-    async fn send_message(mut self, id: usize, message: Bytes) -> Result<(), PeerSendError> {
+    async fn send_message(mut self, Message { id, data }: Message) -> Result<(), PeerSendError> {
         self.sender
             .send(RLPxSendMessage {
                 id,
                 capability_name: self.capability.clone(),
-                data: message,
+                data,
             })
             .await
             .map_err(|_| PeerSendError::PeerGone);
@@ -85,37 +85,22 @@ impl Drop for ServerHandleImpl {
 impl ServerHandle for ServerHandleImpl {
     type EgressPeerHandle = EgressPeerHandleImpl;
 
-    async fn get_peer(
+    async fn get_peers(
         &self,
         name: CapabilityName,
         versions: BTreeSet<usize>,
-    ) -> Result<Option<Self::EgressPeerHandle>, Shutdown> {
-        let (peer_id, sender) = {
-            let pool = self.pool.upgrade().ok_or(Shutdown)?;
-            match pool
-                .connected_peers(|_| 1, Some(&CapabilityFilter { name, versions }))
-                .into_iter()
-                .next()
-            {
-                Some(peer_id) => peer_id,
-                None => return Ok(None),
-            }
-        };
-
-        Ok(Some(EgressPeerHandleImpl {
-            capability: name,
-            capability_version: todo!(),
-            peer_id,
-            sender,
-        }))
-    }
-
-    async fn num_peers(
-        &self,
-        name: CapabilityName,
-        versions: BTreeSet<usize>,
-    ) -> Result<usize, Shutdown> {
-        unimplemented!()
+    ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown> {
+        let pool = self.pool.upgrade().ok_or(Shutdown)?;
+        Ok(pool
+            .connected_peers(|_| 1, Some(&CapabilityFilter { name, versions }))
+            .into_iter()
+            .map(|(peer_id, (sender, capabilities))| EgressPeerHandleImpl {
+                capability: name,
+                capability_version: capabilities[&name],
+                peer_id,
+                sender,
+            })
+            .collect())
     }
 }
 
@@ -289,24 +274,30 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     remote_id: PeerId,
     peer: PeerStream<Io>,
 ) -> StreamHandle {
-    let capability_set = peer.capabilities().to_vec();
+    let capability_set = peer
+        .capabilities()
+        .iter()
+        .copied()
+        .map(From::from)
+        .collect::<BTreeSet<_>>();
     let (mut sink, mut stream) = futures::StreamExt::split(peer);
     let (peer_sender_tx, mut peer_sender_rx) = tokio::sync::mpsc::channel(1);
     let tasks = TaskGroup::default();
     // Ingress router
     tasks.spawn({
         let streams = streams.clone();
+        let capabilities = capabilities.clone();
         let mut peer_sender_tx = peer_sender_tx.clone();
         async move {
             while let Some(message) = stream.next().await {
                 match message {
                     Ok((capability, message_id, message)) => {
                         // Extract capability's ingress handler
-                        let handler = capabilities
-                            .lock()
-                            .get_inner()
-                            .get(&capability.into())
-                            .map(|(_, handler)| handler.clone());
+                        let handler = capabilities.lock().get_inner().get(&capability.into()).map(
+                            |CapabilityData {
+                                 incoming_handler, ..
+                             }| incoming_handler.clone(),
+                        );
 
                         // Actually handle the message
                         if let Some(handler) = handler {
@@ -359,7 +350,21 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     });
     // Egress router
     tasks.spawn({
+        let capability_set = capability_set.clone();
         async move {
+            // Send initial messages
+            let messages = capabilities
+                .lock()
+                .get_inner()
+                .iter()
+                .filter_map(|(cap, data)| {
+                    if capability_set.contains(cap) {
+                        Some((data.on_peer_connect)())
+                    } else {
+                        None
+                    }
+                });
+
             while let Some(RLPxSendMessage {
                 capability_name,
                 id,
@@ -376,7 +381,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     StreamHandle {
         sender: peer_sender_tx,
         tasks,
-        capabilities: capability_set.into_iter().map(From::from).collect(),
+        capabilities: capability_set,
     }
 }
 
@@ -456,9 +461,15 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'st
     }
 }
 
+struct CapabilityData {
+    length: usize,
+    incoming_handler: IngressHandler,
+    on_peer_connect: OnPeerConnect,
+}
+
 #[derive(Default)]
 struct CapabilityMap {
-    inner: BTreeMap<CapabilityId, (usize, IngressHandler)>,
+    inner: BTreeMap<CapabilityId, CapabilityData>,
 
     capability_cache: Vec<CapabilityInfo>,
 }
@@ -469,10 +480,12 @@ impl CapabilityMap {
             .inner
             .iter()
             .map(
-                |(&CapabilityId { name, version }, &(length, _))| CapabilityInfo {
-                    name,
-                    version,
-                    length,
+                |(&CapabilityId { name, version }, &CapabilityData { length, .. })| {
+                    CapabilityInfo {
+                        name,
+                        version,
+                        length,
+                    }
                 },
             )
             .collect();
@@ -482,9 +495,19 @@ impl CapabilityMap {
         &mut self,
         caps: BTreeMap<CapabilityId, usize>,
         incoming_handler: &IngressHandler,
+        on_peer_connect: &OnPeerConnect,
     ) {
         for (id, length) in caps {
-            self.inner.insert(id, (length, incoming_handler.clone()));
+            let incoming_handler = incoming_handler.clone();
+            let on_peer_connect = on_peer_connect.clone();
+            self.inner.insert(
+                id,
+                CapabilityData {
+                    length,
+                    incoming_handler,
+                    on_peer_connect,
+                },
+            );
         }
 
         self.update_cache()
@@ -502,7 +525,7 @@ impl CapabilityMap {
         &self.capability_cache
     }
 
-    fn get_inner(&self) -> &BTreeMap<CapabilityId, (usize, IngressHandler)> {
+    fn get_inner(&self) -> &BTreeMap<CapabilityId, CapabilityData> {
         &self.inner
     }
 }
@@ -775,7 +798,7 @@ impl Server {
         &self,
         limit: impl Fn(usize) -> usize,
         filter: Option<&CapabilityFilter>,
-    ) -> HashMap<H512, PeerSender> {
+    ) -> HashMap<H512, (PeerSender, BTreeMap<CapabilityName, usize>)> {
         let peers = self.streams.lock();
 
         let peer_num = peers.mapping.len();
@@ -821,7 +844,20 @@ impl Server {
                 false
             })
             // TODO: what if user holds sender past peer drop?
-            .map(|(remote_id, state)| (*remote_id, state.get_handle().unwrap().sender.clone()))
+            .map(|(remote_id, state)| {
+                let state = state.get_handle().unwrap();
+                (
+                    *remote_id,
+                    (
+                        state.sender.clone(),
+                        state
+                            .capabilities
+                            .iter()
+                            .map(|&CapabilityId { name, version }| (name, version))
+                            .collect(),
+                    ),
+                )
+            })
             .take((limit)(peer_num))
             .collect()
     }
@@ -834,9 +870,10 @@ impl ProtocolRegistrar for Arc<Server> {
         &self,
         capabilities: BTreeMap<CapabilityId, usize>,
         incoming_handler: IngressHandler,
+        on_peer_connect: OnPeerConnect,
     ) -> Self::ServerHandle {
         let mut protocols = self.protocols.lock();
-        protocols.register_capabilities(capabilities.clone(), &incoming_handler);
+        protocols.register_capabilities(capabilities.clone(), &incoming_handler, &on_peer_connect);
         let pool = Arc::downgrade(self);
         Self::ServerHandle {
             pool,

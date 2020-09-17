@@ -86,6 +86,7 @@ pub trait MuxProtocol: Send + Sync + 'static {
         &self,
         kind: MessageKind<Self::RequestKind, Self::ResponseKind, Self::GossipKind>,
     ) -> usize;
+    fn on_peer_connect(&self) -> Message;
     /// Handle incoming request, optionally forming a response and reputation report.
     async fn handle_request(
         &self,
@@ -195,8 +196,14 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
             }) as IngressHandler
         };
 
-        let devp2p_handle =
-            Arc::new(registrar.register_protocol_server(protocol.capabilities(), ingress_handler));
+        let devp2p_handle = Arc::new(registrar.register_protocol_server(
+            protocol.capabilities(),
+            ingress_handler,
+            {
+                let protocol = protocol.clone();
+                Arc::new(move || protocol.on_peer_connect())
+            },
+        ));
         Self {
             tasks,
             inflight_requests,
@@ -257,10 +264,10 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
                         out.append(&obj);
                     }
                     match peer
-                        .send_message(
-                            protocol.to_message_id(MessageKind::Request(message_id)),
-                            Bytes::from(out.out()),
-                        )
+                        .send_message(Message {
+                            id: protocol.to_message_id(MessageKind::Request(message_id)),
+                            data: Bytes::from(out.out()),
+                        })
                         .await
                     {
                         Err(PeerSendError::PeerGone) => {

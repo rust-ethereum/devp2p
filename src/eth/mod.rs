@@ -6,6 +6,7 @@ use arrayvec::ArrayString;
 use async_trait::async_trait;
 use bytes::Bytes;
 use ethereum::{Block, Transaction};
+use ethereum_forkid::ForkId;
 use ethereum_types::*;
 use log::*;
 use maplit::btreemap;
@@ -17,6 +18,7 @@ use std::{
 
 static ETH_PROTOCOL_ID: Lazy<CapabilityName> =
     Lazy::new(|| CapabilityName(ArrayString::from("eth").unwrap()));
+const ETH_PROTOCOL_VERSION: usize = 66;
 
 #[allow(dead_code)]
 pub enum Error {
@@ -48,7 +50,13 @@ pub trait EthProtocol {
     ) -> Result<Vec<Transaction>, Error>;
 }
 
-pub struct Server;
+pub struct Server {
+    pub network_id: usize,
+    pub total_difficulty: U256,
+    pub best_hash: H256,
+    pub genesis_hash: H256,
+    pub fork_id: ForkId,
+}
 
 #[async_trait]
 impl MuxProtocol for Server {
@@ -57,7 +65,7 @@ impl MuxProtocol for Server {
     type GossipKind = proto::GossipMessageId;
 
     fn capabilities(&self) -> BTreeMap<CapabilityId, usize> {
-        btreemap! { CapabilityId { name: *ETH_PROTOCOL_ID, version: 66 } => 17 }
+        btreemap! { CapabilityId { name: *ETH_PROTOCOL_ID, version: ETH_PROTOCOL_VERSION } => 17 }
     }
     fn parse_message_id(
         &self,
@@ -102,6 +110,20 @@ impl MuxProtocol for Server {
             MessageKind::Response(Self::ResponseKind::NodeData) => 0x0e,
             MessageKind::Request(Self::RequestKind::GetReceipts) => 0x0f,
             MessageKind::Response(Self::ResponseKind::Receipts) => 0x10,
+        }
+    }
+    fn on_peer_connect(&self) -> Message {
+        Message {
+            id: self.to_message_id(MessageKind::Gossip(Self::GossipKind::Status)),
+            data: rlp::encode(&Status {
+                protocol_version: ETH_PROTOCOL_VERSION,
+                network_id: self.network_id,
+                total_difficulty: self.total_difficulty,
+                genesis_hash: self.genesis_hash,
+                best_hash: self.best_hash,
+                fork_id: self.fork_id,
+            })
+            .into(),
         }
     }
     async fn handle_request(

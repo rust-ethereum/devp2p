@@ -129,6 +129,7 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
                 Box::pin(async move {
                     let mut out = None;
                     let mut reputation_report = None;
+
                     match protocol.parse_message_id(id) {
                         None => {
                             debug!("Skipping unidentified message from with id {}", id);
@@ -137,6 +138,7 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
                         Some(MessageKind::Response(response)) => {
                             let request_id = Rlp::new(message.as_ref()).val_at(0)?;
 
+                            // Get the callback
                             let sender = inflight_requests
                                 .lock()
                                 .retrieve_callback(peer.id, request_id);
@@ -162,6 +164,10 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
                                         reputation_report = Some(v)
                                     }
                                 }
+                            } else {
+                                trace!("Peer {} sent us unsolicited reply!", peer.id);
+
+                                reputation_report = Some(ReputationReport::Kick);
                             }
                         }
                         Some(MessageKind::Request(request)) => {

@@ -16,6 +16,8 @@ use std::{
     fmt::Debug,
 };
 
+pub type H256FastSet = HashSet<H256, plain_hasher::PlainHasher>;
+
 static ETH_PROTOCOL_ID: Lazy<CapabilityName> =
     Lazy::new(|| CapabilityName(ArrayString::from("eth").unwrap()));
 const ETH_PROTOCOL_VERSION: usize = 66;
@@ -33,16 +35,32 @@ impl From<Shutdown> for Error {
     }
 }
 
-#[async_trait]
-pub trait EthRequestHandler: Send + Sync + 'static {
-    async fn handle_status(&self, status: ());
-    async fn handle_new_block_hashes(&self, hashes: Vec<(H256, U256)>);
-    async fn handle_new_pooled_transaction_hashes(&self, hashes: ());
-    async fn handle_new_block(&self, block: Block, total_difficulty: U256);
+pub struct P2PResponse<Data> {
+    pub report: Option<ReputationReport>,
+    pub data: Option<Data>,
 }
 
 #[async_trait]
-pub trait EthProtocol {
+pub trait EthIngressHandler: Send + Sync + 'static {
+    async fn handle_status(&self, status: Status) -> Option<ReputationReport>;
+    async fn handle_new_block_hashes(&self, hashes: Vec<(H256, U256)>) -> Option<ReputationReport>;
+    async fn handle_new_pooled_transaction_hashes(
+        &self,
+        hashes: H256FastSet,
+    ) -> Option<ReputationReport>;
+    async fn handle_new_block(
+        &self,
+        block: Block,
+        total_difficulty: U256,
+    ) -> Option<ReputationReport>;
+    async fn handle_get_pooled_transactions(
+        &self,
+        hashes: H256FastSet,
+    ) -> P2PResponse<Vec<Transaction>>;
+}
+
+#[async_trait]
+pub trait EthProtocol: Send + Sync + 'static {
     async fn new_block_hashes(&self, hashes: Vec<(H256, U256)>) -> Result<(), Error>;
     async fn get_pooled_transactions(
         &self,
@@ -50,12 +68,17 @@ pub trait EthProtocol {
     ) -> Result<Vec<Transaction>, Error>;
 }
 
-pub struct Server {
+pub struct StatusMeta {
     pub network_id: usize,
     pub total_difficulty: U256,
     pub best_hash: H256,
     pub genesis_hash: H256,
     pub fork_id: ForkId,
+}
+
+pub struct Server {
+    pub status_fetcher: Box<dyn Fn() -> StatusMeta + Send + Sync>,
+    pub ingress_handler: Box<dyn EthIngressHandler>,
 }
 
 #[async_trait]
@@ -113,15 +136,16 @@ impl MuxProtocol for Server {
         }
     }
     fn on_peer_connect(&self) -> Message {
+        let status = (self.status_fetcher)();
         Message {
             id: self.to_message_id(MessageKind::Gossip(Self::GossipKind::Status)),
             data: rlp::encode(&Status {
                 protocol_version: ETH_PROTOCOL_VERSION,
-                network_id: self.network_id,
-                total_difficulty: self.total_difficulty,
-                genesis_hash: self.genesis_hash,
-                best_hash: self.best_hash,
-                fork_id: self.fork_id,
+                network_id: status.network_id,
+                total_difficulty: status.total_difficulty,
+                genesis_hash: status.genesis_hash,
+                best_hash: status.best_hash,
+                fork_id: status.fork_id,
             })
             .into(),
         }
@@ -155,8 +179,16 @@ impl MuxProtocol for Server {
             payload
         );
 
-        // TODO
-        None
+        match id {
+            GossipMessageId::Status => match rlp::decode(&*payload) {
+                Ok(status) => self.ingress_handler.handle_status(status).await,
+                Err(e) => {
+                    warn!("Failed to decode status message: {:?}", e);
+                    Some(ReputationReport::Kick)
+                }
+            },
+            _ => todo!(),
+        }
     }
 }
 

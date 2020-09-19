@@ -222,7 +222,7 @@ impl<Io: AsyncRead + AsyncWrite + Unpin> Stream for StreamMapEntry<Io> {
 
 struct PeerStreams {
     /// Mapping of remote IDs to streams in `StreamMap`
-    mapping: HashMap<H512, PeerState>,
+    mapping: HashMap<PeerId, PeerState>,
 }
 
 impl PeerStreams {
@@ -807,13 +807,13 @@ impl Server {
     /// to be connected. Useful for removing peers on a different hard
     /// fork network
     #[must_use]
-    pub fn disconnect_peer(&self, remote_id: H512) -> bool {
+    pub fn disconnect_peer(&self, remote_id: PeerId) -> bool {
         self.streams.lock().disconnect_peer(remote_id)
     }
 
     /// Active peers
     #[must_use]
-    pub fn active_peers(&self) -> HashSet<H512> {
+    pub fn active_peers(&self) -> HashSet<PeerId> {
         self.streams.lock().mapping.keys().copied().collect()
     }
 
@@ -823,7 +823,7 @@ impl Server {
         &self,
         limit: impl Fn(usize) -> usize,
         filter: Option<&CapabilityFilter>,
-    ) -> HashMap<H512, (PeerSender, BTreeMap<CapabilityName, usize>)> {
+    ) -> HashMap<PeerId, (PeerSender, BTreeMap<CapabilityName, usize>)> {
         let peers = self.streams.lock();
 
         let peer_num = peers.mapping.len();

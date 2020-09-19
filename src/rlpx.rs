@@ -90,10 +90,11 @@ impl ServerHandle for ServerHandleImpl {
         &self,
         name: CapabilityName,
         versions: BTreeSet<usize>,
+        note: Option<(String, String)>,
     ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown> {
         let pool = self.pool.upgrade().ok_or(Shutdown)?;
         Ok(pool
-            .connected_peers(|_| 1, Some(&CapabilityFilter { name, versions }))
+            .connected_peers(|_| 1, Some(&CapabilityFilter { name, versions }), note)
             .into_iter()
             .map(|(peer_id, (sender, capabilities))| EgressPeerHandleImpl {
                 capability: name,
@@ -778,7 +779,8 @@ impl Server {
     pub fn connected_peers(
         &self,
         limit: impl Fn(usize) -> usize,
-        filter: Option<&CapabilityFilter>,
+        cap_filter: Option<&CapabilityFilter>,
+        note_filter: Option<(String, String)>,
     ) -> HashMap<PeerId, (PeerSender, BTreeMap<CapabilityName, usize>)> {
         let peers = self.streams.lock();
 
@@ -787,20 +789,20 @@ impl Server {
         peers
             .mapping
             .iter()
-            .filter(|(_, peer)| {
+            .filter_map(|(id, peer)| {
                 match peer {
                     PeerState::Connecting => {
                         // Peer is connecting, not yet live
-                        return false;
+                        return None;
                     }
                     PeerState::Connected(handle) => {
                         // Check if peer supports capability
-                        if let Some(cap_filter) = &filter {
+                        if let Some(cap_filter) = &cap_filter {
                             if cap_filter.versions.is_empty() {
                                 // No cap version filter
                                 for cap in &handle.capabilities {
                                     if cap.name == cap_filter.name {
-                                        return true;
+                                        return Some((id, handle));
                                     }
                                 }
                             } else if !handle.capabilities.is_disjoint(
@@ -814,19 +816,29 @@ impl Server {
                                     .collect(),
                             ) {
                                 // We have an intersection of at least *some* versions
-                                return true;
+                                return Some((id, handle));
                             }
                         } else {
                             // No cap filter
-                            return true;
+                            return Some((id, handle));
                         }
                     }
                 };
-                false
+                None
+            })
+            .filter(|(_, peer)| {
+                if let Some((key, value)) = &note_filter {
+                    if let Some(v) = peer.notes.get(key) {
+                        return v == value;
+                    }
+
+                    return false;
+                }
+
+                true
             })
             // TODO: what if user holds sender past peer drop?
             .map(|(remote_id, state)| {
-                let state = state.get_handle().unwrap();
                 (
                     *remote_id,
                     (

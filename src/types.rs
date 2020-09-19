@@ -171,6 +171,7 @@ pub trait ServerHandle: Send + Sync + 'static {
         &self,
         name: CapabilityName,
         versions: BTreeSet<usize>,
+        note: Option<(String, String)>,
     ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown>;
 }
 

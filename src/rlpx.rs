@@ -11,6 +11,7 @@ use log::*;
 use parking_lot::Mutex;
 use std::{
     collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
+    fmt::Display,
     future::Future,
     io,
     net::SocketAddr,
@@ -141,6 +142,7 @@ struct StreamHandle {
     sender: PeerSender,
     tasks: TaskGroup,
     capabilities: BTreeSet<CapabilityId>,
+    notes: HashMap<String, String>,
 }
 
 enum PeerState {
@@ -158,6 +160,14 @@ impl PeerState {
     }
 
     const fn get_handle(&self) -> Option<&StreamHandle> {
+        if let Self::Connected(handle) = self {
+            Some(handle)
+        } else {
+            None
+        }
+    }
+
+    fn get_handle_mut(&mut self) -> Option<&mut StreamHandle> {
         if let Self::Connected(handle) = self {
             Some(handle)
         } else {
@@ -382,6 +392,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         sender: peer_sender_tx,
         tasks,
         capabilities: capability_set,
+        notes: Default::default(),
     }
 }
 
@@ -776,6 +787,20 @@ impl Server {
 
             Ok(false)
         }
+    }
+
+    /// Add a note to the peer
+    #[must_use]
+    pub fn note_peer(&self, remote_id: PeerId, key: impl Display, value: impl Display) -> bool {
+        if let Some(peer) = self.streams.lock().mapping.get_mut(&remote_id) {
+            if let Some(state) = peer.get_handle_mut() {
+                state.notes.insert(key.to_string(), value.to_string());
+
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Force disconnecting a peer if it is already connected or about

@@ -176,50 +176,6 @@ impl PeerState {
     }
 }
 
-struct StreamMapEntry<Io> {
-    inner: SplitStream<PeerStream<Io>>,
-    done: bool,
-}
-
-impl<Io> From<SplitStream<PeerStream<Io>>> for StreamMapEntry<Io> {
-    fn from(inner: SplitStream<PeerStream<Io>>) -> Self {
-        Self { inner, done: false }
-    }
-}
-
-enum PeerStreamUpdate {
-    Data((CapabilityInfo, usize, Bytes)),
-    Error(io::Error),
-    Finished,
-}
-
-impl<Io: AsyncRead + AsyncWrite + Unpin> Stream for StreamMapEntry<Io> {
-    type Item = PeerStreamUpdate;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if this.done {
-            return Poll::Ready(None);
-        }
-
-        if let Poll::Ready(res) = Pin::new(&mut this.inner).poll_next(cx) {
-            match res {
-                Some(Ok(data)) => Poll::Ready(Some(PeerStreamUpdate::Data(data))),
-                Some(Err(e)) => {
-                    this.done = true;
-                    Poll::Ready(Some(PeerStreamUpdate::Error(e)))
-                }
-                None => {
-                    this.done = true;
-                    Poll::Ready(Some(PeerStreamUpdate::Finished))
-                }
-            }
-        } else {
-            Poll::Pending
-        }
-    }
-}
-
 struct PeerStreams {
     /// Mapping of remote IDs to streams in `StreamMap`
     mapping: HashMap<PeerId, PeerState>,

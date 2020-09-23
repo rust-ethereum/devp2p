@@ -20,7 +20,7 @@ block-modes = "0.6"
 byteorder = "1"
 bytes = "0.5"
 digest = "0.9"
-discv5 = { git = "https://github.com/sigp/discv5" }
+discv5 = { git = "https://github.com/sigp/discv5", optional = true }
 enr = "0.1"
 enum-primitive-derive = "0.2"
 ethereum = { git = "https://github.com/rust-blockchain/ethereum" }
@@ -29,6 +29,7 @@ ethereum-types = "0.9"
 futures = "0.3"
 generic-array = "0.14"
 hmac = "0.9"
+libsecp256k1_03 = { package = "libsecp256k1", version = "0.3" }
 libsecp256k1 = { git = "https://github.com/paritytech/libsecp256k1" }
 log = "0.4"
 maplit = "1"
@@ -55,3 +56,7 @@ url = "2"
 [patch.crates-io]
 rlp = { git = "https://github.com/paritytech/parity-common" }
 rlp-derive = { git = "https://github.com/paritytech/parity-common" }
+
+[[example]]
+name = "sentry"
+required-features = ["discv5"]

@@ -136,9 +136,9 @@ impl MuxProtocol for Server {
             MessageKind::Response(Self::ResponseKind::Receipts) => 0x10,
         }
     }
-    fn on_peer_connect(&self) -> Message {
+    fn on_peer_connect(&self) -> Option<Message> {
         let status = (self.status_fetcher)();
-        Message {
+        Some(Message {
             id: self.to_message_id(MessageKind::Gossip(Self::GossipKind::Status)),
             data: rlp::encode(&Status {
                 protocol_version: ETH_PROTOCOL_VERSION,
@@ -149,7 +149,7 @@ impl MuxProtocol for Server {
                 fork_id: status.fork_id,
             })
             .into(),
-        }
+        })
     }
     async fn handle_request(
         &self,

@@ -1,11 +1,9 @@
 //! `RLPx` protocol implementation in Rust
 
-use crate::{node_filter::*, peer::*, types::*, util::*};
+use crate::{disc::*, node_filter::*, peer::*, types::*, util::*};
 use async_trait::async_trait;
 use bytes::Bytes;
-use discv5::Discv5;
-use ethereum_types::H512;
-use futures::{sink::SinkExt, stream::SplitStream};
+use futures::sink::SinkExt;
 use libsecp256k1::SecretKey;
 use log::*;
 use parking_lot::Mutex;
@@ -15,15 +13,13 @@ use std::{
     future::Future,
     io,
     net::SocketAddr,
-    pin::Pin,
     sync::{Arc, Weak},
-    task::{Context, Poll},
     time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
-    stream::{Stream, StreamExt},
+    stream::StreamExt,
     sync::Mutex as AsyncMutex,
 };
 
@@ -112,29 +108,6 @@ pub struct RLPxSendMessage {
     pub capability_name: CapabilityName,
     pub id: usize,
     pub data: Bytes,
-}
-
-#[async_trait]
-impl Discovery for Discv5 {
-    async fn get_new_peer(&mut self) -> Result<(SocketAddr, PeerId), io::Error> {
-        loop {
-            for node in self.find_node(enr::NodeId::random()).await.map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Discovery error: {}", e))
-            })? {
-                if let Some(ip) = node.ip() {
-                    if let Some(port) = node.tcp() {
-                        if let enr::CombinedPublicKey::Secp256k1(pk) = node.public_key() {
-                            return Ok((
-                                (ip, port).into(),
-                                // TODO: remove after version harmonization
-                                pk2id(&libsecp256k1::PublicKey::parse(&pk.serialize()).unwrap()),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 pub type PeerSender = tokio::sync::mpsc::Sender<RLPxSendMessage>;

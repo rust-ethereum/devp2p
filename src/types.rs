@@ -136,12 +136,7 @@ pub type IngressHandlerFuture = Pin<
 pub type IngressHandler =
     Arc<dyn Fn(IngressPeer, usize, Bytes) -> IngressHandlerFuture + Send + Sync + 'static>;
 
-pub type OnPeerConnect = Arc<dyn Fn() -> Message + Send + Sync + 'static>;
-
-#[async_trait]
-pub trait Discovery: Send + Sync + 'static {
-    async fn get_new_peer(&mut self) -> Result<(SocketAddr, PeerId), io::Error>;
-}
+pub type OnPeerConnect = Arc<dyn Fn() -> Option<Message> + Send + Sync + 'static>;
 
 pub enum PeerSendError {
     Shutdown,

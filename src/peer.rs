@@ -258,8 +258,8 @@ where
                 shared_capabilities.sort_by_key(|v| v.name);
 
                 let snappy = match protocol_version {
-                    V4 => None,
-                    V5 => Some(Snappy {
+                    ProtocolVersion::V4 => None,
+                    ProtocolVersion::V5 => Some(Snappy {
                         encoder: snap::raw::Encoder::new(),
                         decoder: snap::raw::Decoder::new(),
                     }),

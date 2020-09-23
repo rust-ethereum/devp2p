@@ -86,7 +86,7 @@ pub trait MuxProtocol: Send + Sync + 'static {
         &self,
         kind: MessageKind<Self::RequestKind, Self::ResponseKind, Self::GossipKind>,
     ) -> usize;
-    fn on_peer_connect(&self) -> Message;
+    fn on_peer_connect(&self) -> Option<Message>;
     /// Handle incoming request, optionally forming a response and reputation report.
     async fn handle_request(
         &self,

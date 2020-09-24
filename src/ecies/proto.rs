@@ -4,8 +4,8 @@ use bytes::{Bytes, BytesMut};
 use ethereum_types::H512;
 use futures::{ready, Sink, SinkExt};
 use libsecp256k1::SecretKey;
-use log::*;
 use std::{
+    fmt::Debug,
     io,
     pin::Pin,
     task::{Context, Poll},
@@ -15,6 +15,7 @@ use tokio::{
     stream::*,
 };
 use tokio_util::codec::*;
+use tracing::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Current ECIES state of a connection
@@ -36,6 +37,7 @@ pub enum ECIESValue {
 }
 
 /// Tokio codec for ECIES
+#[derive(Debug)]
 pub struct ECIESCodec {
     ecies: ECIES,
     state: ECIESState,
@@ -151,6 +153,7 @@ impl Encoder<ECIESValue> for ECIESCodec {
 }
 
 /// `ECIES` stream over TCP exchanging raw bytes
+#[derive(Debug)]
 pub struct ECIESStream<Io> {
     stream: Framed<Io, ECIESCodec>,
     polled_header: bool,
@@ -159,7 +162,7 @@ pub struct ECIESStream<Io> {
 
 impl<Io> ECIESStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Send + Unpin,
+    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin,
 {
     /// Connect to an `ECIES` server
     pub async fn connect(

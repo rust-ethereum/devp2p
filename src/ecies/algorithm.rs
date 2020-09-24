@@ -89,6 +89,7 @@ fn kdf(secret: H256, s1: &[u8], dest: &mut [u8]) {
     }
 }
 
+#[derive(Debug)]
 pub struct ECIES {
     secret_key: SecretKey,
     public_key: PublicKey,

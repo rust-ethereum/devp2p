@@ -1,9 +1,12 @@
+#![allow(dead_code)]
+
 use arrayvec::ArrayString;
 use devp2p::*;
 use libsecp256k1::SecretKey;
-use maplit::btreemap;
+use maplit::*;
 use rand::rngs::OsRng;
 use std::sync::Arc;
+use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
 
 const CLIENT_VERSION: &str = "rust-devp2p/0.1.0";
@@ -11,7 +14,9 @@ const DNS_BOOTNODE: &str = "all.mainnet.ethdisco.net";
 
 #[tokio::main]
 async fn main() {
-    let _ = env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
     let secret_key = SecretKey::random(&mut OsRng);
 

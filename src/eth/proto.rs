@@ -1,4 +1,3 @@
-use crate::types::*;
 use ethereum::{Block, Header, Transaction};
 use ethereum_forkid::ForkId;
 use ethereum_types::{H256, U256};
@@ -117,7 +116,7 @@ pub enum ETHMessage {
 impl ETHMessage {
     /// Get the message id of the ETH message
     #[must_use]
-    pub fn id(&self) -> usize {
+    pub const fn id(&self) -> usize {
         match self {
             Self::Status { .. } => 0,
             Self::NewBlockHashes(_) => 1,

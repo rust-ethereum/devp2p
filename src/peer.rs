@@ -3,10 +3,10 @@ use bytes::Bytes;
 use enum_primitive_derive::Primitive;
 use futures::{ready, Sink, SinkExt};
 use libsecp256k1::{PublicKey, SecretKey};
-use log::*;
 use num_traits::*;
 use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
 use std::{
+    fmt::Debug,
     io,
     pin::Pin,
     task::{Context, Poll},
@@ -15,6 +15,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     stream::{Stream, StreamExt},
 };
+use tracing::*;
 
 const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024;
 
@@ -80,6 +81,7 @@ impl Decodable for HelloMessage {
     }
 }
 
+#[derive(Debug)]
 struct Snappy {
     encoder: snap::raw::Encoder,
     decoder: snap::raw::Decoder,
@@ -87,6 +89,7 @@ struct Snappy {
 
 /// `RLPx` transport peer stream
 #[allow(unused)]
+#[derive(Debug)]
 pub struct PeerStream<Io> {
     stream: ECIESStream<Io>,
     client_version: String,
@@ -102,7 +105,7 @@ pub struct PeerStream<Io> {
 
 impl<Io> PeerStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Send + Unpin,
+    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin,
 {
     /// Remote public id of this peer
     pub fn remote_id(&self) -> PeerId {
@@ -156,6 +159,7 @@ where
     }
 
     /// Create a new peer stream
+    #[instrument(skip(transport, secret_key, protocol_version, client_version, capabilities, port), fields(id=&*transport.remote_id().to_string()))]
     pub async fn new(
         mut transport: ECIESStream<Io>,
         secret_key: SecretKey,
@@ -187,8 +191,9 @@ where
                 caps
             },
         };
-        debug!("Sending Hello message: {:?}", hello);
+        trace!("Sending hello message: {:?}", hello);
         let hello = rlp::encode(&hello);
+        trace!("Outbound hello: {}", hex::encode(&hello));
         let message_id: Vec<u8> = rlp::encode(&0_usize).to_vec();
         assert!(message_id.len() == 1);
         let mut ret: Vec<u8> = Vec::new();
@@ -200,11 +205,11 @@ where
 
         let hello = transport.try_next().await?;
 
-        debug!("Receiving hello message ...");
         let hello = hello.ok_or_else(|| {
             debug!("Hello failed because of no value");
             io::Error::new(io::ErrorKind::Other, "Hello failed (no value)")
         })?;
+        debug!("Receiving hello message: {:02x?}", hello);
 
         let message_id_rlp = Rlp::new(&hello[0..1]);
         let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
@@ -306,7 +311,7 @@ where
 
         match ready!(Pin::new(&mut s.stream).poll_next(cx)) {
             Some(Ok(val)) => {
-                debug!("Received peer message: {:?}", val);
+                debug!("Received peer message: {}", hex::encode(&val));
                 let message_id_rlp = Rlp::new(&val[0..1]);
                 let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
 
@@ -380,7 +385,12 @@ where
                     }
                 };
 
-                trace!("Parsed message as {:?}/{}/{:x?}", cap, id, data);
+                trace!(
+                    "Cap: {}, id: {}, data: {}",
+                    CapabilityId::from(cap),
+                    id,
+                    hex::encode(&data)
+                );
 
                 Poll::Ready(Some(Ok((cap, id, data))))
             }
@@ -392,7 +402,7 @@ where
 
 impl<Io> Sink<(CapabilityName, usize, Bytes)> for PeerStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Send + Unpin,
+    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin,
 {
     type Error = io::Error;
 

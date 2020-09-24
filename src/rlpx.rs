@@ -3,13 +3,13 @@
 use crate::{disc::*, node_filter::*, peer::*, types::*, util::*};
 use async_trait::async_trait;
 use bytes::Bytes;
+use derivative::Derivative;
 use futures::sink::SinkExt;
 use libsecp256k1::SecretKey;
-use log::*;
 use parking_lot::Mutex;
 use std::{
     collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
-    fmt::Display,
+    fmt::{Debug, Display},
     future::Future,
     io,
     net::SocketAddr,
@@ -19,9 +19,10 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
-    stream::StreamExt,
+    stream::{self, StreamExt},
     sync::Mutex as AsyncMutex,
 };
+use tracing::*;
 use uuid::Uuid;
 
 const CONNECTION_TIMEOUT_SECS: u64 = 10;
@@ -48,11 +49,11 @@ impl EgressPeerHandle for EgressPeerHandleImpl {
         self.sender
             .send(RLPxSendMessage {
                 id,
-                capability_name: self.capability.clone(),
+                capability_name: self.capability,
                 data,
             })
             .await
-            .map_err(|_| PeerSendError::PeerGone);
+            .map_err(|_| PeerSendError::PeerGone)?;
 
         Ok(())
     }
@@ -119,6 +120,7 @@ pub struct RLPxSendMessage {
 
 pub type PeerSender = tokio::sync::mpsc::Sender<RLPxSendMessage>;
 
+#[derive(Debug)]
 struct StreamHandle {
     sender: PeerSender,
     tasks: TaskGroup,
@@ -126,6 +128,7 @@ struct StreamHandle {
     notes: HashMap<String, String>,
 }
 
+#[derive(Debug)]
 enum PeerState {
     Connecting { connection_id: Uuid },
     Connected(StreamHandle),
@@ -139,24 +142,9 @@ impl PeerState {
             false
         }
     }
-
-    const fn get_handle(&self) -> Option<&StreamHandle> {
-        if let Self::Connected(handle) = self {
-            Some(handle)
-        } else {
-            None
-        }
-    }
-
-    fn get_handle_mut(&mut self) -> Option<&mut StreamHandle> {
-        if let Self::Connected(handle) = self {
-            Some(handle)
-        } else {
-            None
-        }
-    }
 }
 
+#[derive(Debug)]
 struct PeerStreams {
     /// Mapping of remote IDs to streams in `StreamMap`
     mapping: HashMap<PeerId, PeerState>,
@@ -215,7 +203,8 @@ async fn handle_incoming(
     }
 }
 
-fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
+/// Set up newly connected peer's state, start its tasks
+fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>(
     streams: Arc<Mutex<PeerStreams>>,
     capabilities: Arc<Mutex<CapabilityMap>>,
     remote_id: PeerId,
@@ -228,7 +217,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         .map(From::from)
         .collect::<BTreeSet<_>>();
     let (mut sink, mut stream) = futures::StreamExt::split(peer);
-    let (peer_sender_tx, mut peer_sender_rx) = tokio::sync::mpsc::channel(1);
+    let (peer_sender_tx, peer_sender_rx) = tokio::sync::mpsc::channel(1);
     let tasks = TaskGroup::default();
     // Ingress router
     tasks.spawn({
@@ -241,7 +230,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
                     Ok((capability, message_id, message)) => {
                         // Extract capability's ingress handler
                         let handler = capabilities.lock().get_inner().get(&capability.into()).map(
-                            |CapabilityData {
+                            |CapabilityMeta {
                                  incoming_handler, ..
                              }| incoming_handler.clone(),
                         );
@@ -300,23 +289,34 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         let capability_set = capability_set.clone();
         async move {
             // Send initial messages
-            let messages = capabilities
-                .lock()
-                .get_inner()
-                .iter()
-                .filter_map(|(cap, data)| {
-                    if capability_set.contains(cap) {
-                        Some((data.on_peer_connect)())
-                    } else {
-                        None
-                    }
-                });
+            let initial_messages = stream::iter(
+                capabilities
+                    .lock()
+                    .get_inner()
+                    .iter()
+                    .filter_map(|(cap, cap_info)| {
+                        if capability_set.contains(cap) {
+                            (cap_info.on_peer_connect)().map(|Message { id, data }| {
+                                RLPxSendMessage {
+                                    capability_name: cap.name,
+                                    id,
+                                    data,
+                                }
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            );
+
+            let mut message_stream = initial_messages.chain(peer_sender_rx);
 
             while let Some(RLPxSendMessage {
                 capability_name,
                 id,
                 data,
-            }) = peer_sender_rx.recv().await
+            }) = message_stream.next().await
             {
                 if let Err(e) = sink.send((capability_name, id, data)).await {
                     debug!("peer disconnected with error {:?}", e);
@@ -334,7 +334,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
 }
 
 /// Establishes the connection with peer and adds them to internal state.
-async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
+async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>(
     streams: Arc<Mutex<PeerStreams>>,
     node_filter: Arc<Mutex<dyn NodeFilter>>,
     stream: Io,
@@ -409,15 +409,19 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'st
     }
 }
 
-struct CapabilityData {
+#[derive(Derivative)]
+#[derivative(Debug)]
+struct CapabilityMeta {
     length: usize,
+    #[derivative(Debug = "ignore")]
     incoming_handler: IngressHandler,
+    #[derivative(Debug = "ignore")]
     on_peer_connect: OnPeerConnect,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct CapabilityMap {
-    inner: BTreeMap<CapabilityId, CapabilityData>,
+    inner: BTreeMap<CapabilityId, CapabilityMeta>,
 
     capability_cache: Vec<CapabilityInfo>,
 }
@@ -428,7 +432,7 @@ impl CapabilityMap {
             .inner
             .iter()
             .map(
-                |(&CapabilityId { name, version }, &CapabilityData { length, .. })| {
+                |(&CapabilityId { name, version }, &CapabilityMeta { length, .. })| {
                     CapabilityInfo {
                         name,
                         version,
@@ -450,7 +454,7 @@ impl CapabilityMap {
             let on_peer_connect = on_peer_connect.clone();
             self.inner.insert(
                 id,
-                CapabilityData {
+                CapabilityMeta {
                     length,
                     incoming_handler,
                     on_peer_connect,
@@ -473,12 +477,21 @@ impl CapabilityMap {
         &self.capability_cache
     }
 
-    fn get_inner(&self) -> &BTreeMap<CapabilityId, CapabilityData> {
+    const fn get_inner(&self) -> &BTreeMap<CapabilityId, CapabilityMeta> {
         &self.inner
     }
 }
 
-/// RLPx server
+/// This is an asynchronous RLPx server implementation.
+///
+/// `Server` is the RLPx server handle that supports adding and removing peers and
+/// supports registration for capability servers.
+///
+/// This implementation is based on the concept of structured concurrency.
+/// Internal state is managed by a multitude of workers that run in separate runtime tasks
+/// spawned on the running executor during the server creation and addition of new peers.
+/// All continuously running workers are inside the task scope owned by the server struct.
+#[derive(Debug)]
 pub struct Server {
     #[allow(unused)]
     tasks: Arc<TaskGroup>,
@@ -500,23 +513,12 @@ pub struct CapabilityFilter {
     pub versions: BTreeSet<usize>,
 }
 
-const PROTOCOL_VERSION: usize = 4;
-
 pub struct ListenOptions {
     pub discovery: Option<Arc<AsyncMutex<dyn Discovery>>>,
     pub max_peers: usize,
     pub addr: SocketAddr,
 }
 
-/// This is an asynchronous devp2p server implementation.
-///
-/// `Server` is the RLPx server handle that supports adding and removing peers and
-/// supports registration for capability servers.
-///
-/// This implementation is based on the concept of structured concurrency.
-/// Internal state is managed by a multitude of workers that run in separate runtime tasks
-/// spawned on the running executor during the server creation and addition of new peers.
-/// All continuously running workers are inside the task scope owned by the server struct.
 impl Server {
     /// Create a new devp2p server
     pub async fn new(
@@ -527,7 +529,7 @@ impl Server {
     ) -> Result<Arc<Self>, io::Error> {
         let tasks = Arc::new(TaskGroup::default());
 
-        let protocol_version = ProtocolVersion::V5;
+        let protocol_version = ProtocolVersion::V4;
 
         let port = listen_options
             .as_ref()
@@ -583,7 +585,7 @@ impl Server {
                             let max_peers = server.node_filter.lock().max_peers();
 
                             if streams_len < max_peers {
-                                trace!(target: "discovery", "Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
+                                trace!("Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
                                 match tokio::time::timeout(
                                     Duration::from_secs(DISCOVERY_TIMEOUT_SECS),
                                     discovery.get_new_peer(),
@@ -593,18 +595,18 @@ impl Server {
                                     Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"))
                                 }) {
                                     Ok((addr, remote_id)) => {
-                                        trace!(target: "discovery", "Discovered peer: {:?}", remote_id);
+                                        trace!("Discovered peer: {:?}", remote_id);
                                         match tokio::time::timeout(Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS), server.add_peer_inner(addr, remote_id, true)).await {
-                                            Ok(Err(e)) => warn!(target: "discovery", "Failed to add new peer {}: {}", remote_id, e),
-                                            Err(_) => warn!(target: "discovery", "Timed out adding peer {}", remote_id),
+                                            Ok(Err(e)) => warn!("Failed to add new peer {}: {}", remote_id, e),
+                                            Err(_) => warn!("Timed out adding peer {}", remote_id),
                                             _ => {}
                                         }
                                     }
-                                    Err(e) => warn!(target: "discovery", "Failed to get new peer: {}", e),
+                                    Err(e) => warn!("Failed to get new peer: {}", e),
                                 }
-                                tokio::time::delay_for(Duration::from_millis(100)).await;
+                                tokio::time::delay_for(Duration::from_millis(2000)).await;
                             } else {
-                                trace!(target: "discovery", "Skipping discovery as current number of peers is too high: {} >= {}", streams_len, max_peers);
+                                trace!("Skipping discovery as current number of peers is too high: {} >= {}", streams_len, max_peers);
                                 tokio::time::delay_for(Duration::from_secs(2)).await;
                             }
 
@@ -624,10 +626,10 @@ impl Server {
         &self,
         node_record: NodeRecord,
     ) -> impl Future<Output = io::Result<bool>> + Send + 'static {
-        let NodeRecord { addr, id } = node_record;
-        self.add_peer_inner(addr, id, false)
+        self.add_peer_inner(node_record.addr, node_record.id, false)
     }
 
+    #[instrument]
     fn add_peer_inner(
         &self,
         addr: SocketAddr,
@@ -764,12 +766,10 @@ impl Server {
     /// Add a note to the peer
     #[must_use]
     pub fn note_peer(&self, remote_id: PeerId, key: impl Display, value: impl Display) -> bool {
-        if let Some(peer) = self.streams.lock().mapping.get_mut(&remote_id) {
-            if let Some(state) = peer.get_handle_mut() {
-                state.notes.insert(key.to_string(), value.to_string());
+        if let Some(PeerState::Connected(state)) = self.streams.lock().mapping.get_mut(&remote_id) {
+            state.notes.insert(key.to_string(), value.to_string());
 
-                return true;
-            }
+            return true;
         }
 
         false

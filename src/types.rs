@@ -2,12 +2,12 @@ pub use crate::util::Shutdown;
 use arrayvec::ArrayString;
 use async_trait::async_trait;
 use bytes::Bytes;
+use derive_more::Display;
 pub use ethereum_types::H512 as PeerId;
 use rlp::{DecoderError, Rlp, RlpStream};
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
-    io,
     net::SocketAddr,
     pin::Pin,
     str::FromStr,
@@ -15,6 +15,7 @@ use std::{
 };
 
 /// Record that specifies information necessary to connect to RLPx node
+#[derive(Clone, Copy, Debug)]
 pub struct NodeRecord {
     /// Node ID.
     pub id: PeerId,
@@ -33,7 +34,7 @@ impl FromStr for NodeRecord {
             return Err("Not an enode".into());
         }
 
-        let mut parts = data.split("@");
+        let mut parts = data.split('@');
         let id = parts
             .next()
             .ok_or_else(|| "Failed to read remote ID")?
@@ -47,7 +48,7 @@ impl FromStr for NodeRecord {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Display, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CapabilityName(pub ArrayString<[u8; 4]>);
 
 impl rlp::Encodable for CapabilityName {
@@ -76,7 +77,8 @@ pub struct CapabilityInfo {
     pub length: usize,
 }
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, Display, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[display(fmt = "{}/{}", name, version)]
 pub struct CapabilityId {
     pub name: CapabilityName,
     pub version: usize,
@@ -117,7 +119,7 @@ impl From<rlp::DecoderError> for HandleError {
 }
 
 impl HandleError {
-    pub fn to_reputation_report(&self) -> Option<ReputationReport> {
+    pub const fn to_reputation_report(&self) -> Option<ReputationReport> {
         Some(match self {
             Self::Rlp(_) => ReputationReport::Bad,
             Self::Other(_) => return None,

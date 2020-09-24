@@ -3,6 +3,7 @@ use block_modes::{block_padding::NoPadding, BlockMode, Ecb};
 use ethereum_types::{H128, H256};
 use sha3::{Digest, Keccak256};
 
+#[derive(Debug)]
 pub struct MAC {
     secret: H256,
     hasher: Keccak256,

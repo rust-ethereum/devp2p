@@ -2,9 +2,9 @@ use super::Discovery;
 use crate::{types::*, util::*};
 use async_trait::async_trait;
 use dnsdisc::*;
-use log::*;
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{stream::StreamExt, sync::mpsc::Receiver};
+use tracing::*;
 
 const MAX_SINGLE_RESOLUTION: u64 = 10;
 const MAX_RESOLUTION_DURATION: u64 = 1800;

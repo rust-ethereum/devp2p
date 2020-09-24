@@ -8,13 +8,13 @@ use bytes::Bytes;
 use ethereum::{Block, Transaction};
 use ethereum_forkid::ForkId;
 use ethereum_types::*;
-use log::*;
 use maplit::btreemap;
 use once_cell::sync::Lazy;
 use std::{
     collections::{BTreeMap, HashSet},
     fmt::Debug,
 };
+use tracing::*;
 
 pub type H256FastSet = HashSet<H256, plain_hasher::PlainHasher>;
 

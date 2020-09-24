@@ -1,7 +1,6 @@
 use crate::{types::*, util::*};
 use async_trait::async_trait;
 use bytes::Bytes;
-use log::*;
 use parking_lot::Mutex;
 use rlp::{Encodable, Rlp, RlpStream};
 use std::{
@@ -12,6 +11,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::oneshot::{channel as oneshot, Sender as OneshotSender};
+use tracing::*;
 
 pub type RequestCallback = OneshotSender<(Bytes, OneshotSender<ReputationReport>)>;
 
@@ -251,6 +251,7 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
         let devp2p_handle = self.devp2p_handle.clone();
         let protocol = self.protocol.clone();
         async move {
+            // Keep sending the request until successful
             loop {
                 if let Some((peer, message_id, data)) = (request_builder)(devp2p_handle.clone()) {
                     let (tx, rx) = oneshot();
@@ -297,7 +298,7 @@ impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
 
                     if let Ok((bytes, reputation_callback)) = rx.await {
                         if let Some(report) = (data_handler)(bytes) {
-                            reputation_callback.send(report);
+                            let _ = reputation_callback.send(report);
                         }
                     } else {
                         continue;

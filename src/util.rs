@@ -3,7 +3,6 @@ use ethereum_types::{H256, H512};
 use futures::{future::abortable, Stream};
 use hmac::{Hmac, Mac, NewMac};
 use libsecp256k1::{self, PublicKey};
-use log::*;
 use parking_lot::Mutex;
 use sha2::Sha256;
 use sha3::{Digest, Keccak256};
@@ -14,6 +13,7 @@ use std::{
     time::Duration,
 };
 use tokio::prelude::*;
+use tracing::*;
 
 pub struct TaskHandle<T>(Pin<Box<dyn Future<Output = Result<T, Shutdown>> + Send + 'static>>);
 

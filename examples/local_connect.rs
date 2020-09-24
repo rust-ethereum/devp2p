@@ -1,9 +1,9 @@
 use devp2p::*;
 use libsecp256k1::SecretKey;
-use log::*;
 use rand::{rngs::OsRng, seq::SliceRandom};
 use std::time::Duration;
 use tokio::time::delay_for;
+use tracing::*;
 
 #[tokio::main]
 async fn main() {

@@ -1,13 +1,14 @@
 use crate::types::PeerId;
 use std::{
     collections::HashSet,
+    fmt::Debug,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
 };
 
-pub trait NodeFilter: Send + 'static {
+pub trait NodeFilter: Debug + Send + 'static {
     fn max_peers(&self) -> usize;
     fn is_banned(&self, id: PeerId) -> bool;
     fn allow(&self, pool_size: usize, id: PeerId) -> bool {
@@ -16,6 +17,7 @@ pub trait NodeFilter: Send + 'static {
     fn ban(&mut self, id: PeerId);
 }
 
+#[derive(Debug)]
 pub struct MemoryNodeFilter {
     peer_limiter: Arc<AtomicUsize>,
     ban_list: HashSet<PeerId>,

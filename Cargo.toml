@@ -21,6 +21,7 @@ byteorder = "1"
 bytes = "0.5"
 digest = "0.9"
 discv5 = { git = "https://github.com/sigp/discv5", optional = true }
+dnsdisc = { git = "https://github.com/rust-ethereum/dnsdisc", optional = true }
 enr = "0.1"
 enum-primitive-derive = "0.2"
 ethereum = { git = "https://github.com/rust-blockchain/ethereum" }
@@ -46,11 +47,13 @@ snap = "1"
 tokio = { version = "0.2", features = ["full"] }
 tokio-util = { version = "0.3", features = ["codec"] }
 uint = "0.8"
+uuid = { version = "0.8", features = ["v4"] }
 
 [dev-dependencies]
 env_logger = "0.7"
 hex-literal = "0.3"
 sha3 = "0.9"
+trust-dns-resolver = "0.19"
 url = "2"
 
 [patch.crates-io]
@@ -59,4 +62,4 @@ rlp-derive = { git = "https://github.com/paritytech/parity-common" }
 
 [[example]]
 name = "sentry"
-required-features = ["discv5"]
+required-features = ["dnsdisc", "dnsdisc/trust-dns"]

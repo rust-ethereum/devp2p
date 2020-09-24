@@ -33,9 +33,9 @@ mod rlpx;
 mod types;
 mod util;
 
-pub use disc::Discovery;
+pub use disc::*;
 pub use eth::{proto as eth_proto, Server as EthServer};
 pub use mux::MuxServer;
 pub use peer::PeerStream;
 pub use rlpx::{ListenOptions, Server as RLPxNode};
-pub use types::{CapabilityInfo, CapabilityName, NodeRecord};
+pub use types::{CapabilityId, CapabilityInfo, CapabilityName, NodeRecord, ProtocolRegistrar};

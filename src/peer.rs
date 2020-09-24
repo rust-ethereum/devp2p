@@ -169,10 +169,9 @@ where
         let nonhello_capabilities = capabilities.clone();
         let nonhello_client_version = client_version.clone();
 
-        debug!("connecting to rlpx peer {:x}", id);
+        debug!("Connecting to RLPx peer {:02x}", transport.remote_id());
 
-        debug!("sending hello message ...");
-        let hello = rlp::encode(&HelloMessage {
+        let hello = HelloMessage {
             port,
             id,
             protocol_version: protocol_version.to_usize().unwrap(),
@@ -187,8 +186,9 @@ where
                 }
                 caps
             },
-        })
-        .to_vec();
+        };
+        debug!("Sending Hello message: {:?}", hello);
+        let hello = rlp::encode(&hello);
         let message_id: Vec<u8> = rlp::encode(&0_usize).to_vec();
         assert!(message_id.len() == 1);
         let mut ret: Vec<u8> = Vec::new();
@@ -200,10 +200,10 @@ where
 
         let hello = transport.try_next().await?;
 
-        debug!("receiving hello message ...");
+        debug!("Receiving hello message ...");
         let hello = hello.ok_or_else(|| {
-            debug!("hello failed because of no value");
-            io::Error::new(io::ErrorKind::Other, "hello failed (no value)")
+            debug!("Hello failed because of no value");
+            io::Error::new(io::ErrorKind::Other, "Hello failed (no value)")
         })?;
 
         let message_id_rlp = Rlp::new(&hello[0..1]);
@@ -211,14 +211,14 @@ where
         match message_id {
             Ok(message_id) => {
                 if message_id != 0 {
-                    error!(
-                        "hello failed because message id is not 0 but {}: {:x?}",
+                    debug!(
+                        "Hello failed because message id is not 0 but {}: {:02x?}",
                         message_id,
                         &hello[1..]
                     );
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        "hello failed (message id)",
+                        "Hello failed (message id)",
                     ));
                 }
             }
@@ -306,7 +306,7 @@ where
 
         match ready!(Pin::new(&mut s.stream).poll_next(cx)) {
             Some(Ok(val)) => {
-                debug!("received peer message: {:?}", val);
+                debug!("Received peer message: {:?}", val);
                 let message_id_rlp = Rlp::new(&val[0..1]);
                 let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
 
@@ -379,6 +379,8 @@ where
                         ))));
                     }
                 };
+
+                trace!("Parsed message as {:?}/{}/{:x?}", cap, id, data);
 
                 Poll::Ready(Some(Ok((cap, id, data))))
             }

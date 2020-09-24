@@ -206,7 +206,7 @@ where
         let remote_id = match ack {
             Some(ECIESValue::AuthReceive(remote_id)) => remote_id,
             other => {
-                error!("expected auth, got {:?} instead", other);
+                debug!("expected auth, got {:?} instead", other);
                 return Err(io::Error::new(io::ErrorKind::Other, "invalid handshake"));
             }
         };

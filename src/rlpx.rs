@@ -22,9 +22,12 @@ use tokio::{
     stream::StreamExt,
     sync::Mutex as AsyncMutex,
 };
+use uuid::Uuid;
 
+const CONNECTION_TIMEOUT_SECS: u64 = 10;
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 const DISCOVERY_TIMEOUT_SECS: u64 = 5;
+const DISCOVERY_CONNECT_TIMEOUT_SECS: u64 = 5;
 
 pub struct EgressPeerHandleImpl {
     capability: CapabilityName,
@@ -68,7 +71,7 @@ impl Drop for ServerHandleImpl {
 
             // Kick all peers with capability
             streams.mapping.retain(|_, state| match state {
-                PeerState::Connecting => false,
+                PeerState::Connecting { .. } => false,
                 PeerState::Connected(handle) => handle.capabilities.is_disjoint(&self.capabilities),
             });
 
@@ -90,7 +93,11 @@ impl ServerHandle for ServerHandleImpl {
     ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown> {
         let pool = self.pool.upgrade().ok_or(Shutdown)?;
         Ok(pool
-            .connected_peers(|_| 1, Some(&CapabilityFilter { name, versions }), note)
+            .connected_peers(
+                |_| 1,
+                Some(&CapabilityFilter { name, versions }),
+                note.as_ref(),
+            )
             .into_iter()
             .map(|(peer_id, (sender, capabilities))| EgressPeerHandleImpl {
                 capability: name,
@@ -120,7 +127,7 @@ struct StreamHandle {
 }
 
 enum PeerState {
-    Connecting,
+    Connecting { connection_id: Uuid },
     Connected(StreamHandle),
 }
 
@@ -383,7 +390,7 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'st
                 }
                 Entry::Vacant(entry) => {
                     if node_filter.lock().allow(total_connections, remote_id) {
-                        debug!("New peer connected: {}", remote_id);
+                        debug!("New incoming peer connected: {}", remote_id);
                         entry.insert(PeerState::Connected(setup_peer_state(
                             streams,
                             capabilities,
@@ -397,7 +404,7 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Send + Unpin + 'st
             }
         }
         Err(e) => {
-            error!("Peer disconnected with error {}", e);
+            debug!("Peer disconnected with error {}", e);
         }
     }
 }
@@ -520,6 +527,8 @@ impl Server {
     ) -> Result<Arc<Self>, io::Error> {
         let tasks = Arc::new(TaskGroup::default());
 
+        let protocol_version = ProtocolVersion::V5;
+
         let port = listen_options
             .as_ref()
             .map_or(0, |options| options.addr.port());
@@ -542,7 +551,7 @@ impl Server {
                 tcp_incoming,
                 PeerStreamHandshakeData {
                     port,
-                    protocol_version: ProtocolVersion::V5,
+                    protocol_version,
                     secret_key,
                     client_version: client_version.clone(),
                     capabilities: protocols.clone(),
@@ -556,7 +565,7 @@ impl Server {
             node_filter,
             protocols,
             secret_key,
-            protocol_version: ProtocolVersion::V5,
+            protocol_version,
             client_version,
             port,
         });
@@ -571,8 +580,10 @@ impl Server {
                             let mut discovery = discovery.lock().await;
 
                             let streams_len = server.streams.lock().mapping.len();
+                            let max_peers = server.node_filter.lock().max_peers();
 
-                            if streams_len < server.node_filter.lock().max_peers() {
+                            if streams_len < max_peers {
+                                trace!(target: "discovery", "Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
                                 match tokio::time::timeout(
                                     Duration::from_secs(DISCOVERY_TIMEOUT_SECS),
                                     discovery.get_new_peer(),
@@ -582,17 +593,21 @@ impl Server {
                                     Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"))
                                 }) {
                                     Ok((addr, remote_id)) => {
-                                        if let Err(e) =
-                                            server.add_peer_inner(addr, remote_id, true).await
-                                        {
-                                            warn!("Failed to add new peer: {}", e);
+                                        trace!(target: "discovery", "Discovered peer: {:?}", remote_id);
+                                        match tokio::time::timeout(Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS), server.add_peer_inner(addr, remote_id, true)).await {
+                                            Ok(Err(e)) => warn!(target: "discovery", "Failed to add new peer {}: {}", remote_id, e),
+                                            Err(_) => warn!(target: "discovery", "Timed out adding peer {}", remote_id),
+                                            _ => {}
                                         }
                                     }
-                                    Err(e) => warn!("Failed to get new peer: {}", e),
+                                    Err(e) => warn!(target: "discovery", "Failed to get new peer: {}", e),
                                 }
+                                tokio::time::delay_for(Duration::from_millis(100)).await;
+                            } else {
+                                trace!(target: "discovery", "Skipping discovery as current number of peers is too high: {} >= {}", streams_len, max_peers);
+                                tokio::time::delay_for(Duration::from_secs(2)).await;
                             }
 
-                            tokio::time::delay_for(Duration::from_secs(2)).await;
                         } else {
                             return;
                         }
@@ -619,6 +634,7 @@ impl Server {
         remote_id: PeerId,
         check_peer: bool,
     ) -> impl Future<Output = io::Result<bool>> + Send + 'static {
+        let tasks = self.tasks.clone();
         let streams = self.streams.clone();
         let node_filter = self.node_filter.clone();
 
@@ -633,10 +649,10 @@ impl Server {
         async move {
             trace!("Received request to add peer {}", remote_id);
             let mut inserted = false;
+
+            let connection_id = Uuid::new_v4();
             {
-                trace!("locking streams");
                 let mut streams = streams.lock();
-                trace!("locking node_filter");
                 let node_filter = node_filter.lock();
 
                 let connection_num = streams.mapping.len();
@@ -658,12 +674,38 @@ impl Server {
                             trace!("rejecting peer {}", remote_id);
                         } else {
                             info!("connecting to peer {}", remote_id);
-                            vacant.insert(PeerState::Connecting);
+
+                            vacant.insert(PeerState::Connecting { connection_id });
                             inserted = true;
                         }
                     }
                 }
             }
+
+            // Start reaper task that will terminate this connection if it gets stuck.
+            tasks.spawn({
+                let cid = connection_id;
+                let streams = streams.clone();
+                async move {
+                    tokio::time::delay_for(Duration::from_secs(CONNECTION_TIMEOUT_SECS)).await;
+
+                    let mut s = streams.lock();
+                    if let Entry::Occupied(entry) = s.mapping.entry(remote_id) {
+                        // If this is the same connection attempt, then remove.
+                        if let PeerState::Connecting { connection_id } = entry.get() {
+                            if *connection_id == cid {
+                                trace!(
+                                    "Reaper removing stuck outbound connection: {}/{}",
+                                    remote_id,
+                                    cid
+                                );
+
+                                entry.remove();
+                            }
+                        }
+                    }
+                }
+            });
 
             if !inserted {
                 return Ok(false);
@@ -695,7 +737,7 @@ impl Server {
                     match peer_res {
                         Ok(peer) => {
                             assert_eq!(peer.remote_id(), remote_id);
-                            debug!("new peer connected: {}", remote_id);
+                            debug!("New peer connected: {}", remote_id);
 
                             *peer_state.get_mut() = PeerState::Connected(setup_peer_state(
                                 streams,
@@ -707,7 +749,7 @@ impl Server {
                             return Ok(true);
                         }
                         Err(e) => {
-                            error!("peer disconnected with error {}", e);
+                            debug!("peer disconnected with error {}", e);
                             peer_state.remove();
                             return Err(e);
                         }
@@ -753,7 +795,7 @@ impl Server {
         &self,
         limit: impl Fn(usize) -> usize,
         cap_filter: Option<&CapabilityFilter>,
-        note_filter: Option<(String, String)>,
+        note_filter: Option<&(String, String)>,
     ) -> HashMap<PeerId, (PeerSender, BTreeMap<CapabilityName, usize>)> {
         let peers = self.streams.lock();
 
@@ -764,7 +806,7 @@ impl Server {
             .iter()
             .filter_map(|(id, peer)| {
                 match peer {
-                    PeerState::Connecting => {
+                    PeerState::Connecting { .. } => {
                         // Peer is connecting, not yet live
                         return None;
                     }

@@ -6,7 +6,7 @@ use bytes::Bytes;
 use derivative::Derivative;
 use futures::sink::SinkExt;
 use libsecp256k1::SecretKey;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::{
     collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::{Debug, Display},
@@ -68,7 +68,7 @@ impl Drop for ServerHandleImpl {
     fn drop(&mut self) {
         if let Some(pool) = self.pool.upgrade() {
             let mut streams = pool.streams.lock();
-            let mut protocols = pool.protocols.lock();
+            let mut protocols = pool.protocols.write();
 
             // Kick all peers with capability
             streams.mapping.retain(|_, state| match state {
@@ -172,7 +172,7 @@ struct PeerStreamHandshakeData {
     protocol_version: ProtocolVersion,
     secret_key: SecretKey,
     client_version: String,
-    capabilities: Arc<Mutex<CapabilityMap>>,
+    capabilities: Arc<RwLock<CapabilityMap>>,
 }
 
 async fn handle_incoming(
@@ -206,7 +206,7 @@ async fn handle_incoming(
 /// Set up newly connected peer's state, start its tasks
 fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>(
     streams: Arc<Mutex<PeerStreams>>,
-    capabilities: Arc<Mutex<CapabilityMap>>,
+    capabilities: Arc<RwLock<CapabilityMap>>,
     remote_id: PeerId,
     peer: PeerStream<Io>,
 ) -> StreamHandle {
@@ -229,7 +229,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                 match message {
                     Ok((capability, message_id, message)) => {
                         // Extract capability's ingress handler
-                        let handler = capabilities.lock().get_inner().get(&capability.into()).map(
+                        let handler = capabilities.read().get_inner().get(&capability.into()).map(
                             |CapabilityMeta {
                                  incoming_handler, ..
                              }| incoming_handler.clone(),
@@ -291,7 +291,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
             // Send initial messages
             let initial_messages = stream::iter(
                 capabilities
-                    .lock()
+                    .read()
                     .get_inner()
                     .iter()
                     .filter_map(|(cap, cap_info)| {
@@ -347,7 +347,7 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Debug + Send + Unp
         capabilities,
         port,
     } = handshake_data;
-    let capability_set = capabilities.lock().get_capabilities().to_vec();
+    let capability_set = capabilities.read().get_capabilities().to_vec();
     // Do handshake and convert incoming connection into stream.
     let peer_res = tokio::time::timeout(
         Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
@@ -500,7 +500,7 @@ pub struct Server {
 
     node_filter: Arc<Mutex<dyn NodeFilter>>,
 
-    protocols: Arc<Mutex<CapabilityMap>>,
+    protocols: Arc<RwLock<CapabilityMap>>,
 
     secret_key: SecretKey,
     protocol_version: ProtocolVersion,
@@ -542,7 +542,7 @@ impl Server {
                 .map_or(0.into(), |options| options.max_peers.into()),
         ))));
 
-        let protocols = Arc::new(Mutex::new(Default::default()));
+        let protocols = Arc::new(RwLock::new(Default::default()));
 
         if let Some(options) = &listen_options {
             let tcp_incoming = TcpListener::bind(options.addr).await?;
@@ -641,7 +641,7 @@ impl Server {
         let node_filter = self.node_filter.clone();
 
         let capabilities = self.protocols.clone();
-        let capability_set = capabilities.lock().get_capabilities().to_vec();
+        let capability_set = capabilities.read().get_capabilities().to_vec();
 
         let secret_key = self.secret_key;
         let protocol_version = self.protocol_version;
@@ -880,7 +880,7 @@ impl ProtocolRegistrar for Arc<Server> {
         incoming_handler: IngressHandler,
         on_peer_connect: OnPeerConnect,
     ) -> Self::ServerHandle {
-        let mut protocols = self.protocols.lock();
+        let mut protocols = self.protocols.write();
         protocols.register_capabilities(capabilities.clone(), &incoming_handler, &on_peer_connect);
         let pool = Arc::downgrade(self);
         Self::ServerHandle {

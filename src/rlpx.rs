@@ -25,7 +25,6 @@ use tokio::{
 use tracing::*;
 use uuid::Uuid;
 
-const CONNECTION_TIMEOUT_SECS: u64 = 10;
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 const DISCOVERY_TIMEOUT_SECS: u64 = 5;
 const DISCOVERY_CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -648,11 +647,34 @@ impl Server {
         let client_version = self.client_version.clone();
         let port = self.port;
 
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let connection_id = Uuid::new_v4();
+
+        // Start reaper task that will terminate this connection if connection future gets dropped.
+        tasks.spawn({
+            let cid = connection_id;
+            let streams = streams.clone();
+            async move {
+                if rx.await.is_err() {
+                    let mut s = streams.lock();
+                    if let Entry::Occupied(entry) = s.mapping.entry(remote_id) {
+                        // If this is the same connection attempt, then remove.
+                        if let PeerState::Connecting { connection_id } = entry.get() {
+                            if *connection_id == cid {
+                                trace!("Reaping failed outbound connection: {}/{}", remote_id, cid);
+
+                                entry.remove();
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         async move {
             trace!("Received request to add peer {}", remote_id);
             let mut inserted = false;
 
-            let connection_id = Uuid::new_v4();
             {
                 let mut streams = streams.lock();
                 let node_filter = node_filter.lock();
@@ -683,31 +705,6 @@ impl Server {
                     }
                 }
             }
-
-            // Start reaper task that will terminate this connection if it gets stuck.
-            tasks.spawn({
-                let cid = connection_id;
-                let streams = streams.clone();
-                async move {
-                    tokio::time::delay_for(Duration::from_secs(CONNECTION_TIMEOUT_SECS)).await;
-
-                    let mut s = streams.lock();
-                    if let Entry::Occupied(entry) = s.mapping.entry(remote_id) {
-                        // If this is the same connection attempt, then remove.
-                        if let PeerState::Connecting { connection_id } = entry.get() {
-                            if *connection_id == cid {
-                                trace!(
-                                    "Reaper removing stuck outbound connection: {}/{}",
-                                    remote_id,
-                                    cid
-                                );
-
-                                entry.remove();
-                            }
-                        }
-                    }
-                }
-            });
 
             if !inserted {
                 return Ok(false);
@@ -748,6 +745,7 @@ impl Server {
                                 peer,
                             ));
 
+                            let _ = tx.send(());
                             return Ok(true);
                         }
                         Err(e) => {

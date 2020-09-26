@@ -21,10 +21,8 @@ impl DnsDiscovery {
     pub fn new<B: Backend>(
         discovery: Arc<Resolver<B>>,
         domain: String,
-        public_key: Option<libsecp256k1_03::PublicKey>,
+        public_key: Option<VerifyKey>,
     ) -> Self {
-        let public_key = public_key.map(|pk| VerifyKey::new(&pk.serialize()).unwrap());
-
         let tasks = TaskGroup::default();
 
         let (mut tx, receiver) = tokio::sync::mpsc::channel(1);
@@ -49,21 +47,7 @@ impl DnsDiscovery {
                         }
                         Ok(Some(Ok(v))) => {
                             if let Some(socket) = v.tcp_socket() {
-                                if tx
-                                    .send(Ok((
-                                        socket,
-                                        // TODO: remove after version harmonization
-                                        pk2id(
-                                            &libsecp256k1::PublicKey::parse_slice(
-                                                &v.public_key().to_bytes(),
-                                                None,
-                                            )
-                                            .unwrap(),
-                                        ),
-                                    )))
-                                    .await
-                                    .is_err()
-                                {
+                                if tx.send(Ok((socket, pk2id(&v.public_key())))).await.is_err() {
                                     return;
                                 }
                             }

@@ -4,7 +4,7 @@ use arrayvec::ArrayString;
 use devp2p::*;
 use ethereum_types::*;
 use hex_literal::hex;
-use libsecp256k1::SecretKey;
+use k256::ecdsa::SigningKey;
 use maplit::*;
 use rand::rngs::OsRng;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let secret_key = SecretKey::random(&mut OsRng);
+    let secret_key = SigningKey::random(&mut OsRng);
 
     let dns_resolver = dnsdisc::Resolver::new(Arc::new(
         TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())

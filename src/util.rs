@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use ethereum_types::{H256, H512};
 use futures::{future::abortable, Stream};
+use generic_array::GenericArray;
 use hmac::{Hmac, Mac, NewMac};
-use libsecp256k1::{self, PublicKey};
+use k256::{ecdsa::VerifyKey, EncodedPoint};
 use parking_lot::Mutex;
 use sha2::Sha256;
 use sha3::{Digest, Keccak256};
@@ -81,17 +82,11 @@ impl Drop for TaskGroup {
 }
 
 pub fn keccak256(data: &[u8]) -> H256 {
-    let mut hasher = Keccak256::new();
-    hasher.update(data);
-    let out = hasher.finalize();
-    H256::from(out.as_ref())
+    H256::from(Keccak256::digest(data).as_ref())
 }
 
 pub fn sha256(data: &[u8]) -> H256 {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let out = hasher.finalize();
-    H256::from(out.as_ref())
+    H256::from(Sha256::digest(data).as_ref())
 }
 
 pub fn hmac_sha256(key: &[u8], input: &[u8]) -> H256 {
@@ -100,28 +95,26 @@ pub fn hmac_sha256(key: &[u8], input: &[u8]) -> H256 {
     H256::from_slice(&*hmac.finalize().into_bytes())
 }
 
-pub fn pk2id(pk: &PublicKey) -> H512 {
-    H512::from_slice(&pk.serialize()[1..])
+pub fn pk2id(pk: &VerifyKey) -> H512 {
+    H512::from_slice(&*EncodedPoint::from(pk).to_untagged_bytes().unwrap())
 }
 
-pub fn id2pk(id: H512) -> Result<PublicKey, libsecp256k1::Error> {
-    let s: [u8; 64] = id.into();
-    let mut sp: Vec<u8> = s.as_ref().into();
-    let mut r = vec![0x04_u8];
-    r.append(&mut sp);
-    PublicKey::parse_slice(r.as_ref(), None)
+pub fn id2pk(id: H512) -> Result<VerifyKey, signature::Error> {
+    VerifyKey::from_encoded_point(&EncodedPoint::from_untagged_bytes(
+        GenericArray::from_slice(id.as_ref()),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::util::*;
-    use libsecp256k1::{PublicKey, SecretKey};
+    use super::*;
+    use k256::ecdsa::SigningKey;
     use rand::rngs::OsRng;
 
     #[test]
     fn pk2id2pk() {
-        let prikey = SecretKey::random(&mut OsRng);
-        let pubkey = PublicKey::from_secret_key(&prikey);
+        let prikey = SigningKey::random(&mut OsRng);
+        let pubkey = prikey.verify_key();
         assert_eq!(pubkey, id2pk(pk2id(&pubkey)).unwrap());
     }
 }

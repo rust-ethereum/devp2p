@@ -1,5 +1,5 @@
 use devp2p::*;
-use libsecp256k1::SecretKey;
+use k256::ecdsa::SigningKey;
 use rand::{rngs::OsRng, seq::SliceRandom};
 use std::time::Duration;
 use tokio::time::delay_for;
@@ -34,7 +34,7 @@ async fn main() {
     debug!("Connecting to {}", node.addr);
 
     let client = RLPxNode::new(
-        SecretKey::random(&mut OsRng),
+        SigningKey::random(&mut OsRng),
         "rust-devp2p/0.1.0".to_string(),
         None,
     )

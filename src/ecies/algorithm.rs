@@ -8,33 +8,42 @@ use aes_ctr::{
     Aes128Ctr, Aes256Ctr,
 };
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use derivative::Derivative;
 use digest::Digest;
+use ecdsa::{elliptic_curve::Field, hazmat::RecoverableSignPrimitive};
 use ethereum_types::{H128, H256, H512};
 use generic_array::GenericArray;
-use k256::elliptic_curve::sec1::FromEncodedPoint;
-use libsecp256k1::{Message, PublicKey, RecoveryId, SecretKey, Signature};
+use k256::{
+    ecdsa::{
+        recoverable::{self, Signature},
+        SigningKey, VerifyKey,
+    },
+    elliptic_curve::sec1::FromEncodedPoint,
+    EncodedPoint, FieldBytes, Scalar, SecretKey,
+};
 use rand::rngs::OsRng;
 use sha2::Sha256;
 use sha3::Keccak256;
-use std::{convert::TryFrom, io};
+use signature::Signature as _;
+use std::{convert::TryFrom, io, sync::Arc};
 
 const AUTH_LEN: usize = 65 /* signature with recovery */ + 32 /* keccak256 ephemeral */ +
     64 /* public key */ + 32 /* nonce */ + 1;
 
 const ACK_LEN: usize = 64 /* public key */ + 32 /* nonce */ + 1;
 
-fn ecdh_x(public_key: PublicKey, secret_key: SecretKey) -> H256 {
+fn ecdh_x(public_key: &VerifyKey, secret_key: &SigningKey) -> H256 {
     H256::from_slice(
         k256::elliptic_curve::ecdh::PublicKey::from(
             (k256::ProjectivePoint::from(
                 k256::elliptic_curve::AffinePoint::<k256::Secp256k1>::from_encoded_point(
                     &k256::elliptic_curve::ecdh::PublicKey::from_bytes(
-                        public_key.serialize().as_ref(),
+                        public_key.to_bytes().as_ref(),
                     )
                     .unwrap(),
                 )
                 .unwrap(),
-            ) * k256::SecretKey::from_bytes(secret_key.serialize())
+            ) * k256::SecretKey::from_bytes(secret_key.to_bytes())
                 .unwrap()
                 .secret_scalar())
             .to_affine(),
@@ -68,18 +77,21 @@ fn kdf(secret: H256, s1: &[u8], dest: &mut [u8]) {
     }
 }
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct ECIES {
-    secret_key: SecretKey,
-    public_key: PublicKey,
-    remote_public_key: Option<PublicKey>,
+    #[derivative(Debug = "ignore")]
+    secret_key: Arc<SigningKey>,
+    public_key: VerifyKey,
+    remote_public_key: Option<VerifyKey>,
 
     remote_id: Option<H512>,
 
-    ephemeral_secret_key: SecretKey,
-    ephemeral_public_key: PublicKey,
+    #[derivative(Debug = "ignore")]
+    ephemeral_secret_key: SigningKey,
+    ephemeral_public_key: VerifyKey,
     ephemeral_shared_secret: Option<H256>,
-    remote_ephemeral_public_key: Option<PublicKey>,
+    remote_ephemeral_public_key: Option<VerifyKey>,
 
     nonce: H256,
     remote_nonce: Option<H256>,
@@ -96,12 +108,12 @@ pub struct ECIES {
 }
 
 impl ECIES {
-    pub fn new_client(secret_key: SecretKey, remote_id: H512) -> Result<Self, ECIESError> {
-        let public_key = PublicKey::from_secret_key(&secret_key);
+    pub fn new_client(secret_key: Arc<SigningKey>, remote_id: H512) -> Result<Self, ECIESError> {
+        let public_key = secret_key.verify_key();
         let remote_public_key = id2pk(remote_id)?;
         let nonce = H256::random();
-        let ephemeral_secret_key = SecretKey::random(&mut OsRng);
-        let ephemeral_public_key = PublicKey::from_secret_key(&ephemeral_secret_key);
+        let ephemeral_secret_key = SigningKey::random(&mut OsRng);
+        let ephemeral_public_key = ephemeral_secret_key.verify_key();
 
         Ok(Self {
             secret_key,
@@ -127,11 +139,11 @@ impl ECIES {
         })
     }
 
-    pub fn new_server(secret_key: SecretKey) -> Result<Self, ECIESError> {
-        let public_key = PublicKey::from_secret_key(&secret_key);
+    pub fn new_server(secret_key: Arc<SigningKey>) -> Result<Self, ECIESError> {
+        let public_key = secret_key.verify_key();
         let nonce = H256::random();
-        let ephemeral_secret_key = SecretKey::random(&mut OsRng);
-        let ephemeral_public_key = PublicKey::from_secret_key(&ephemeral_secret_key);
+        let ephemeral_secret_key = SigningKey::random(&mut OsRng);
+        let ephemeral_public_key = ephemeral_secret_key.verify_key();
 
         Ok(Self {
             secret_key,
@@ -162,8 +174,8 @@ impl ECIES {
     }
 
     fn encrypt_message(&self, data: &[u8]) -> Result<Vec<u8>, ECIESError> {
-        let secret_key = SecretKey::random(&mut OsRng);
-        let x = ecdh_x(self.remote_public_key.unwrap(), secret_key);
+        let secret_key = SigningKey::random(&mut OsRng);
+        let x = ecdh_x(&self.remote_public_key.unwrap(), &secret_key);
         let mut key = [0_u8; 32];
         kdf(x, &[], &mut key);
 
@@ -181,10 +193,15 @@ impl ECIES {
         iv_encrypted[16..].copy_from_slice(&encrypted);
 
         let tag = hmac_sha256(mac_key.as_ref(), iv_encrypted.as_ref());
-        let public_key = PublicKey::from_secret_key(&secret_key);
+        let public_key = secret_key.verify_key();
 
         let mut ret = vec![0_u8; 65 + 16 + data.len() + 32];
-        ret[0..65].copy_from_slice(&public_key.serialize());
+        ret[0..65].copy_from_slice(
+            &*EncodedPoint::from(&public_key)
+                .decompress()
+                .unwrap()
+                .to_bytes(),
+        );
         ret[65..(65 + 16 + data.len())].copy_from_slice(&iv_encrypted);
         ret[(65 + 16 + data.len())..].copy_from_slice(tag.as_ref());
 
@@ -192,11 +209,11 @@ impl ECIES {
     }
 
     fn decrypt_message(&self, encrypted: &[u8]) -> Result<Vec<u8>, ECIESError> {
-        let public_key = PublicKey::parse_slice(&encrypted[0..65], None)?;
+        let public_key = VerifyKey::new(&encrypted[0..65])?;
         let data_iv = &encrypted[65..(encrypted.len() - 32)];
         let tag = H256::from_slice(&encrypted[(encrypted.len() - 32)..]);
 
-        let x = ecdh_x(public_key, self.secret_key);
+        let x = ecdh_x(&public_key, &self.secret_key);
         let mut key = [0_u8; 32];
         kdf(x, &[], &mut key);
         let enc_key = H128::from_slice(&key[0..16]);
@@ -218,13 +235,20 @@ impl ECIES {
     }
 
     fn create_auth_unencrypted(&self) -> Result<[u8; AUTH_LEN], ECIESError> {
-        let x = ecdh_x(self.remote_public_key.unwrap(), self.secret_key);
-        let msg = Message::parse_slice((x ^ self.nonce).as_ref())?;
-        let (sig, rec) = libsecp256k1::sign(&msg, &self.ephemeral_secret_key);
+        let x = ecdh_x(&self.remote_public_key.unwrap(), &self.secret_key);
+        let msg = x ^ self.nonce;
+        let (sig, is_r_odd) = SecretKey::from_bytes(self.ephemeral_secret_key.to_bytes())
+            .unwrap()
+            .secret_scalar()
+            .try_sign_recoverable_prehashed(
+                &Scalar::random(&mut OsRng),
+                &Scalar::from_bytes_reduced(&FieldBytes::clone_from_slice(msg.as_ref())),
+            )
+            .unwrap();
+        let sig = Signature::new(&sig, recoverable::Id::new(is_r_odd as u8).unwrap()).unwrap();
         let mut out = [0_u8; AUTH_LEN];
 
-        out[0..64].copy_from_slice(&sig.serialize());
-        out[64] = rec.into();
+        out[0..65].copy_from_slice(sig.as_ref());
         out[65..97]
             .copy_from_slice(keccak256(pk2id(&self.ephemeral_public_key).as_bytes()).as_bytes());
         out[97..161].copy_from_slice(pk2id(&self.public_key).as_bytes());
@@ -240,8 +264,7 @@ impl ECIES {
     }
 
     fn parse_auth_unencrypted(&mut self, data: [u8; AUTH_LEN]) -> Result<(), ECIESError> {
-        let signature = Signature::parse_slice(&data[0..64])?;
-        let rec = RecoveryId::parse(data[64])?;
+        let signature = Signature::from_bytes(&data[0..65])?;
         let heid = H256::from_slice(&data[65..97]);
         self.remote_id = Some(H512::from_slice(&data[97..161]));
         self.remote_public_key = Some(id2pk(H512::from_slice(&data[97..161]))?);
@@ -250,12 +273,13 @@ impl ECIES {
             return Err(ECIESError::InvalidAuthData);
         }
 
-        let x = ecdh_x(self.remote_public_key.unwrap(), self.secret_key);
-        let msg = Message::parse_slice((x ^ self.remote_nonce.unwrap()).as_ref())?;
-        self.remote_ephemeral_public_key = Some(libsecp256k1::recover(&msg, &signature, &rec)?);
+        let x = ecdh_x(&self.remote_public_key.unwrap(), &self.secret_key);
+        self.remote_ephemeral_public_key = Some(signature.recover_verify_key_from_digest_bytes(
+            GenericArray::from_slice((x ^ self.remote_nonce.unwrap()).as_ref()),
+        )?);
         self.ephemeral_shared_secret = Some(ecdh_x(
-            self.remote_ephemeral_public_key.unwrap(),
-            self.ephemeral_secret_key,
+            &self.remote_ephemeral_public_key.unwrap(),
+            &self.ephemeral_secret_key,
         ));
 
         let check_heid =
@@ -301,8 +325,8 @@ impl ECIES {
         }
 
         self.ephemeral_shared_secret = Some(ecdh_x(
-            self.remote_ephemeral_public_key.unwrap(),
-            self.ephemeral_secret_key,
+            &self.remote_ephemeral_public_key.unwrap(),
+            &self.ephemeral_secret_key,
         ));
         Ok(())
     }
@@ -492,35 +516,32 @@ impl ECIES {
 
 #[cfg(test)]
 mod tests {
-    use super::{ecdh_x, ECIES};
-    use crate::util::*;
+    use super::*;
     use hex_literal::hex;
-    use libsecp256k1::{PublicKey, SecretKey};
-    use rand::rngs::OsRng;
 
     #[test]
     fn ecdh() {
-        let our_secret_key = SecretKey::parse(&hex!(
+        let our_secret_key = SigningKey::new(&hex!(
             "202a36e24c3eb39513335ec99a7619bad0e7dc68d69401b016253c7d26dc92f8"
         ))
         .unwrap();
         let remote_public_key = id2pk(hex!("d860a01f9722d78051619d1e2351aba3f43f943f6f00718d1b9baa4101932a1f5011f16bb2b1bb35db20d6fe28fa0bf09636d26a87d31de9ec6203eeedb1f666").into()).unwrap();
 
         assert_eq!(
-            ecdh_x(remote_public_key, our_secret_key),
+            ecdh_x(&remote_public_key, &our_secret_key),
             hex!("821ce7e01ea11b111a52b2dafae8a3031a372d83bdf1a78109fa0783c2b9d5d3").into()
         )
     }
 
     #[test]
     fn communicate() {
-        let server_secret_key = SecretKey::random(&mut OsRng);
-        let server_public_key = PublicKey::from_secret_key(&server_secret_key);
-        let client_secret_key = SecretKey::random(&mut OsRng);
+        let server_secret_key = SigningKey::random(&mut OsRng);
+        let server_public_key = server_secret_key.verify_key();
+        let client_secret_key = SigningKey::random(&mut OsRng);
 
-        let mut server_ecies = ECIES::new_server(server_secret_key).unwrap();
+        let mut server_ecies = ECIES::new_server(Arc::new(server_secret_key)).unwrap();
         let mut client_ecies =
-            ECIES::new_client(client_secret_key, pk2id(&server_public_key)).unwrap();
+            ECIES::new_client(Arc::new(client_secret_key), pk2id(&server_public_key)).unwrap();
 
         // Handshake
         let auth = client_ecies.create_auth().unwrap();

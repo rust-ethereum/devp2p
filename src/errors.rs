@@ -2,7 +2,7 @@ use std::io;
 
 #[derive(Debug)]
 pub enum ECIESError {
-    SECP256K1(libsecp256k1::Error),
+    SECP256K1(k256::ecdsa::Error),
     IO(io::Error),
     TagCheckFailed,
     InvalidAuthData,
@@ -21,8 +21,8 @@ impl From<io::Error> for ECIESError {
     }
 }
 
-impl From<libsecp256k1::Error> for ECIESError {
-    fn from(error: libsecp256k1::Error) -> Self {
+impl From<k256::ecdsa::Error> for ECIESError {
+    fn from(error: k256::ecdsa::Error) -> Self {
         Self::SECP256K1(error)
     }
 }

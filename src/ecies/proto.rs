@@ -3,11 +3,12 @@ use crate::errors::ECIESError;
 use bytes::{Bytes, BytesMut};
 use ethereum_types::H512;
 use futures::{ready, Sink, SinkExt};
-use libsecp256k1::SecretKey;
+use k256::ecdsa::SigningKey;
 use std::{
     fmt::Debug,
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::{
@@ -45,7 +46,7 @@ pub struct ECIESCodec {
 
 impl ECIESCodec {
     /// Create a new server codec using the given secret key
-    pub fn new_server(secret_key: SecretKey) -> Result<Self, ECIESError> {
+    pub fn new_server(secret_key: Arc<SigningKey>) -> Result<Self, ECIESError> {
         Ok(Self {
             ecies: ECIES::new_server(secret_key)?,
             state: ECIESState::Auth,
@@ -53,7 +54,7 @@ impl ECIESCodec {
     }
 
     /// Create a new client codec using the given secret key and the server's public id
-    pub fn new_client(secret_key: SecretKey, remote_id: H512) -> Result<Self, ECIESError> {
+    pub fn new_client(secret_key: Arc<SigningKey>, remote_id: H512) -> Result<Self, ECIESError> {
         Ok(Self {
             ecies: ECIES::new_client(secret_key, remote_id)?,
             state: ECIESState::Auth,
@@ -167,7 +168,7 @@ where
     /// Connect to an `ECIES` server
     pub async fn connect(
         transport: Io,
-        secret_key: SecretKey,
+        secret_key: Arc<SigningKey>,
         remote_id: H512,
     ) -> Result<Self, io::Error> {
         let ecies = ECIESCodec::new_client(secret_key, remote_id)
@@ -197,7 +198,7 @@ where
     }
 
     /// Listen on a just connected ECIES client
-    pub async fn incoming(transport: Io, secret_key: SecretKey) -> Result<Self, io::Error> {
+    pub async fn incoming(transport: Io, secret_key: Arc<SigningKey>) -> Result<Self, io::Error> {
         let ecies = ECIESCodec::new_server(secret_key)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid handshake"))?;
 

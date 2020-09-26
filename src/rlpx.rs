@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use derivative::Derivative;
 use futures::sink::SinkExt;
-use libsecp256k1::SecretKey;
+use k256::ecdsa::SigningKey;
 use parking_lot::{Mutex, RwLock};
 use std::{
     collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
@@ -169,7 +169,7 @@ impl Default for PeerStreams {
 struct PeerStreamHandshakeData {
     port: u16,
     protocol_version: ProtocolVersion,
-    secret_key: SecretKey,
+    secret_key: Arc<SigningKey>,
     client_version: String,
     capabilities: Arc<RwLock<CapabilityMap>>,
 }
@@ -490,7 +490,8 @@ impl CapabilityMap {
 /// Internal state is managed by a multitude of workers that run in separate runtime tasks
 /// spawned on the running executor during the server creation and addition of new peers.
 /// All continuously running workers are inside the task scope owned by the server struct.
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct Server {
     #[allow(unused)]
     tasks: Arc<TaskGroup>,
@@ -501,7 +502,8 @@ pub struct Server {
 
     protocols: Arc<RwLock<CapabilityMap>>,
 
-    secret_key: SecretKey,
+    #[derivative(Debug = "ignore")]
+    secret_key: Arc<SigningKey>,
     protocol_version: ProtocolVersion,
     client_version: String,
     port: u16,
@@ -522,11 +524,13 @@ impl Server {
     /// Create a new devp2p server
     pub async fn new(
         // runtime: R,
-        secret_key: SecretKey,
+        secret_key: SigningKey,
         client_version: String,
         listen_options: Option<ListenOptions>,
     ) -> Result<Arc<Self>, io::Error> {
         let tasks = Arc::new(TaskGroup::default());
+
+        let secret_key = Arc::new(secret_key);
 
         let protocol_version = ProtocolVersion::V4;
 
@@ -553,7 +557,7 @@ impl Server {
                 PeerStreamHandshakeData {
                     port,
                     protocol_version,
-                    secret_key,
+                    secret_key: secret_key.clone(),
                     client_version: client_version.clone(),
                     capabilities: protocols.clone(),
                 },
@@ -642,7 +646,7 @@ impl Server {
         let capabilities = self.protocols.clone();
         let capability_set = capabilities.read().get_capabilities().to_vec();
 
-        let secret_key = self.secret_key;
+        let secret_key = self.secret_key.clone();
         let protocol_version = self.protocol_version;
         let client_version = self.client_version.clone();
         let port = self.port;

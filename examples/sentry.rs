@@ -59,7 +59,7 @@ async fn main() {
             name: CapabilityName(ArrayString::from("eth").unwrap()),
             version: 63
         } => 17 },
-        Arc::new(|peer, id, bytes| {
+        Arc::new(|peer, id, _| {
             Box::pin(async move {
                 let out_id = match id {
                     3 => Some(4),

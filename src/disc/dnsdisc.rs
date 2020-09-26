@@ -2,6 +2,7 @@ use super::Discovery;
 use crate::{types::*, util::*};
 use async_trait::async_trait;
 use dnsdisc::*;
+use k256::ecdsa::VerifyKey;
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{stream::StreamExt, sync::mpsc::Receiver};
 use tracing::*;
@@ -22,12 +23,14 @@ impl DnsDiscovery {
         domain: String,
         public_key: Option<libsecp256k1_03::PublicKey>,
     ) -> Self {
+        let public_key = public_key.map(|pk| VerifyKey::new(&pk.serialize()).unwrap());
+
         let tasks = TaskGroup::default();
 
         let (mut tx, receiver) = tokio::sync::mpsc::channel(1);
         tasks.spawn(async move {
             loop {
-                let mut query = discovery.query(domain.clone(), public_key.clone());
+                let mut query = discovery.query(domain.clone(), public_key);
                 let restart_at =
                     std::time::Instant::now() + Duration::from_secs(MAX_RESOLUTION_DURATION);
 
@@ -51,8 +54,9 @@ impl DnsDiscovery {
                                         socket,
                                         // TODO: remove after version harmonization
                                         pk2id(
-                                            &libsecp256k1::PublicKey::parse(
-                                                &v.public_key().serialize(),
+                                            &libsecp256k1::PublicKey::parse_slice(
+                                                &v.public_key().to_bytes(),
+                                                None,
                                             )
                                             .unwrap(),
                                         ),

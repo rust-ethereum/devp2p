@@ -1,7 +1,7 @@
 use super::Discovery;
 use crate::{types::*, util::*};
 use async_trait::async_trait;
-use discv5::Discv5;
+use discv5_crate::Discv5;
 use std::{io, net::SocketAddr};
 
 #[async_trait]

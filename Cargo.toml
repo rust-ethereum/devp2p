@@ -33,7 +33,7 @@ futures = "0.3"
 generic-array = "0.14"
 hex = "0.4"
 hmac = "0.9"
-k256 = { version = "0.5", features = ["ecdsa"] }
+k256 = { version = "0.5", features = ["ecdh", "ecdsa"] }
 libsecp256k1_03 = { package = "libsecp256k1", version = "0.3" }
 libsecp256k1 = { git = "https://github.com/paritytech/libsecp256k1" }
 maplit = "1"

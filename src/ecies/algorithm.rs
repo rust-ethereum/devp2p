@@ -7,12 +7,12 @@ use aes_ctr::{
     stream_cipher::{NewStreamCipher, StreamCipher},
     Aes128Ctr, Aes256Ctr,
 };
-use arrayref::array_ref;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use digest::Digest;
 use ethereum_types::{H128, H256, H512};
 use generic_array::GenericArray;
-use libsecp256k1::{Message, PublicKey, RecoveryId, SecretKey, SharedSecret, Signature};
+use k256::elliptic_curve::sec1::FromEncodedPoint;
+use libsecp256k1::{Message, PublicKey, RecoveryId, SecretKey, Signature};
 use rand::rngs::OsRng;
 use sha2::Sha256;
 use sha3::Keccak256;
@@ -24,45 +24,24 @@ const AUTH_LEN: usize = 65 /* signature with recovery */ + 32 /* keccak256 ephem
 const ACK_LEN: usize = 64 /* public key */ + 32 /* nonce */ + 1;
 
 fn ecdh_x(public_key: PublicKey, secret_key: SecretKey) -> H256 {
-    #[derive(Clone, Default)]
-    struct DummyHasher {
-        x: Option<[u8; 32]>,
-        y_passed: bool,
-    }
-
-    impl digest::Update for DummyHasher {
-        fn update(&mut self, data: impl AsRef<[u8]>) {
-            if !self.y_passed {
-                self.y_passed = true
-            } else {
-                let data: &[u8] = data.as_ref();
-                self.x = Some(*array_ref!(data, 0, 32))
-            }
-        }
-    }
-
-    impl digest::FixedOutput for DummyHasher {
-        type OutputSize = digest::consts::U32;
-
-        fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
-            out.as_mut_slice().copy_from_slice(&self.x.unwrap())
-        }
-
-        fn finalize_into_reset(&mut self, out: &mut GenericArray<u8, Self::OutputSize>) {
-            out.as_mut_slice().copy_from_slice(&self.x.unwrap());
-            digest::Reset::reset(self);
-        }
-    }
-
-    impl digest::Reset for DummyHasher {
-        fn reset(&mut self) {
-            self.x = None;
-            self.y_passed = false;
-        }
-    }
-
-    let shared = SharedSecret::<DummyHasher>::new(&public_key, &secret_key).unwrap();
-    H256::from_slice(shared.as_ref())
+    H256::from_slice(
+        k256::elliptic_curve::ecdh::PublicKey::from(
+            (k256::ProjectivePoint::from(
+                k256::elliptic_curve::AffinePoint::<k256::Secp256k1>::from_encoded_point(
+                    &k256::elliptic_curve::ecdh::PublicKey::from_bytes(
+                        public_key.serialize().as_ref(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+            ) * k256::SecretKey::from_bytes(secret_key.serialize())
+                .unwrap()
+                .secret_scalar())
+            .to_affine(),
+        )
+        .x()
+        .as_slice(),
+    )
 }
 
 fn kdf(secret: H256, s1: &[u8], dest: &mut [u8]) {

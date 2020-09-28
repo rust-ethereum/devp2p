@@ -595,7 +595,7 @@ impl Server {
                                 )
                                 .await
                                 .unwrap_or_else(|_| {
-                                    Err(io::Error::new(io::ErrorKind::TimedOut, "timed out"))
+                                    Err("timed out".into())
                                 }) {
                                     Ok((addr, remote_id)) => {
                                         trace!("Discovered peer: {:?}", remote_id);

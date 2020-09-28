@@ -3,7 +3,7 @@ use crate::{types::*, util::*};
 use async_trait::async_trait;
 use dnsdisc::*;
 use k256::ecdsa::VerifyKey;
-use std::{io, net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{stream::StreamExt, sync::mpsc::Receiver};
 use tracing::*;
 
@@ -13,7 +13,7 @@ const MAX_RESOLUTION_DURATION: u64 = 1800;
 pub struct DnsDiscovery {
     #[allow(unused)]
     tasks: TaskGroup,
-    receiver: Receiver<Result<(SocketAddr, PeerId), StdError>>,
+    receiver: Receiver<StdResult<(SocketAddr, PeerId)>>,
 }
 
 impl DnsDiscovery {
@@ -72,10 +72,10 @@ impl DnsDiscovery {
 
 #[async_trait]
 impl Discovery for DnsDiscovery {
-    async fn get_new_peer(&mut self) -> Result<(SocketAddr, PeerId), io::Error> {
-        match self.receiver.recv().await {
-            Some(Ok(record)) => Ok(record),
-            _ => todo!(),
-        }
+    async fn get_new_peer(&mut self) -> StdResult<(SocketAddr, PeerId)> {
+        self.receiver
+            .recv()
+            .await
+            .ok_or_else(|| "Discovery task is dead.")?
     }
 }

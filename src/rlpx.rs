@@ -1,4 +1,4 @@
-//! `RLPx` protocol implementation in Rust
+//! RLPx protocol implementation in Rust
 
 use crate::{disc::*, node_filter::*, peer::*, types::*, util::*};
 use async_trait::async_trait;
@@ -109,7 +109,7 @@ impl ServerHandle for ServerHandleImpl {
     }
 }
 
-/// Sending message for `RLPx`
+/// Sending message for RLPx
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RLPxSendMessage {
     pub capability_name: CapabilityName,
@@ -521,7 +521,7 @@ pub struct ListenOptions {
 }
 
 impl Server {
-    /// Create a new devp2p server
+    /// Create a new RLPx node
     pub async fn new(
         // runtime: R,
         secret_key: SigningKey,
@@ -624,7 +624,7 @@ impl Server {
         Ok(server)
     }
 
-    /// Add a new peer to this `RLPx` stream. Returns `true` if it was inserted successfully (did not exist before, accepted by node filter).
+    /// Add a new peer to this RLPx node. Returns `true` if it was added successfully (did not exist before, accepted by node filter).
     pub fn add_peer(
         &self,
         node_record: NodeRecord,

@@ -20,7 +20,7 @@ use tracing::*;
 
 const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024;
 
-/// `RLPx` protocol version.
+/// RLPx protocol version.
 #[derive(Copy, Clone, Debug, Primitive)]
 pub enum ProtocolVersion {
     V4 = 4,
@@ -88,7 +88,7 @@ struct Snappy {
     decoder: snap::raw::Decoder,
 }
 
-/// `RLPx` transport peer stream
+/// RLPx transport peer stream
 #[allow(unused)]
 #[derive(Debug)]
 pub struct PeerStream<Io> {

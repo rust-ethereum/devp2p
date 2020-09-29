@@ -48,6 +48,7 @@ sha2 = "0.9"
 sha3 = "0.9"
 signature = { version = "1", features = ["std"] }
 snap = "1"
+task-group = { git = "https://github.com/vorot93/task-group" }
 tokio = { version = "0.2", features = ["stream", "sync", "time"] }
 tokio-util = { version = "0.3", features = ["codec"] }
 tracing = "0.1"

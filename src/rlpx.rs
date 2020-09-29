@@ -1,6 +1,6 @@
 //! RLPx protocol implementation in Rust
 
-use crate::{disc::*, node_filter::*, peer::*, types::*, util::*};
+use crate::{disc::*, node_filter::*, peer::*, types::*};
 use async_trait::async_trait;
 use bytes::Bytes;
 use derivative::Derivative;
@@ -16,6 +16,7 @@ use std::{
     sync::{Arc, Weak},
     time::Duration,
 };
+use task_group::TaskGroup;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},

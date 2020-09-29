@@ -1,4 +1,4 @@
-use crate::{types::*, util::*};
+use crate::types::*;
 use async_trait::async_trait;
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use task_group::TaskGroup;
 use tokio::sync::oneshot::{channel as oneshot, Sender as OneshotSender};
 use tracing::*;
 

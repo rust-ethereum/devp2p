@@ -1,4 +1,3 @@
-pub use crate::util::Shutdown;
 use arrayvec::ArrayString;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -16,6 +15,15 @@ use std::{
 
 pub type StdError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type StdResult<T> = Result<T, StdError>;
+
+#[derive(Clone, Debug)]
+pub struct Shutdown;
+
+impl From<task_group::Shutdown> for Shutdown {
+    fn from(_: task_group::Shutdown) -> Self {
+        Self
+    }
+}
 
 /// Record that specifies information necessary to connect to RLPx node
 #[derive(Clone, Copy, Debug)]

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use dnsdisc::*;
 use k256::ecdsa::VerifyKey;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
+use task_group::TaskGroup;
 use tokio::{stream::StreamExt, sync::mpsc::Receiver};
 use tracing::*;
 

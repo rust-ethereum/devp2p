@@ -1,7 +1,7 @@
 use super::Discovery;
 use crate::{types::*, util::*};
 use async_trait::async_trait;
-use dnsdisc::*;
+use dnsdisc::{Backend, Resolver};
 use k256::ecdsa::VerifyKey;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use task_group::TaskGroup;

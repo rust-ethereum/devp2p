@@ -1,6 +1,7 @@
 use crate::{
     errors::ECIESError,
     mac::MAC,
+    types::*,
     util::{hmac_sha256, id2pk, keccak256, pk2id, sha256},
 };
 use aes_ctr::{
@@ -11,7 +12,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use derivative::Derivative;
 use digest::Digest;
 use ecdsa::{elliptic_curve::Field, hazmat::RecoverableSignPrimitive};
-use ethereum_types::{H128, H256, H512};
+use ethereum_types::{H128, H256};
 use generic_array::GenericArray;
 use k256::{
     ecdsa::{
@@ -85,7 +86,7 @@ pub struct ECIES {
     public_key: VerifyKey,
     remote_public_key: Option<VerifyKey>,
 
-    remote_id: Option<H512>,
+    remote_id: Option<PeerId>,
 
     #[derivative(Debug = "ignore")]
     ephemeral_secret_key: SigningKey,
@@ -108,7 +109,7 @@ pub struct ECIES {
 }
 
 impl ECIES {
-    pub fn new_client(secret_key: Arc<SigningKey>, remote_id: H512) -> Result<Self, ECIESError> {
+    pub fn new_client(secret_key: Arc<SigningKey>, remote_id: PeerId) -> Result<Self, ECIESError> {
         let public_key = secret_key.verify_key();
         let remote_public_key = id2pk(remote_id)?;
         let nonce = H256::random();
@@ -169,7 +170,7 @@ impl ECIES {
         })
     }
 
-    pub fn remote_id(&self) -> H512 {
+    pub fn remote_id(&self) -> PeerId {
         self.remote_id.unwrap()
     }
 
@@ -266,8 +267,8 @@ impl ECIES {
     fn parse_auth_unencrypted(&mut self, data: [u8; AUTH_LEN]) -> Result<(), ECIESError> {
         let signature = Signature::from_bytes(&data[0..65])?;
         let heid = H256::from_slice(&data[65..97]);
-        self.remote_id = Some(H512::from_slice(&data[97..161]));
-        self.remote_public_key = Some(id2pk(H512::from_slice(&data[97..161]))?);
+        self.remote_id = Some(PeerId::from_slice(&data[97..161]));
+        self.remote_public_key = Some(id2pk(PeerId::from_slice(&data[97..161]))?);
         self.remote_nonce = Some(H256::from_slice(&data[161..193]));
         if data[193] != 0_u8 {
             return Err(ECIESError::InvalidAuthData);
@@ -318,7 +319,7 @@ impl ECIES {
     }
 
     fn parse_ack_unencrypted(&mut self, data: [u8; ACK_LEN]) -> Result<(), ECIESError> {
-        self.remote_ephemeral_public_key = Some(id2pk(H512::from_slice(&data[0..64]))?);
+        self.remote_ephemeral_public_key = Some(id2pk(PeerId::from_slice(&data[0..64]))?);
         self.remote_nonce = Some(H256::from_slice(&data[64..96]));
         if data[96] != 0_u8 {
             return Err(ECIESError::InvalidAckData);

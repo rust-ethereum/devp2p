@@ -11,7 +11,6 @@
 mod disc;
 pub mod ecies;
 mod errors;
-mod eth;
 mod mac;
 mod mux;
 mod node_filter;
@@ -21,10 +20,10 @@ mod types;
 mod util;
 
 pub use disc::*;
-pub use eth::{proto as eth_proto, Server as EthServer};
 pub use mux::MuxServer;
 pub use peer::PeerStream;
 pub use rlpx::{ListenOptions, Server as RLPxNode};
 pub use types::{
     CapabilityId, CapabilityInfo, CapabilityName, Message, NodeRecord, PeerId, ProtocolRegistrar,
+    ReputationReport,
 };

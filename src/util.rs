@@ -1,5 +1,6 @@
+use crate::types::*;
 use async_trait::async_trait;
-use ethereum_types::{H256, H512};
+use ethereum_types::H256;
 use generic_array::GenericArray;
 use hmac::{Hmac, Mac, NewMac};
 use k256::{ecdsa::VerifyKey, EncodedPoint};
@@ -35,11 +36,11 @@ pub fn hmac_sha256(key: &[u8], input: &[u8]) -> H256 {
     H256::from_slice(&*hmac.finalize().into_bytes())
 }
 
-pub fn pk2id(pk: &VerifyKey) -> H512 {
-    H512::from_slice(&*EncodedPoint::from(pk).to_untagged_bytes().unwrap())
+pub fn pk2id(pk: &VerifyKey) -> PeerId {
+    PeerId::from_slice(&*EncodedPoint::from(pk).to_untagged_bytes().unwrap())
 }
 
-pub fn id2pk(id: H512) -> Result<VerifyKey, signature::Error> {
+pub fn id2pk(id: PeerId) -> Result<VerifyKey, signature::Error> {
     VerifyKey::from_encoded_point(&EncodedPoint::from_untagged_bytes(
         GenericArray::from_slice(id.as_ref()),
     ))

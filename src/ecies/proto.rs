@@ -1,7 +1,6 @@
 use super::algorithm::ECIES;
-use crate::errors::ECIESError;
+use crate::{errors::ECIESError, types::PeerId};
 use bytes::{Bytes, BytesMut};
-use ethereum_types::H512;
 use futures::{ready, Sink, SinkExt};
 use k256::ecdsa::SigningKey;
 use std::{
@@ -34,7 +33,7 @@ pub enum ECIESValue {
     Ack,
     Header(usize),
     Body(Vec<u8>),
-    AuthReceive(H512),
+    AuthReceive(PeerId),
 }
 
 /// Tokio codec for ECIES
@@ -54,7 +53,7 @@ impl ECIESCodec {
     }
 
     /// Create a new client codec using the given secret key and the server's public id
-    pub fn new_client(secret_key: Arc<SigningKey>, remote_id: H512) -> Result<Self, ECIESError> {
+    pub fn new_client(secret_key: Arc<SigningKey>, remote_id: PeerId) -> Result<Self, ECIESError> {
         Ok(Self {
             ecies: ECIES::new_client(secret_key, remote_id)?,
             state: ECIESState::Auth,
@@ -158,7 +157,7 @@ impl Encoder<ECIESValue> for ECIESCodec {
 pub struct ECIESStream<Io> {
     stream: Framed<Io, ECIESCodec>,
     polled_header: bool,
-    remote_id: H512,
+    remote_id: PeerId,
 }
 
 impl<Io> ECIESStream<Io>
@@ -169,7 +168,7 @@ where
     pub async fn connect(
         transport: Io,
         secret_key: Arc<SigningKey>,
-        remote_id: H512,
+        remote_id: PeerId,
     ) -> Result<Self, io::Error> {
         let ecies = ECIESCodec::new_client(secret_key, remote_id)
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "invalid handshake"))?;
@@ -226,7 +225,7 @@ where
     }
 
     /// Get the remote id
-    pub fn remote_id(&self) -> H512 {
+    pub fn remote_id(&self) -> PeerId {
         self.remote_id
     }
 }

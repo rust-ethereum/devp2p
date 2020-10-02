@@ -7,12 +7,23 @@ use hex_literal::hex;
 use k256::ecdsa::SigningKey;
 use maplit::*;
 use rand::rngs::OsRng;
+use rlp_derive::{RlpDecodable, RlpEncodable};
 use std::sync::Arc;
+use tracing::*;
 use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
 
 const CLIENT_VERSION: &str = "rust-devp2p/0.1.0";
 const DNS_BOOTNODE: &str = "all.mainnet.ethdisco.net";
+
+#[derive(Debug, RlpEncodable, RlpDecodable)]
+struct StatusMessage {
+    protocol_version: usize,
+    network_id: usize,
+    total_difficulty: U256,
+    best_hash: H256,
+    genesis_hash: H256,
+}
 
 #[tokio::main]
 async fn main() {
@@ -42,7 +53,7 @@ async fn main() {
     .await
     .unwrap();
 
-    let status_message = eth_proto::ETHMessage::Status {
+    let status_message = StatusMessage {
         protocol_version: 63,
         network_id: 1,
         total_difficulty: 17608636743620256866935_u128.into(),
@@ -59,8 +70,23 @@ async fn main() {
             name: CapabilityName(ArrayString::from("eth").unwrap()),
             version: 63
         } => 17 },
-        Arc::new(|peer, id, _| {
+        Arc::new(|peer, id, data| {
             Box::pin(async move {
+                if id == 0 {
+                    match rlp::decode::<StatusMessage>(&data) {
+                        Ok(v) => {
+                            info!("Received status message from peer {}: {:?}", peer.id, v);
+                        }
+                        Err(e) => {
+                            info!(
+                                "Failed to decode peer {}'s status message: {}! Kicking peer.",
+                                peer.id, e
+                            );
+                            return Ok((None, Some(ReputationReport::Kick)));
+                        }
+                    }
+                }
+
                 let out_id = match id {
                     3 => Some(4),
                     5 => Some(6),
@@ -75,7 +101,7 @@ async fn main() {
         }),
         Arc::new(move || {
             Some(Message {
-                id: status_message.id(),
+                id: 0,
                 data: rlp::encode(&status_message).into(),
             })
         }),

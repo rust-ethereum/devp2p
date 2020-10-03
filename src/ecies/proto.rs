@@ -175,13 +175,13 @@ where
 
         let mut transport = ecies.framed(transport);
 
-        debug!("sending ecies auth ...");
+        trace!("sending ecies auth ...");
         transport.send(ECIESValue::Auth).await?;
 
-        debug!("waiting for ecies ack ...");
+        trace!("waiting for ecies ack ...");
         let ack = transport.try_next().await?;
 
-        debug!("parsing ecies ack ...");
+        trace!("parsing ecies ack ...");
         if ack == Some(ECIESValue::Ack) {
             Ok(Self {
                 stream: transport,

@@ -595,7 +595,7 @@ impl Server {
                                 let max_peers = server.node_filter.lock().max_peers();
 
                                 if streams_len < max_peers {
-                                    trace!("Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
+                                    debug!("Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
                                     match tokio::time::timeout(
                                         Duration::from_secs(DISCOVERY_TIMEOUT_SECS),
                                         {
@@ -610,10 +610,10 @@ impl Server {
                                         Err("timed out".into())
                                     }) {
                                         Ok((addr, remote_id)) => {
-                                            trace!("Discovered peer: {:?}", remote_id);
+                                            debug!("Discovered peer: {:?}", remote_id);
                                             match tokio::time::timeout(Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS), server.add_peer_inner(addr, remote_id, true)).await {
-                                                Ok(Err(e)) => warn!("Failed to add new peer {}: {}", remote_id, e),
-                                                Err(_) => warn!("Timed out adding peer {}", remote_id),
+                                                Ok(Err(e)) => debug!("Failed to add new peer {}: {}", remote_id, e),
+                                                Err(_) => debug!("Timed out adding peer {}", remote_id),
                                                 _ => {}
                                             }
                                         }

@@ -1,5 +1,6 @@
 use crate::{ecies::ECIESStream, types::*, util::pk2id};
 use bytes::Bytes;
+use derive_more::Display;
 use enum_primitive_derive::Primitive;
 use futures::{ready, Sink, SinkExt};
 use k256::ecdsa::SigningKey;
@@ -19,6 +20,53 @@ use tokio::{
 use tracing::*;
 
 const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024;
+
+/// RLPx disconnect reason.
+#[derive(Clone, Copy, Debug, Display, Primitive)]
+pub enum DisconnectReason {
+    #[display(fmt = "disconnect requested")]
+    DisconnectRequested = 0x00,
+    #[display(fmt = "TCP sub-system error")]
+    TcpSubsystemError = 0x01,
+    #[display(fmt = "breach of protocol, e.g. a malformed message, bad RLP, ...")]
+    ProtocolBreach = 0x02,
+    #[display(fmt = "useless peer")]
+    UselessPeer = 0x03,
+    #[display(fmt = "too many peers")]
+    TooManyPeers = 0x04,
+    #[display(fmt = "already connected")]
+    AlreadyConnected = 0x05,
+    #[display(fmt = "incompatible P2P protocol version")]
+    IncompatibleP2PProtocolVersion = 0x06,
+    #[display(fmt = "null node identity received - this is automatically invalid")]
+    NullNodeIdentity = 0x07,
+    #[display(fmt = "client quitting")]
+    ClientQuitting = 0x08,
+    #[display(fmt = "unexpected identity in handshake")]
+    UnexpectedHandshakeIdentity = 0x09,
+    #[display(fmt = "identity is the same as this node (i.e. connected to itself)")]
+    ConnectedToSelf = 0x0a,
+    #[display(fmt = "ping timeout")]
+    PingTimeout = 0x0b,
+    #[display(fmt = "some other reason specific to a subprotocol")]
+    SubprotocolSpecific = 0x10,
+}
+
+fn make_disconnect_err(rlp: &[u8]) -> io::Error {
+    let reason = Rlp::new(rlp)
+        .val_at::<u8>(0)
+        .ok()
+        .and_then(DisconnectReason::from_u8);
+    io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+            "explicit disconnect: {}",
+            reason
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "(unknown)".to_string())
+        ),
+    )
+}
 
 /// RLPx protocol version.
 #[derive(Copy, Clone, Debug, Primitive)]
@@ -210,13 +258,17 @@ where
             debug!("Hello failed because of no value");
             io::Error::new(io::ErrorKind::Other, "Hello failed (no value)")
         })?;
-        debug!("Receiving hello message: {:02x?}", hello);
+        trace!("Receiving hello message: {:02x?}", hello);
 
         let message_id_rlp = Rlp::new(&hello[0..1]);
         let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
         match message_id {
-            Ok(message_id) => {
-                if message_id != 0 {
+            Ok(message_id) => match message_id {
+                0 => {}
+                1 => {
+                    return Err(make_disconnect_err(&hello[1..]));
+                }
+                _ => {
                     debug!(
                         "Hello failed because message id is not 0 but {}: {:02x?}",
                         message_id,
@@ -227,7 +279,7 @@ where
                         "Hello failed (message id)",
                     ));
                 }
-            }
+            },
             Err(e) => {
                 debug!("hello failed because message id cannot be parsed");
                 return Err(io::Error::new(
@@ -340,10 +392,7 @@ where
                         if message_id < 0x10 {
                             match message_id {
                                 0x01 /* disconnect */ => {
-                                    let reason: Result<usize, rlp::DecoderError> = Rlp::new(&*data).val_at(0);
-                                    debug!("received disconnect message, reason: {:?}", reason);
-                                    return Poll::Ready(Some(Err(io::Error::new(io::ErrorKind::Other,
-                                                                               "explicit disconnect"))));
+                                    return Poll::Ready(Some(Err(make_disconnect_err(&*data))));
                                 },
                                 0x02 /* ping */ => {
                                     debug!("received ping message data {:?}", data);

@@ -1,26 +1,10 @@
 use crate::types::*;
-use async_trait::async_trait;
 use ethereum_types::H256;
 use generic_array::GenericArray;
 use hmac::{Hmac, Mac, NewMac};
 use k256::{ecdsa::VerifyKey, EncodedPoint};
 use sha2::Sha256;
 use sha3::{Digest, Keccak256};
-use std::{future::Future, pin::Pin, time::Duration};
-use tokio::{prelude::*, stream::Stream};
-
-/// Common trait that various runtimes should implement.
-#[async_trait]
-pub trait Runtime {
-    /// Runtime's TCP stream type.
-    type TcpStream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
-    type TcpServer: Stream<Item = Self::TcpStream> + Unpin + Send + 'static;
-
-    fn spawn(&self, fut: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
-    async fn sleep(&self, duration: Duration);
-    async fn connect_tcp(&self, target: String) -> io::Result<Self::TcpStream>;
-    async fn tcp_server(&self, addr: String) -> io::Result<Self::TcpServer>;
-}
 
 pub fn keccak256(data: &[u8]) -> H256 {
     H256::from(Keccak256::digest(data).as_ref())

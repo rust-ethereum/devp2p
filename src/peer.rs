@@ -330,13 +330,14 @@ where
                                     ),
                                 ))));
                             }
-                            snappy.decoder.decompress_vec(input)?.into()
+                            let v = snappy.decoder.decompress_vec(input)?.into();
+                            trace!("Decompressed raw message data: {}", hex::encode(&v));
+                            v
                         } else {
                             Bytes::copy_from_slice(&val[1..])
                         };
 
                         if message_id < 0x10 {
-                            let data = &val[1..];
                             match message_id {
                                 0x01 /* disconnect */ => {
                                     let reason: Result<usize, rlp::DecoderError> = Rlp::new(&*data).val_at(0);

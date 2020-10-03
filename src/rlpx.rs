@@ -13,6 +13,7 @@ use std::{
     future::Future,
     io,
     net::SocketAddr,
+    num::NonZeroUsize,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -515,8 +516,13 @@ pub struct CapabilityFilter {
     pub versions: BTreeSet<usize>,
 }
 
+pub struct DiscoveryOptions {
+    pub discovery: Arc<AsyncMutex<dyn Discovery>>,
+    pub tasks: NonZeroUsize,
+}
+
 pub struct ListenOptions {
-    pub discovery: Option<Arc<AsyncMutex<dyn Discovery>>>,
+    pub discovery: Option<DiscoveryOptions>,
     pub max_peers: usize,
     pub addr: SocketAddr,
 }
@@ -577,49 +583,54 @@ impl Server {
         });
 
         // TODO: Use semaphore
-        if let Some(discovery) = listen_options.and_then(|options| options.discovery) {
-            tasks.spawn({
-                let server = Arc::downgrade(&server);
-                async move {
-                    loop {
-                        if let Some(server) = server.upgrade() {
-                            let mut discovery = discovery.lock().await;
+        if let Some(options) = listen_options.and_then(|options| options.discovery) {
+            for _ in 0..options.tasks.get() {
+                tasks.spawn({
+                    let discovery = options.discovery.clone();
+                    let server = Arc::downgrade(&server);
+                    async move {
+                        loop {
+                            if let Some(server) = server.upgrade() {
+                                let streams_len = server.streams.lock().mapping.len();
+                                let max_peers = server.node_filter.lock().max_peers();
 
-                            let streams_len = server.streams.lock().mapping.len();
-                            let max_peers = server.node_filter.lock().max_peers();
-
-                            if streams_len < max_peers {
-                                trace!("Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
-                                match tokio::time::timeout(
-                                    Duration::from_secs(DISCOVERY_TIMEOUT_SECS),
-                                    discovery.get_new_peer(),
-                                )
-                                .await
-                                .unwrap_or_else(|_| {
-                                    Err("timed out".into())
-                                }) {
-                                    Ok((addr, remote_id)) => {
-                                        trace!("Discovered peer: {:?}", remote_id);
-                                        match tokio::time::timeout(Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS), server.add_peer_inner(addr, remote_id, true)).await {
-                                            Ok(Err(e)) => warn!("Failed to add new peer {}: {}", remote_id, e),
-                                            Err(_) => warn!("Timed out adding peer {}", remote_id),
-                                            _ => {}
+                                if streams_len < max_peers {
+                                    trace!("Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
+                                    match tokio::time::timeout(
+                                        Duration::from_secs(DISCOVERY_TIMEOUT_SECS),
+                                        {
+                                            let discovery = discovery.clone();
+                                            async move {
+                                                discovery.lock().await.get_new_peer().await
+                                            }
+                                        },
+                                    )
+                                    .await
+                                    .unwrap_or_else(|_| {
+                                        Err("timed out".into())
+                                    }) {
+                                        Ok((addr, remote_id)) => {
+                                            trace!("Discovered peer: {:?}", remote_id);
+                                            match tokio::time::timeout(Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS), server.add_peer_inner(addr, remote_id, true)).await {
+                                                Ok(Err(e)) => warn!("Failed to add new peer {}: {}", remote_id, e),
+                                                Err(_) => warn!("Timed out adding peer {}", remote_id),
+                                                _ => {}
+                                            }
                                         }
+                                        Err(e) => warn!("Failed to get new peer: {}", e),
                                     }
-                                    Err(e) => warn!("Failed to get new peer: {}", e),
+                                    tokio::time::delay_for(Duration::from_millis(2000)).await;
+                                } else {
+                                    trace!("Skipping discovery as current number of peers is too high: {} >= {}", streams_len, max_peers);
+                                    tokio::time::delay_for(Duration::from_secs(2)).await;
                                 }
-                                tokio::time::delay_for(Duration::from_millis(2000)).await;
                             } else {
-                                trace!("Skipping discovery as current number of peers is too high: {} >= {}", streams_len, max_peers);
-                                tokio::time::delay_for(Duration::from_secs(2)).await;
+                                return;
                             }
-
-                        } else {
-                            return;
                         }
                     }
-                }
-            });
+                });
+            }
         }
 
         Ok(server)

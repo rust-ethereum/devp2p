@@ -8,7 +8,10 @@ use k256::ecdsa::SigningKey;
 use maplit::*;
 use rand::rngs::OsRng;
 use rlp_derive::{RlpDecodable, RlpEncodable};
-use std::sync::Arc;
+use std::{
+    convert::{identity, TryInto},
+    sync::Arc,
+};
 use tracing::*;
 use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
@@ -45,7 +48,10 @@ async fn main() {
         secret_key,
         CLIENT_VERSION.to_string(),
         Some(ListenOptions {
-            discovery: Some(Arc::new(tokio::sync::Mutex::new(discovery))),
+            discovery: Some(DiscoveryOptions {
+                discovery: Arc::new(tokio::sync::Mutex::new(discovery)),
+                tasks: 50_usize.try_into().unwrap(),
+            }),
             max_peers: 50,
             addr: "0.0.0.0:30303".parse().unwrap(),
         }),
@@ -107,5 +113,11 @@ async fn main() {
         }),
     );
 
-    futures::future::pending().await
+    loop {
+        tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
+        info!(
+            "Current peers: {}",
+            client.connected_peers(identity, None, None).len()
+        );
+    }
 }

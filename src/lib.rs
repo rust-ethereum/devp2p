@@ -22,7 +22,7 @@ mod util;
 pub use disc::*;
 pub use mux::MuxServer;
 pub use peer::PeerStream;
-pub use rlpx::{ListenOptions, Server as RLPxNode};
+pub use rlpx::{DiscoveryOptions, ListenOptions, Server as RLPxNode};
 pub use types::{
     CapabilityId, CapabilityInfo, CapabilityName, Message, NodeRecord, PeerId, ProtocolRegistrar,
     ReputationReport,

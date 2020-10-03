@@ -312,7 +312,7 @@ where
 
         match ready!(Pin::new(&mut s.stream).poll_next(cx)) {
             Some(Ok(val)) => {
-                debug!("Received peer message: {}", hex::encode(&val));
+                trace!("Received peer message: {}", hex::encode(&val));
                 let message_id_rlp = Rlp::new(&val[0..1]);
                 let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
 

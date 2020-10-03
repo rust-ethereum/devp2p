@@ -533,7 +533,7 @@ impl Server {
 
         let secret_key = Arc::new(secret_key);
 
-        let protocol_version = ProtocolVersion::V4;
+        let protocol_version = ProtocolVersion::V5;
 
         let port = listen_options
             .as_ref()

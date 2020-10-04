@@ -24,6 +24,6 @@ pub use mux::MuxServer;
 pub use peer::PeerStream;
 pub use rlpx::{DiscoveryOptions, ListenOptions, Server as RLPxNode};
 pub use types::{
-    CapabilityId, CapabilityInfo, CapabilityName, Message, NodeRecord, PeerId, ProtocolRegistrar,
-    ReputationReport,
+    CapabilityId, CapabilityInfo, CapabilityName, CapabilityRegistrar, CapabilityServer,
+    HandleError, IngressPeer, Message, NodeRecord, PeerConnectOutcome, PeerId, ReputationReport,
 };

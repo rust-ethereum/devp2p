@@ -167,6 +167,18 @@ where
     }
 
     /// Connect to a peer over TCP
+    #[instrument(
+        skip(
+            transport,
+            secret_key,
+            protocol_version,
+            client_version,
+            capabilities,
+            port,
+            remote_id
+        ),
+        fields()
+    )]
     pub async fn connect(
         transport: Io,
         secret_key: Arc<SigningKey>,
@@ -188,6 +200,17 @@ where
     }
 
     /// Incoming peer stream over TCP
+    #[instrument(
+        skip(
+            transport,
+            secret_key,
+            protocol_version,
+            client_version,
+            capabilities,
+            port
+        ),
+        fields()
+    )]
     pub async fn incoming(
         transport: Io,
         secret_key: Arc<SigningKey>,

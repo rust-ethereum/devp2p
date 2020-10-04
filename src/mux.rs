@@ -4,7 +4,7 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 use rlp::{Encodable, Rlp, RlpStream};
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap},
+    collections::{hash_map::Entry, HashMap},
     fmt::Debug,
     future::Future,
     sync::Arc,
@@ -78,7 +78,7 @@ pub trait MuxProtocol: Send + Sync + 'static {
     type ResponseKind: From<Self::RequestKind> + PartialEq + Eq + Debug + Send + Sync;
     type GossipKind: Send + Sync;
 
-    fn capabilities(&self) -> BTreeMap<CapabilityId, usize>;
+    fn capabilities(&self) -> CapabilityInfo;
     fn parse_message_id(
         &self,
         id: usize,
@@ -106,7 +106,7 @@ pub trait MuxProtocol: Send + Sync + 'static {
 pub type EncodableObject = Box<dyn Encodable + Send + 'static>;
 
 /// Multiplexing server which enables request-response logic over generic bytes.
-pub struct MuxServer<P2P: ProtocolRegistrar, Protocol: MuxProtocol> {
+pub struct MuxServer<P2P: CapabilityRegistrar, Protocol: MuxProtocol> {
     tasks: Arc<TaskGroup>,
     inflight_requests: Arc<Mutex<RequestMultiplexer<<Protocol as MuxProtocol>::ResponseKind>>>,
 
@@ -115,101 +115,120 @@ pub struct MuxServer<P2P: ProtocolRegistrar, Protocol: MuxProtocol> {
     devp2p_owned_handle: Option<Arc<P2P>>,
 }
 
-impl<P2P: ProtocolRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
+impl<P2P: CapabilityRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
     /// Register the protocol server with the RLPx node.
     #[must_use]
     pub fn new(registrar: &P2P, protocol: Arc<Protocol>) -> Self {
-        let tasks = Default::default();
-        let inflight_requests = Arc::new(Mutex::new(RequestMultiplexer::default()));
-        let ingress_handler = {
-            let inflight_requests = inflight_requests.clone();
-            let protocol = protocol.clone();
-            Arc::new(move |peer: IngressPeer, id, message: Bytes| {
-                let inflight_requests = inflight_requests.clone();
-                let protocol = protocol.clone();
-                Box::pin(async move {
-                    let mut out = None;
-                    let mut reputation_report = None;
+        struct Handler<Protocol: MuxProtocol> {
+            inflight_requests:
+                Arc<Mutex<RequestMultiplexer<<Protocol as MuxProtocol>::ResponseKind>>>,
+            protocol: Arc<Protocol>,
+        }
 
-                    match protocol.parse_message_id(id) {
-                        None => {
-                            debug!("Skipping unidentified message from with id {}", id);
-                            reputation_report = Some(ReputationReport::Bad);
-                        }
-                        Some(MessageKind::Response(response)) => {
-                            let request_id = Rlp::new(message.as_ref()).val_at(0)?;
+        #[async_trait]
+        impl<Protocol: MuxProtocol> CapabilityServer for Handler<Protocol> {
+            fn on_peer_connect(&self, _: PeerId) -> PeerConnectOutcome {
+                PeerConnectOutcome::Retain {
+                    hello: self.protocol.on_peer_connect(),
+                }
+            }
 
-                            // Get the callback
-                            let sender = inflight_requests
-                                .lock()
-                                .retrieve_callback(peer.id, request_id);
+            async fn on_ingress_message(
+                &self,
+                peer: IngressPeer,
+                message: Message,
+            ) -> Result<(Option<Message>, Option<ReputationReport>), HandleError> {
+                let mut out = None;
+                let mut reputation_report = None;
 
-                            if let Some(RequestCallbackData {
-                                data: sender,
-                                expected_response_id,
-                            }) = sender
-                            {
-                                if expected_response_id != response {
-                                    debug!(
-                                        "Peer sent us wrong reply! Expected: {:?}, Got: {:?}",
-                                        expected_response_id, response
-                                    );
-                                    reputation_report = Some(ReputationReport::Kick);
-                                } else {
-                                    let payload = message
-                                        .slice_ref(Rlp::new(message.as_ref()).at(1)?.data()?);
-                                    let (tx, rx) = oneshot();
-                                    // No-op if dropped.
-                                    let _ = sender.send((payload, tx));
-                                    if let Ok(v) = rx.await {
-                                        reputation_report = Some(v)
-                                    }
-                                }
-                            } else {
-                                trace!("Peer {} sent us unsolicited reply!", peer.id);
+                match self.protocol.parse_message_id(message.id) {
+                    None => {
+                        debug!("Skipping unidentified message from with id {}", message.id);
+                        reputation_report = Some(ReputationReport::Bad);
+                    }
+                    Some(MessageKind::Response(response)) => {
+                        let request_id = Rlp::new(message.data.as_ref()).val_at(0)?;
 
+                        // Get the callback
+                        let sender = self
+                            .inflight_requests
+                            .lock()
+                            .retrieve_callback(peer.id, request_id);
+
+                        if let Some(RequestCallbackData {
+                            data: sender,
+                            expected_response_id,
+                        }) = sender
+                        {
+                            if expected_response_id != response {
+                                debug!(
+                                    "Peer sent us wrong reply! Expected: {:?}, Got: {:?}",
+                                    expected_response_id, response
+                                );
                                 reputation_report = Some(ReputationReport::Kick);
-                            }
-                        }
-                        Some(MessageKind::Request(request)) => {
-                            let request_id: u64 = Rlp::new(message.as_ref()).val_at(0)?;
-                            let payload =
-                                message.slice_ref(Rlp::new(message.as_ref()).at(1)?.data()?);
-
-                            let mut stream = RlpStream::new();
-                            stream.append(&request_id);
-
-                            let (out_encodable, rep) = protocol
-                                .handle_request(request.clone(), peer, payload)
-                                .await;
-                            if let Some(encodables) = out_encodable {
-                                for value in encodables {
-                                    stream.append(&value);
+                            } else {
+                                let payload = message
+                                    .data
+                                    .slice_ref(Rlp::new(message.data.as_ref()).at(1)?.data()?);
+                                let (tx, rx) = oneshot();
+                                // No-op if dropped.
+                                let _ = sender.send((payload, tx));
+                                if let Ok(v) = rx.await {
+                                    reputation_report = Some(v)
                                 }
-                                out = Some((
-                                    protocol.to_message_id(MessageKind::Response(request.into())),
-                                    Bytes::from(stream.out()),
-                                ));
                             }
-                            reputation_report = rep;
-                        }
-                        Some(MessageKind::Gossip(gossip)) => {
-                            reputation_report = protocol.handle_gossip(gossip, peer, message).await;
+                        } else {
+                            trace!("Peer {} sent us unsolicited reply!", peer.id);
+
+                            reputation_report = Some(ReputationReport::Kick);
                         }
                     }
+                    Some(MessageKind::Request(request)) => {
+                        let request_id: u64 = Rlp::new(message.data.as_ref()).val_at(0)?;
+                        let payload = message
+                            .data
+                            .slice_ref(Rlp::new(message.data.as_ref()).at(1)?.data()?);
 
-                    return Ok((out, reputation_report));
-                }) as IngressHandlerFuture
-            }) as IngressHandler
-        };
+                        let mut stream = RlpStream::new();
+                        stream.append(&request_id);
 
-        let devp2p_handle = Arc::new(registrar.register_protocol_server(
+                        let (out_encodable, rep) = self
+                            .protocol
+                            .handle_request(request.clone(), peer, payload)
+                            .await;
+                        if let Some(encodables) = out_encodable {
+                            for value in encodables {
+                                stream.append(&value);
+                            }
+                            out = Some(Message {
+                                id: self
+                                    .protocol
+                                    .to_message_id(MessageKind::Response(request.into())),
+                                data: Bytes::from(stream.out()),
+                            });
+                        }
+                        reputation_report = rep;
+                    }
+                    Some(MessageKind::Gossip(gossip)) => {
+                        reputation_report = self
+                            .protocol
+                            .handle_gossip(gossip, peer, message.data)
+                            .await;
+                    }
+                }
+                Ok((out, reputation_report))
+            }
+        }
+
+        let tasks = Default::default();
+        let inflight_requests = Arc::new(Mutex::new(RequestMultiplexer::default()));
+
+        let devp2p_handle = Arc::new(registrar.register(
             protocol.capabilities(),
-            ingress_handler,
-            {
-                let protocol = protocol.clone();
-                Arc::new(move || protocol.on_peer_connect())
-            },
+            Arc::new(Handler {
+                inflight_requests: inflight_requests.clone(),
+                protocol: protocol.clone(),
+            }),
         ));
         Self {
             tasks,

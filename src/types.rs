@@ -4,14 +4,7 @@ use bytes::Bytes;
 use derive_more::Display;
 pub use ethereum_types::H512 as PeerId;
 use rlp::{DecoderError, Rlp, RlpStream};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    future::Future,
-    net::SocketAddr,
-    pin::Pin,
-    str::FromStr,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, net::SocketAddr, str::FromStr, sync::Arc};
 
 pub type StdError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type StdResult<T> = Result<T, StdError>;
@@ -109,6 +102,7 @@ pub enum ReputationReport {
     Ban,
 }
 
+#[derive(Debug)]
 /// Represents a peers that sent us a message.
 pub struct IngressPeer {
     /// Peer ID
@@ -138,18 +132,20 @@ impl HandleError {
     }
 }
 
-pub type IngressHandlerFuture = Pin<
-    Box<
-        dyn Future<Output = Result<(Option<(usize, Bytes)>, Option<ReputationReport>), HandleError>>
-            + Send
-            + 'static,
-    >,
->;
+pub enum PeerConnectOutcome {
+    Disavow,
+    Retain { hello: Option<Message> },
+}
 
-pub type IngressHandler =
-    Arc<dyn Fn(IngressPeer, usize, Bytes) -> IngressHandlerFuture + Send + Sync + 'static>;
-
-pub type OnPeerConnect = Arc<dyn Fn() -> Option<Message> + Send + Sync + 'static>;
+#[async_trait]
+pub trait CapabilityServer: Send + Sync + 'static {
+    fn on_peer_connect(&self, peer_id: PeerId) -> PeerConnectOutcome;
+    async fn on_ingress_message(
+        &self,
+        peer: IngressPeer,
+        message: Message,
+    ) -> Result<(Option<Message>, Option<ReputationReport>), HandleError>;
+}
 
 pub enum PeerSendError {
     Shutdown,
@@ -177,21 +173,19 @@ pub trait ServerHandle: Send + Sync + 'static {
     /// Get peers that match the specified capability version. Returns peer ID and actual capability version.
     async fn get_peers(
         &self,
-        name: CapabilityName,
         versions: BTreeSet<usize>,
         note: Option<(String, String)>,
     ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown>;
 }
 
 #[async_trait]
-pub trait ProtocolRegistrar: Send + Sync {
+pub trait CapabilityRegistrar: Send + Sync {
     type ServerHandle: ServerHandle;
 
-    /// Register support for the protocol. Takes the sink as incoming handler for the protocol. Returns personal handle to the peer pool.
-    fn register_protocol_server(
+    /// Register support for the capability. Takes the server for the capability. Returns personal handle to the peer pool.
+    fn register(
         &self,
-        capabilities: BTreeMap<CapabilityId, usize>,
-        incoming_handler: IngressHandler,
-        on_peer_connect: OnPeerConnect,
+        info: CapabilityInfo,
+        capability_server: Arc<dyn CapabilityServer>,
     ) -> Self::ServerHandle;
 }

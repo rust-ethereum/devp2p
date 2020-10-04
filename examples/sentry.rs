@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
 use arrayvec::ArrayString;
+use async_trait::async_trait;
 use devp2p::*;
 use ethereum_types::*;
 use hex_literal::hex;
 use k256::ecdsa::SigningKey;
-use maplit::*;
 use rand::rngs::OsRng;
 use rlp_derive::{RlpDecodable, RlpEncodable};
 use std::{
@@ -26,6 +26,69 @@ struct StatusMessage {
     total_difficulty: U256,
     best_hash: H256,
     genesis_hash: H256,
+}
+
+#[derive(Debug)]
+struct CapabilityServerImpl;
+
+#[async_trait]
+impl CapabilityServer for CapabilityServerImpl {
+    fn on_peer_connect(&self, _: PeerId) -> PeerConnectOutcome {
+        let status_message = StatusMessage {
+            protocol_version: 63,
+            network_id: 1,
+            total_difficulty: 17608636743620256866935_u128.into(),
+            best_hash: H256::from(hex!(
+                "28042e7e4d35a3482bf5f0d862501868b04c1734f483ceae3bf1393561951829"
+            )),
+            genesis_hash: H256::from(hex!(
+                "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+            )),
+        };
+
+        PeerConnectOutcome::Retain {
+            hello: Some(Message {
+                id: 0,
+                data: rlp::encode(&status_message).into(),
+            }),
+        }
+    }
+    #[instrument(skip(peer, message), level = "debug", name = "ingress", fields(peer=&*peer.id.to_string(), id=message.id))]
+    async fn on_ingress_message(
+        &self,
+        peer: IngressPeer,
+        message: Message,
+    ) -> Result<(Option<Message>, Option<ReputationReport>), HandleError> {
+        let Message { id, data } = message;
+
+        info!("Received message with id {}, data {:?}", id, data);
+
+        if id == 0 {
+            match rlp::decode::<StatusMessage>(&data) {
+                Ok(v) => {
+                    info!("Decoded status message: {:?}", v);
+                }
+                Err(e) => {
+                    info!("Failed to decode status message: {}! Kicking peer.", e);
+                    return Ok((None, Some(ReputationReport::Kick)));
+                }
+            }
+        }
+
+        let out_id = match id {
+            3 => Some(4),
+            5 => Some(6),
+            _ => None,
+        };
+
+        Ok((
+            out_id.map(|id| Message {
+                id,
+                data: rlp::encode_list::<String, String>(&[]).into(),
+            }),
+            None,
+        ))
+    }
 }
 
 #[tokio::main]
@@ -50,7 +113,7 @@ async fn main() {
         Some(ListenOptions {
             discovery: Some(DiscoveryOptions {
                 discovery: Arc::new(tokio::sync::Mutex::new(discovery)),
-                tasks: 50_usize.try_into().unwrap(),
+                tasks: 1_usize.try_into().unwrap(),
             }),
             max_peers: 50,
             addr: "0.0.0.0:30303".parse().unwrap(),
@@ -59,58 +122,13 @@ async fn main() {
     .await
     .unwrap();
 
-    let status_message = StatusMessage {
-        protocol_version: 63,
-        network_id: 1,
-        total_difficulty: 17608636743620256866935_u128.into(),
-        best_hash: H256::from(hex!(
-            "28042e7e4d35a3482bf5f0d862501868b04c1734f483ceae3bf1393561951829"
-        )),
-        genesis_hash: H256::from(hex!(
-            "d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
-        )),
-    };
-
-    let _handle = client.register_protocol_server(
-        btreemap! { CapabilityId {
+    let _handle = client.register(
+        CapabilityInfo {
             name: CapabilityName(ArrayString::from("eth").unwrap()),
-            version: 63
-        } => 17 },
-        Arc::new(|peer, id, data| {
-            Box::pin(async move {
-                if id == 0 {
-                    match rlp::decode::<StatusMessage>(&data) {
-                        Ok(v) => {
-                            info!("Received status message from peer {}: {:?}", peer.id, v);
-                        }
-                        Err(e) => {
-                            info!(
-                                "Failed to decode peer {}'s status message: {}! Kicking peer.",
-                                peer.id, e
-                            );
-                            return Ok((None, Some(ReputationReport::Kick)));
-                        }
-                    }
-                }
-
-                let out_id = match id {
-                    3 => Some(4),
-                    5 => Some(6),
-                    _ => None,
-                };
-
-                Ok((
-                    out_id.map(|id| (id, rlp::encode_list::<String, String>(&[]).into())),
-                    None,
-                ))
-            })
-        }),
-        Arc::new(move || {
-            Some(Message {
-                id: 0,
-                data: rlp::encode(&status_message).into(),
-            })
-        }),
+            version: 63,
+            length: 17,
+        },
+        Arc::new(CapabilityServerImpl),
     );
 
     loop {

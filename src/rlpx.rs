@@ -61,7 +61,7 @@ impl EgressPeerHandle for EgressPeerHandleImpl {
 }
 
 pub struct ServerHandleImpl {
-    capabilities: BTreeSet<CapabilityId>,
+    capability: CapabilityId,
     pool: Weak<Server>,
 }
 
@@ -74,11 +74,11 @@ impl Drop for ServerHandleImpl {
             // Kick all peers with capability
             streams.mapping.retain(|_, state| match state {
                 PeerState::Connecting { .. } => false,
-                PeerState::Connected(handle) => handle.capabilities.is_disjoint(&self.capabilities),
+                PeerState::Connected(handle) => !handle.capabilities.contains(&self.capability),
             });
 
             // Remove protocol handler
-            protocols.delete_capabilities(&self.capabilities)
+            protocols.delete_capability(self.capability)
         }
     }
 }
@@ -89,7 +89,6 @@ impl ServerHandle for ServerHandleImpl {
 
     async fn get_peers(
         &self,
-        name: CapabilityName,
         versions: BTreeSet<usize>,
         note: Option<(String, String)>,
     ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown> {
@@ -97,13 +96,16 @@ impl ServerHandle for ServerHandleImpl {
         Ok(pool
             .connected_peers(
                 |_| 1,
-                Some(&CapabilityFilter { name, versions }),
+                Some(&CapabilityFilter {
+                    name: self.capability.name,
+                    versions,
+                }),
                 note.as_ref(),
             )
             .into_iter()
             .map(|(peer_id, (sender, capabilities))| EgressPeerHandleImpl {
-                capability: name,
-                capability_version: capabilities[&name],
+                capability: self.capability.name,
+                capability_version: capabilities[&self.capability.name],
                 peer_id,
                 sender,
             })
@@ -232,25 +234,28 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                         // Extract capability's ingress handler
                         let handler = capabilities.read().get_inner().get(&capability.into()).map(
                             |CapabilityMeta {
-                                 incoming_handler, ..
-                             }| incoming_handler.clone(),
+                                 protocol_server, ..
+                             }| protocol_server.clone(),
                         );
 
                         // Actually handle the message
                         if let Some(handler) = handler {
-                            let (message, report) = (handler)(
-                                IngressPeer {
-                                    id: remote_id,
-                                    capability: capability.into(),
-                                },
-                                message_id,
-                                message,
-                            )
-                            .await
-                            .unwrap_or_else(|err| {
-                                debug!("Ingress handler error: {:?}", err);
-                                (None, err.to_reputation_report())
-                            });
+                            let (message, report) = handler
+                                .on_ingress_message(
+                                    IngressPeer {
+                                        id: remote_id,
+                                        capability: capability.into(),
+                                    },
+                                    Message {
+                                        id: message_id,
+                                        data: message,
+                                    },
+                                )
+                                .await
+                                .unwrap_or_else(|err| {
+                                    debug!("Ingress handler error: {:?}", err);
+                                    (None, err.to_reputation_report())
+                                });
 
                             // Check reputation report
                             match report {
@@ -264,7 +269,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                             }
 
                             // And send any reply if necessary
-                            if let Some((id, data)) = message {
+                            if let Some(Message { id, data }) = message {
                                 let _ = peer_sender_tx
                                     .send(RLPxSendMessage {
                                         capability_name: capability.name,
@@ -284,47 +289,60 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
 
             streams.lock().disconnect_peer(remote_id);
         }
+        .instrument(span!(
+            Level::DEBUG,
+            "ingress router",
+            "peer={}",
+            remote_id.to_string(),
+        ))
     });
     // Egress router
     tasks.spawn({
-        let capability_set = capability_set.clone();
         async move {
             // Send initial messages
-            let initial_messages = stream::iter(
-                capabilities
-                    .read()
-                    .get_inner()
-                    .iter()
-                    .filter_map(|(cap, cap_info)| {
-                        if capability_set.contains(cap) {
-                            (cap_info.on_peer_connect)().map(|Message { id, data }| {
-                                RLPxSendMessage {
-                                    capability_name: cap.name,
-                                    id,
-                                    data,
-                                }
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>(),
-            );
-
-            let mut message_stream = initial_messages.chain(peer_sender_rx);
-
-            while let Some(RLPxSendMessage {
-                capability_name,
-                id,
-                data,
-            }) = message_stream.next().await
-            {
-                if let Err(e) = sink.send((capability_name, id, data)).await {
-                    debug!("peer disconnected with error {:?}", e);
-                    streams.lock().disconnect_peer(remote_id);
+            let mut useless_peer = true;
+            let mut initial_messages = vec![];
+            for (cap, cap_info) in capabilities.read().get_inner() {
+                if let PeerConnectOutcome::Retain { hello } =
+                    cap_info.protocol_server.on_peer_connect(remote_id)
+                {
+                    useless_peer = false;
+                    if let Some(Message { id, data }) = hello {
+                        initial_messages.push(RLPxSendMessage {
+                            capability_name: cap.name,
+                            id,
+                            data,
+                        });
+                    }
                 }
             }
+
+            if useless_peer {
+                debug!("peer disavowed by all caps, disconnecting");
+            } else {
+                let mut message_stream = stream::iter(initial_messages).chain(peer_sender_rx);
+
+                while let Some(RLPxSendMessage {
+                    capability_name,
+                    id,
+                    data,
+                }) = message_stream.next().await
+                {
+                    if let Err(e) = sink.send((capability_name, id, data)).await {
+                        debug!("peer disconnected with error {:?}", e);
+                        break;
+                    }
+                }
+            }
+
+            streams.lock().disconnect_peer(remote_id);
         }
+        .instrument(span!(
+            Level::DEBUG,
+            "egress router",
+            "peer={}",
+            remote_id.to_string(),
+        ))
     });
     StreamHandle {
         sender: peer_sender_tx,
@@ -415,9 +433,7 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Debug + Send + Unp
 struct CapabilityMeta {
     length: usize,
     #[derivative(Debug = "ignore")]
-    incoming_handler: IngressHandler,
-    #[derivative(Debug = "ignore")]
-    on_peer_connect: OnPeerConnect,
+    protocol_server: Arc<dyn CapabilityServer>,
 }
 
 #[derive(Debug, Default)]
@@ -444,32 +460,25 @@ impl CapabilityMap {
             .collect();
     }
 
-    fn register_capabilities(
+    fn register_capability(
         &mut self,
-        caps: BTreeMap<CapabilityId, usize>,
-        incoming_handler: &IngressHandler,
-        on_peer_connect: &OnPeerConnect,
+        id: CapabilityId,
+        length: usize,
+        protocol_server: Arc<dyn CapabilityServer>,
     ) {
-        for (id, length) in caps {
-            let incoming_handler = incoming_handler.clone();
-            let on_peer_connect = on_peer_connect.clone();
-            self.inner.insert(
-                id,
-                CapabilityMeta {
-                    length,
-                    incoming_handler,
-                    on_peer_connect,
-                },
-            );
-        }
+        self.inner.insert(
+            id,
+            CapabilityMeta {
+                length,
+                protocol_server,
+            },
+        );
 
         self.update_cache()
     }
 
-    fn delete_capabilities<'a>(&mut self, caps: impl IntoIterator<Item = &'a CapabilityId>) {
-        for cap in caps {
-            self.inner.remove(cap);
-        }
+    fn delete_capability(&mut self, cap: CapabilityId) {
+        self.inner.remove(&cap);
 
         self.update_cache()
     }
@@ -584,10 +593,11 @@ impl Server {
 
         // TODO: Use semaphore
         if let Some(options) = listen_options.and_then(|options| options.discovery) {
-            for _ in 0..options.tasks.get() {
+            for num in 0..options.tasks.get() {
                 tasks.spawn({
                     let discovery = options.discovery.clone();
                     let server = Arc::downgrade(&server);
+                    let tasks = Arc::downgrade(&tasks);
                     async move {
                         loop {
                             if let Some(server) = server.upgrade() {
@@ -595,7 +605,7 @@ impl Server {
                                 let max_peers = server.node_filter.lock().max_peers();
 
                                 if streams_len < max_peers {
-                                    debug!("Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
+                                    trace!("Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
                                     match tokio::time::timeout(
                                         Duration::from_secs(DISCOVERY_TIMEOUT_SECS),
                                         {
@@ -611,13 +621,15 @@ impl Server {
                                     }) {
                                         Ok((addr, remote_id)) => {
                                             debug!("Discovered peer: {:?}", remote_id);
-                                            match tokio::time::timeout(Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS), server.add_peer_inner(addr, remote_id, true)).await {
-                                                Ok(Err(e)) => debug!("Failed to add new peer {}: {}", remote_id, e),
-                                                Err(_) => debug!("Timed out adding peer {}", remote_id),
-                                                _ => {}
+                                            if let Some(tasks) = tasks.upgrade() {
+                                                tasks.spawn(async move {
+                                                    if tokio::time::timeout(Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS), server.add_peer_inner(addr, remote_id, true)).await.is_err() {
+                                                        debug!("Timed out adding peer {}", remote_id);
+                                                    }
+                                                });
                                             }
                                         }
-                                        Err(e) => warn!("Failed to get new peer: {}", e),
+                                        Err(e) => warn!("Failed to get new peer: {}", e)
                                     }
                                     tokio::time::delay_for(Duration::from_millis(2000)).await;
                                 } else {
@@ -628,7 +640,7 @@ impl Server {
                                 return;
                             }
                         }
-                    }
+                    }.instrument(span!(Level::DEBUG, "discovery", "#{}", num.to_string()))
                 });
             }
         }
@@ -644,7 +656,6 @@ impl Server {
         self.add_peer_inner(node_record.addr, node_record.id, false)
     }
 
-    #[instrument]
     fn add_peer_inner(
         &self,
         addr: SocketAddr,
@@ -775,6 +786,7 @@ impl Server {
 
             Ok(false)
         }
+        .instrument(span!(Level::DEBUG, "add peer",))
     }
 
     /// Add a note to the peer
@@ -885,21 +897,20 @@ impl Server {
     }
 }
 
-impl ProtocolRegistrar for Arc<Server> {
+impl CapabilityRegistrar for Arc<Server> {
     type ServerHandle = ServerHandleImpl;
 
-    fn register_protocol_server(
+    fn register(
         &self,
-        capabilities: BTreeMap<CapabilityId, usize>,
-        incoming_handler: IngressHandler,
-        on_peer_connect: OnPeerConnect,
+        info: CapabilityInfo,
+        capability_server: Arc<dyn CapabilityServer>,
     ) -> Self::ServerHandle {
         let mut protocols = self.protocols.write();
-        protocols.register_capabilities(capabilities.clone(), &incoming_handler, &on_peer_connect);
+        protocols.register_capability(info.into(), info.length, capability_server);
         let pool = Arc::downgrade(self);
-        Self::ServerHandle {
+        ServerHandleImpl {
             pool,
-            capabilities: capabilities.keys().copied().collect(),
+            capability: info.into(),
         }
     }
 }

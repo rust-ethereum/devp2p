@@ -150,6 +150,7 @@ pub struct PeerStream<Io> {
     snappy: Option<Snappy>,
 
     pending_pong: bool,
+    disconnected: bool,
 }
 
 impl<Io> PeerStream<Io>
@@ -355,6 +356,7 @@ where
                     shared_capabilities,
                     snappy,
                     pending_pong: false,
+                    disconnected: false,
                 })
             }
             Err(e) => {
@@ -376,6 +378,10 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut s = self.get_mut();
+
+        if s.disconnected {
+            return Poll::Ready(None);
+        }
         if s.pending_pong && Pin::new(&mut s.stream).poll_ready(cx)?.is_ready() {
             let mut payload: Vec<u8> = rlp::encode(&0x03_usize /* pong */).to_vec();
             payload.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
@@ -415,6 +421,7 @@ where
                         if message_id < 0x10 {
                             match message_id {
                                 0x01 /* disconnect */ => {
+                                    s.disconnected = true;
                                     return Poll::Ready(Some(Err(make_disconnect_err(&*data))));
                                 },
                                 0x02 /* ping */ => {
@@ -474,7 +481,17 @@ where
     }
 }
 
-impl<Io> Sink<(CapabilityName, usize, Bytes)> for PeerStream<Io>
+pub enum EgressMessage {
+    Disconnect {
+        reason: DisconnectReason,
+    },
+    Subprotocol {
+        cap_name: CapabilityName,
+        message: Message,
+    },
+}
+
+impl<Io> Sink<EgressMessage> for PeerStream<Io>
 where
     Io: AsyncRead + AsyncWrite + Debug + Send + Unpin,
 {
@@ -484,59 +501,77 @@ where
         Pin::new(&mut self.get_mut().stream).poll_ready(cx)
     }
 
-    fn start_send(
-        self: Pin<&mut Self>,
-        (cap_name, id, data): (CapabilityName, usize, Bytes),
-    ) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, message: EgressMessage) -> Result<(), Self::Error> {
         let this = self.get_mut();
-        let cap = this
-            .shared_capabilities
-            .iter()
-            .find(|cap| cap.name == cap_name);
 
-        if cap.is_none() {
-            debug!(
+        if this.disconnected {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "disconnection requested",
+            ));
+        }
+
+        match message {
+            EgressMessage::Disconnect { reason } => {
+                let mut msg = vec![0x01];
+                msg.append(&mut rlp::encode(&reason.to_u8().unwrap()));
+                Pin::new(&mut this.stream).start_send(msg)?;
+                this.disconnected = true;
+            }
+            EgressMessage::Subprotocol { cap_name, message } => {
+                let Message { id, data } = message;
+                let cap = this
+                    .shared_capabilities
+                    .iter()
+                    .find(|cap| cap.name == cap_name);
+
+                if cap.is_none() {
+                    debug!(
                 "giving up sending cap {} of id {} to 0x{:x} because remote does not support.",
                 cap_name.0,
                 id,
                 this.remote_id()
             );
-            return Ok(());
-        }
+                    return Ok(());
+                }
 
-        let cap = *cap.unwrap();
+                let cap = *cap.unwrap();
 
-        if id >= cap.length {
-            debug!(
-                "giving up sending cap {} of id {} to 0x{:x} because it is too big.",
-                cap_name.0,
-                id,
-                this.remote_id()
-            );
-            return Ok(());
-        }
+                if id >= cap.length {
+                    debug!(
+                        "giving up sending cap {} of id {} to 0x{:x} because it is too big.",
+                        cap_name.0,
+                        id,
+                        this.remote_id()
+                    );
+                    return Ok(());
+                }
 
-        let mut message_id = 0x10;
-        for scap in &this.shared_capabilities {
-            if scap == &cap {
-                break;
+                let mut message_id = 0x10;
+                for scap in &this.shared_capabilities {
+                    if scap == &cap {
+                        break;
+                    }
+
+                    message_id += scap.length;
+                }
+                message_id += id;
+                let first = rlp::encode(&message_id);
+                assert!(first.len() == 1);
+
+                let mut ret: Vec<u8> = Vec::new();
+                ret.push(first[0]);
+                if let Some(snappy) = &mut this.snappy {
+                    ret.append(&mut snappy.encoder.compress_vec(&*data).unwrap());
+                } else {
+                    ret.extend_from_slice(&*data)
+                }
+
+                Pin::new(&mut this.stream).start_send(ret)?;
             }
-
-            message_id += scap.length;
-        }
-        message_id += id;
-        let first = rlp::encode(&message_id);
-        assert!(first.len() == 1);
-
-        let mut ret: Vec<u8> = Vec::new();
-        ret.push(first[0]);
-        if let Some(snappy) = &mut this.snappy {
-            ret.append(&mut snappy.encoder.compress_vec(&*data).unwrap());
-        } else {
-            ret.extend_from_slice(&*data)
         }
 
-        Pin::new(&mut this.stream).start_send(ret)
+        Ok(())
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

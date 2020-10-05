@@ -328,7 +328,13 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                     data,
                 }) = message_stream.next().await
                 {
-                    if let Err(e) = sink.send((capability_name, id, data)).await {
+                    if let Err(e) = sink
+                        .send(EgressMessage::Subprotocol {
+                            cap_name: capability_name,
+                            message: Message { id, data },
+                        })
+                        .await
+                    {
                         debug!("peer disconnected with error {:?}", e);
                         break;
                     }

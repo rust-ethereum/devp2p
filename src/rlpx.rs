@@ -13,6 +13,7 @@ use std::{
     io,
     net::SocketAddr,
     num::NonZeroUsize,
+    pin::Pin,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -20,7 +21,7 @@ use task_group::TaskGroup;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
-    stream::{self, StreamExt},
+    stream::{self, Stream, StreamExt},
     sync::Mutex as AsyncMutex,
 };
 use tracing::*;
@@ -218,7 +219,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
         .map(From::from)
         .collect::<BTreeSet<_>>();
     let (mut sink, mut stream) = futures::StreamExt::split(peer);
-    let (mut peer_disconnect_tx, mut peer_disconnect_rx) = tokio::sync::mpsc::channel(1);
+    let (mut peer_disconnect_tx, peer_disconnect_rx) = tokio::sync::mpsc::channel(1);
     let (peer_sender_tx, peer_sender_rx) = tokio::sync::mpsc::channel(1);
     let tasks = TaskGroup::default();
 
@@ -312,7 +313,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
     tasks.spawn({
         async move {
             // Send initial messages
-            let mut useless_peer = true;
+            let mut useless_peer = false;
             let mut initial_messages = vec![];
             for (cap, cap_info) in capabilities.read().get_inner() {
                 if let PeerConnectOutcome::Retain { hello } =
@@ -325,49 +326,53 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                             message,
                         });
                     }
+                } else {
+                    useless_peer = true;
                 }
             }
 
-            if useless_peer {
+            let mut peer_disconnect_rx: Pin<Box<dyn Stream<Item = DisconnectReason> + Send + Sync>> = if useless_peer {
                 debug!("peer disavowed by all caps, disconnecting");
+                Box::pin(stream::iter(vec![DisconnectReason::UselessPeer]))
             } else {
-                let mut message_stream = stream::iter(initial_messages)
-                    .chain(peer_sender_rx)
-                    .map(|v| EgressMessage::Subprotocol {
-                        cap_name: v.capability_name,
-                        message: v.message,
-                    }).fuse();
+                Box::pin(peer_disconnect_rx)
+            };
+            let mut message_stream = stream::iter(initial_messages)
+                .chain(peer_sender_rx)
+                .map(|v| EgressMessage::Subprotocol {
+                    cap_name: v.capability_name,
+                    message: v.message,
+                }).fuse();
 
-                loop {
-                    let mut disconnecting = false;
-                    let message;
-                    tokio::select! {
-                        v = message_stream.next() => {
-                            match v {
-                                Some(msg) => {
-                                    message = msg;
-                                }
-                                None => {
-                                    disconnecting = true;
-                                    message = EgressMessage::Disconnect { reason: DisconnectReason::DisconnectRequested };
-                                }
+            loop {
+                let mut disconnecting = false;
+                let message;
+                tokio::select! {
+                    v = message_stream.next() => {
+                        match v {
+                            Some(msg) => {
+                                message = msg;
                             }
-                        },
-                        v = peer_disconnect_rx.next() => {
-                            disconnecting = true;
-                            message = EgressMessage::Disconnect { reason: v.unwrap_or(DisconnectReason::DisconnectRequested) };
-                        },
-                    };
+                            None => {
+                                disconnecting = true;
+                                message = EgressMessage::Disconnect { reason: DisconnectReason::DisconnectRequested };
+                            }
+                        }
+                    },
+                    v = peer_disconnect_rx.next() => {
+                        disconnecting = true;
+                        message = EgressMessage::Disconnect { reason: v.unwrap_or(DisconnectReason::DisconnectRequested) };
+                    },
+                };
 
-                    if let Err(e) = sink.send(message).await {
-                        debug!("peer disconnected with error {:?}", e);
-                        break;
-                    }
+                if let Err(e) = sink.send(message).await {
+                    debug!("peer disconnected with error {:?}", e);
+                    break;
+                }
 
-                    if disconnecting {
-                        tokio::time::delay_for(Duration::from_secs(GRACE_PERIOD_SECS)).await;
-                        break;
-                    }
+                if disconnecting {
+                    tokio::time::delay_for(Duration::from_secs(GRACE_PERIOD_SECS)).await;
+                    break;
                 }
             }
 

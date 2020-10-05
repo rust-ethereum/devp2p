@@ -4,10 +4,13 @@ use rand::{rngs::OsRng, seq::SliceRandom};
 use std::time::Duration;
 use tokio::time::delay_for;
 use tracing::*;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    let _ = env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
     // Bootnodes as used in OpenEthereum
     let bootnodes = vec![

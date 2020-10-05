@@ -2,7 +2,6 @@
 
 use crate::{disc::*, node_filter::*, peer::*, types::*};
 use async_trait::async_trait;
-use bytes::Bytes;
 use derivative::Derivative;
 use futures::sink::SinkExt;
 use k256::ecdsa::SigningKey;
@@ -27,6 +26,7 @@ use tokio::{
 use tracing::*;
 use uuid::Uuid;
 
+const GRACE_PERIOD_SECS: u64 = 2;
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 const DISCOVERY_TIMEOUT_SECS: u64 = 5;
 const DISCOVERY_CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -46,12 +46,11 @@ impl EgressPeerHandle for EgressPeerHandleImpl {
     fn peer_id(&self) -> PeerId {
         self.peer_id
     }
-    async fn send_message(mut self, Message { id, data }: Message) -> Result<(), PeerSendError> {
+    async fn send_message(mut self, message: Message) -> Result<(), PeerSendError> {
         self.sender
             .send(RLPxSendMessage {
-                id,
                 capability_name: self.capability,
-                data,
+                message,
             })
             .await
             .map_err(|_| PeerSendError::PeerGone)?;
@@ -117,8 +116,7 @@ impl ServerHandle for ServerHandleImpl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RLPxSendMessage {
     pub capability_name: CapabilityName,
-    pub id: usize,
-    pub data: Bytes,
+    pub message: Message,
 }
 
 pub type PeerSender = tokio::sync::mpsc::Sender<RLPxSendMessage>;
@@ -220,74 +218,88 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
         .map(From::from)
         .collect::<BTreeSet<_>>();
     let (mut sink, mut stream) = futures::StreamExt::split(peer);
+    let (mut peer_disconnect_tx, mut peer_disconnect_rx) = tokio::sync::mpsc::channel(1);
     let (peer_sender_tx, peer_sender_rx) = tokio::sync::mpsc::channel(1);
     let tasks = TaskGroup::default();
+
     // Ingress router
     tasks.spawn({
-        let streams = streams.clone();
         let capabilities = capabilities.clone();
-        let mut peer_sender_tx = peer_sender_tx.clone();
+        let peer_sender_tx = peer_sender_tx.clone();
         async move {
-            while let Some(message) = stream.next().await {
-                match message {
-                    Ok((capability, message_id, message)) => {
-                        // Extract capability's ingress handler
-                        let handler = capabilities.read().get_inner().get(&capability.into()).map(
-                            |CapabilityMeta {
-                                 protocol_server, ..
-                             }| protocol_server.clone(),
-                        );
+            let reason = {
+                let mut peer_sender_tx = peer_sender_tx.clone();
+                async move {
+                    while let Some(message) = stream.next().await {
+                        match message {
+                            Ok((capability, message_id, message)) => {
+                                // Extract capability's ingress handler
+                                let handler =
+                                    capabilities.read().get_inner().get(&capability.into()).map(
+                                        |CapabilityMeta {
+                                             protocol_server, ..
+                                         }| {
+                                            protocol_server.clone()
+                                        },
+                                    );
 
-                        // Actually handle the message
-                        if let Some(handler) = handler {
-                            let (message, report) = handler
-                                .on_ingress_message(
-                                    IngressPeer {
-                                        id: remote_id,
-                                        capability: capability.into(),
-                                    },
-                                    Message {
-                                        id: message_id,
-                                        data: message,
-                                    },
-                                )
-                                .await
-                                .unwrap_or_else(|err| {
-                                    debug!("Ingress handler error: {:?}", err);
-                                    (None, err.to_reputation_report())
-                                });
+                                // Actually handle the message
+                                if let Some(handler) = handler {
+                                    let (message, report) = handler
+                                        .on_ingress_message(
+                                            IngressPeer {
+                                                id: remote_id,
+                                                capability: capability.into(),
+                                            },
+                                            Message {
+                                                id: message_id,
+                                                data: message,
+                                            },
+                                        )
+                                        .await
+                                        .unwrap_or_else(|err| {
+                                            debug!("Ingress handler error: {:?}", err);
+                                            (None, err.to_reputation_report())
+                                        });
 
-                            // Check reputation report
-                            match report {
-                                Some(ReputationReport::Kick) | Some(ReputationReport::Ban) => {
-                                    debug!("Received damning report about peer, disconnecting");
-                                    break;
-                                }
-                                _ => {
-                                    // TODO: ignore other reputation reports for now
+                                    // Check reputation report
+                                    match report {
+                                        Some(ReputationReport::Kick)
+                                        | Some(ReputationReport::Ban) => {
+                                            debug!(
+                                                "Received damning report about peer, disconnecting"
+                                            );
+                                            break;
+                                        }
+                                        _ => {
+                                            // TODO: ignore other reputation reports for now
+                                        }
+                                    }
+
+                                    // And send any reply if necessary
+                                    if let Some(message) = message {
+                                        let _ = peer_sender_tx
+                                            .send(RLPxSendMessage {
+                                                capability_name: capability.name,
+                                                message,
+                                            })
+                                            .await;
+                                    }
                                 }
                             }
-
-                            // And send any reply if necessary
-                            if let Some(Message { id, data }) = message {
-                                let _ = peer_sender_tx
-                                    .send(RLPxSendMessage {
-                                        capability_name: capability.name,
-                                        id,
-                                        data,
-                                    })
-                                    .await;
+                            Err(e) => {
+                                debug!("Peer incoming error: {}", e);
+                                break;
                             }
                         }
                     }
-                    Err(e) => {
-                        debug!("Peer incoming error: {}", e);
-                        break;
-                    }
+
+                    DisconnectReason::DisconnectRequested
                 }
             }
+            .await;
 
-            streams.lock().disconnect_peer(remote_id);
+            let _ = peer_disconnect_tx.send(reason).await;
         }
         .instrument(span!(
             Level::DEBUG,
@@ -296,7 +308,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
             remote_id.to_string(),
         ))
     });
-    // Egress router
+    // Egress router & disconnector
     tasks.spawn({
         async move {
             // Send initial messages
@@ -307,11 +319,10 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                     cap_info.protocol_server.on_peer_connect(remote_id)
                 {
                     useless_peer = false;
-                    if let Some(Message { id, data }) = hello {
+                    if let Some(message) = hello {
                         initial_messages.push(RLPxSendMessage {
                             capability_name: cap.name,
-                            id,
-                            data,
+                            message,
                         });
                     }
                 }
@@ -320,22 +331,41 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
             if useless_peer {
                 debug!("peer disavowed by all caps, disconnecting");
             } else {
-                let mut message_stream = stream::iter(initial_messages).chain(peer_sender_rx);
+                let mut message_stream = stream::iter(initial_messages)
+                    .chain(peer_sender_rx)
+                    .map(|v| EgressMessage::Subprotocol {
+                        cap_name: v.capability_name,
+                        message: v.message,
+                    }).fuse();
 
-                while let Some(RLPxSendMessage {
-                    capability_name,
-                    id,
-                    data,
-                }) = message_stream.next().await
-                {
-                    if let Err(e) = sink
-                        .send(EgressMessage::Subprotocol {
-                            cap_name: capability_name,
-                            message: Message { id, data },
-                        })
-                        .await
-                    {
+                loop {
+                    let mut disconnecting = false;
+                    let message;
+                    tokio::select! {
+                        v = message_stream.next() => {
+                            match v {
+                                Some(msg) => {
+                                    message = msg;
+                                }
+                                None => {
+                                    disconnecting = true;
+                                    message = EgressMessage::Disconnect { reason: DisconnectReason::DisconnectRequested };
+                                }
+                            }
+                        },
+                        v = peer_disconnect_rx.next() => {
+                            disconnecting = true;
+                            message = EgressMessage::Disconnect { reason: v.unwrap_or(DisconnectReason::DisconnectRequested) };
+                        },
+                    };
+
+                    if let Err(e) = sink.send(message).await {
                         debug!("peer disconnected with error {:?}", e);
+                        break;
+                    }
+
+                    if disconnecting {
+                        tokio::time::delay_for(Duration::from_secs(GRACE_PERIOD_SECS)).await;
                         break;
                     }
                 }

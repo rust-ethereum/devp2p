@@ -152,7 +152,7 @@ pub enum PeerSendError {
     PeerGone,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
     pub id: usize,
     pub data: Bytes,

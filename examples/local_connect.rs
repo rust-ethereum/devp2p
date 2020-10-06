@@ -36,13 +36,10 @@ async fn main() {
 
     debug!("Connecting to {}", node.addr);
 
-    let client = RLPxNode::new(
-        SigningKey::random(&mut OsRng),
-        "rust-devp2p/0.1.0".to_string(),
-        None,
-    )
-    .await
-    .unwrap();
+    let client = RLPxNodeBuilder::new()
+        .build(SigningKey::random(&mut OsRng))
+        .await
+        .unwrap();
 
     client.add_peer(node).await.unwrap();
 

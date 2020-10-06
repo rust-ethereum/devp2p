@@ -561,16 +561,70 @@ pub struct Server {
     port: u16,
 }
 
+/// Builder for ergonomically creating a new `Server`.
+#[derive(Debug)]
+pub struct ServerBuilder {
+    task_group: Option<Arc<TaskGroup>>,
+    listen_options: Option<ListenOptions>,
+    client_version: String,
+}
+
+impl Default for ServerBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ServerBuilder {
+    pub fn new() -> Self {
+        Self {
+            task_group: None,
+            listen_options: None,
+            client_version: format!("rust-devp2p/{}", env!("CARGO_PKG_VERSION")),
+        }
+    }
+
+    pub fn with_task_group(&mut self, task_group: Arc<TaskGroup>) -> &mut Self {
+        self.task_group = Some(task_group);
+        self
+    }
+
+    pub fn with_listen_options(&mut self, options: ListenOptions) -> &mut Self {
+        self.listen_options = Some(options);
+        self
+    }
+
+    pub fn with_client_version(&mut self, version: String) -> &mut Self {
+        self.client_version = version;
+        self
+    }
+
+    /// Create a new RLPx node
+    pub async fn build(&self, secret_key: SigningKey) -> Result<Arc<Server>, io::Error> {
+        Server::new(
+            secret_key,
+            self.client_version.clone(),
+            self.task_group.clone(),
+            self.listen_options.clone(),
+        )
+        .await
+    }
+}
+
 pub struct CapabilityFilter {
     pub name: CapabilityName,
     pub versions: BTreeSet<usize>,
 }
 
+#[derive(Derivative)]
+#[derivative(Clone, Debug)]
 pub struct DiscoveryOptions {
+    #[derivative(Debug = "ignore")]
     pub discovery: Arc<AsyncMutex<dyn Discovery>>,
     pub tasks: NonZeroUsize,
 }
 
+#[derive(Clone, Debug)]
 pub struct ListenOptions {
     pub discovery: Option<DiscoveryOptions>,
     pub max_peers: usize,
@@ -578,14 +632,13 @@ pub struct ListenOptions {
 }
 
 impl Server {
-    /// Create a new RLPx node
-    pub async fn new(
-        // runtime: R,
+    async fn new(
         secret_key: SigningKey,
         client_version: String,
+        task_group: Option<Arc<TaskGroup>>,
         listen_options: Option<ListenOptions>,
     ) -> Result<Arc<Self>, io::Error> {
-        let tasks = Arc::new(TaskGroup::default());
+        let tasks = task_group.unwrap_or_default();
 
         let secret_key = Arc::new(secret_key);
 

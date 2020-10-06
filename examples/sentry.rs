@@ -12,11 +12,11 @@ use std::{
     convert::{identity, TryInto},
     sync::Arc,
 };
+use task_group::TaskGroup;
 use tracing::*;
 use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
 
-const CLIENT_VERSION: &str = "rust-devp2p/0.1.0";
 const DNS_BOOTNODE: &str = "all.mainnet.ethdisco.net";
 
 #[derive(Debug, RlpEncodable, RlpDecodable)]
@@ -61,7 +61,11 @@ impl CapabilityServer for CapabilityServerImpl {
     ) -> Result<(Option<Message>, Option<ReputationReport>), HandleError> {
         let Message { id, data } = message;
 
-        info!("Received message with id {}, data {:?}", id, data);
+        info!(
+            "Received message with id {}, data {}",
+            id,
+            hex::encode(&data)
+        );
 
         if id == 0 {
             match rlp::decode::<StatusMessage>(&data) {
@@ -107,20 +111,21 @@ async fn main() {
 
     let discovery = DnsDiscovery::new(Arc::new(dns_resolver), DNS_BOOTNODE.to_string(), None);
 
-    let client = RLPxNode::new(
-        secret_key,
-        CLIENT_VERSION.to_string(),
-        Some(ListenOptions {
+    let task_group = Arc::new(TaskGroup::default());
+
+    let client = RLPxNodeBuilder::new()
+        .with_task_group(task_group.clone())
+        .with_listen_options(ListenOptions {
             discovery: Some(DiscoveryOptions {
                 discovery: Arc::new(tokio::sync::Mutex::new(discovery)),
                 tasks: 1_usize.try_into().unwrap(),
             }),
             max_peers: 50,
             addr: "0.0.0.0:30303".parse().unwrap(),
-        }),
-    )
-    .await
-    .unwrap();
+        })
+        .build(secret_key)
+        .await
+        .unwrap();
 
     let _handle = client.register(
         CapabilityInfo {
@@ -134,8 +139,9 @@ async fn main() {
     loop {
         tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
         info!(
-            "Current peers: {}",
-            client.connected_peers(identity, None, None).len()
+            "Peers: {}. Tasks: {}.",
+            client.connected_peers(identity, None, None).len(),
+            task_group.len()
         );
     }
 }

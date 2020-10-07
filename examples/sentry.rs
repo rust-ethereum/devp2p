@@ -10,14 +10,35 @@ use rand::rngs::OsRng;
 use rlp_derive::{RlpDecodable, RlpEncodable};
 use std::{
     convert::{identity, TryInto},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 use task_group::TaskGroup;
 use tracing::*;
 use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
+use uuid::Uuid;
 
 const DNS_BOOTNODE: &str = "all.mainnet.ethdisco.net";
+
+#[derive(Debug, Default)]
+struct TaskMetrics {
+    count: AtomicUsize,
+}
+
+impl task_group::Metrics for TaskMetrics {
+    fn task_started(&self, id: Uuid, name: String) {
+        let c = self.count.fetch_add(1, Ordering::Relaxed);
+        trace!("Current tasks: {}. Started task {}/{}", c + 1, name, id)
+    }
+
+    fn task_stopped(&self, id: Uuid, name: String) {
+        let c = self.count.fetch_sub(1, Ordering::Relaxed);
+        trace!("Current tasks: {}. Stopped task {}/{}", c - 1, name, id)
+    }
+}
 
 #[derive(Debug, RlpEncodable, RlpDecodable)]
 struct StatusMessage {
@@ -103,15 +124,17 @@ async fn main() {
 
     let secret_key = SigningKey::random(&mut OsRng);
 
-    let dns_resolver = dnsdisc::Resolver::new(Arc::new(
+    let task_metrics = Arc::new(TaskMetrics::default());
+    let task_group = Arc::new(TaskGroup::new_with_metrics(task_metrics.clone()));
+
+    let mut dns_resolver = dnsdisc::Resolver::new(Arc::new(
         TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())
             .await
             .unwrap(),
     ));
+    dns_resolver.with_task_group(task_group.clone());
 
     let discovery = DnsDiscovery::new(Arc::new(dns_resolver), DNS_BOOTNODE.to_string(), None);
-
-    let task_group = Arc::new(TaskGroup::default());
 
     let client = RLPxNodeBuilder::new()
         .with_task_group(task_group.clone())
@@ -139,9 +162,8 @@ async fn main() {
     loop {
         tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
         info!(
-            "Peers: {}. Tasks: {}.",
-            client.connected_peers(identity, None, None).len(),
-            task_group.len()
+            "Peers: {}.",
+            client.connected_peers(identity, None, None).len()
         );
     }
 }

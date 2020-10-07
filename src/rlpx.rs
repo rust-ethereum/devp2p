@@ -688,7 +688,12 @@ impl Server {
 
         // TODO: Use semaphore
         if let Some(options) = listen_options.and_then(|options| options.discovery) {
+            let interval = std::time::Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS)
+                / options.tasks.get() as u32;
             for num in 0..options.tasks.get() {
+                if num > 0 {
+                    tokio::time::delay_for(interval).await;
+                }
                 tasks.spawn({
                     let discovery = options.discovery.clone();
                     let server = Arc::downgrade(&server);

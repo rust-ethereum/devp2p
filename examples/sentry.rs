@@ -33,7 +33,7 @@ struct CapabilityServerImpl;
 
 #[async_trait]
 impl CapabilityServer for CapabilityServerImpl {
-    fn on_peer_connect(&self, _: PeerId) -> PeerConnectOutcome {
+    async fn on_peer_connect(&self, _: PeerId) -> PeerConnectOutcome {
         let status_message = StatusMessage {
             protocol_version: 63,
             network_id: 1,

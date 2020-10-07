@@ -139,7 +139,7 @@ pub enum PeerConnectOutcome {
 
 #[async_trait]
 pub trait CapabilityServer: Send + Sync + 'static {
-    fn on_peer_connect(&self, peer_id: PeerId) -> PeerConnectOutcome;
+    async fn on_peer_connect(&self, peer_id: PeerId) -> PeerConnectOutcome;
     async fn on_ingress_message(
         &self,
         peer: IngressPeer,

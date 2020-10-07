@@ -315,14 +315,15 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
             // Send initial messages
             let mut useless_peer = false;
             let mut initial_messages = vec![];
-            for (cap, cap_info) in capabilities.read().get_inner() {
+            let caps = capabilities.read().get_inner().iter().map(|(cap, cap_info)| (cap.name, cap_info.protocol_server.clone())).collect::<Vec<_>>();
+            for (capability_name, ps) in caps {
                 if let PeerConnectOutcome::Retain { hello } =
-                    cap_info.protocol_server.on_peer_connect(remote_id)
+                    ps.on_peer_connect(remote_id).await
                 {
                     useless_peer = false;
                     if let Some(message) = hello {
                         initial_messages.push(RLPxSendMessage {
-                            capability_name: cap.name,
+                            capability_name,
                             message,
                         });
                     }

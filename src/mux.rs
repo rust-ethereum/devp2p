@@ -87,7 +87,7 @@ pub trait MuxProtocol: Send + Sync + 'static {
         &self,
         kind: MessageKind<Self::RequestKind, Self::ResponseKind, Self::GossipKind>,
     ) -> usize;
-    fn on_peer_connect(&self) -> Option<Message>;
+    async fn on_peer_connect(&self) -> Option<Message>;
     /// Handle incoming request, optionally forming a response and reputation report.
     async fn handle_request(
         &self,
@@ -127,9 +127,9 @@ impl<P2P: CapabilityRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
 
         #[async_trait]
         impl<Protocol: MuxProtocol> CapabilityServer for Handler<Protocol> {
-            fn on_peer_connect(&self, _: PeerId) -> PeerConnectOutcome {
+            async fn on_peer_connect(&self, _: PeerId) -> PeerConnectOutcome {
                 PeerConnectOutcome::Retain {
-                    hello: self.protocol.on_peer_connect(),
+                    hello: self.protocol.on_peer_connect().await,
                 }
             }
 

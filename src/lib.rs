@@ -17,7 +17,7 @@ mod node_filter;
 mod peer;
 mod rlpx;
 mod types;
-mod util;
+pub mod util;
 
 pub use disc::*;
 pub use mux::MuxServer;

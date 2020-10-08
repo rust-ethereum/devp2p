@@ -1,6 +1,7 @@
 //! RLPx protocol implementation in Rust
 
 use crate::{disc::*, node_filter::*, peer::*, types::*};
+use anyhow::anyhow;
 use async_trait::async_trait;
 use derivative::Derivative;
 use futures::sink::SinkExt;
@@ -264,17 +265,10 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                                         });
 
                                     // Check reputation report
-                                    match report {
-                                        Some(ReputationReport::Kick)
-                                        | Some(ReputationReport::Ban) => {
-                                            debug!(
-                                                "Received damning report about peer, disconnecting"
-                                            );
-                                            break;
-                                        }
-                                        _ => {
-                                            // TODO: ignore other reputation reports for now
-                                        }
+                                    if let Some(ReputationReport::Kick { reason, .. }) = report {
+                                        debug!("Received damning report about peer, disconnecting");
+                                        return reason
+                                            .unwrap_or(DisconnectReason::DisconnectRequested);
                                     }
 
                                     // And send any reply if necessary
@@ -717,7 +711,7 @@ impl Server {
                                     )
                                     .await
                                     .unwrap_or_else(|_| {
-                                        Err("timed out".into())
+                                        Err(anyhow!("timed out"))
                                     }) {
                                         Ok((addr, remote_id)) => {
                                             debug!("Discovered peer: {:?}", remote_id);

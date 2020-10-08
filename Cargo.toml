@@ -13,6 +13,7 @@ edition = "2018"
 [dependencies]
 aes = "0.5"
 aes-ctr = "0.5"
+anyhow = "1"
 arrayvec = "0.5"
 async-trait = "0.1"
 block-modes = "0.6"
@@ -43,6 +44,7 @@ sha3 = "0.9"
 signature = { version = "1", features = ["std"] }
 snap = "1"
 task-group = { git = "https://github.com/vorot93/task-group" }
+thiserror = "1"
 tokio = { version = "0.2", features = ["stream", "sync", "time"] }
 tokio-util = { version = "0.3", features = ["codec"] }
 tracing = "0.1"

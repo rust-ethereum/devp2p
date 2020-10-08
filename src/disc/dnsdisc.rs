@@ -1,5 +1,6 @@
 use super::Discovery;
 use crate::{types::*, util::*};
+use anyhow::anyhow;
 use async_trait::async_trait;
 use dnsdisc::{Backend, Resolver};
 use k256::ecdsa::VerifyKey;
@@ -14,7 +15,7 @@ const MAX_RESOLUTION_DURATION: u64 = 1800;
 pub struct DnsDiscovery {
     #[allow(unused)]
     tasks: TaskGroup,
-    receiver: Receiver<StdResult<(SocketAddr, PeerId)>>,
+    receiver: Receiver<anyhow::Result<(SocketAddr, PeerId)>>,
 }
 
 impl DnsDiscovery {
@@ -73,10 +74,10 @@ impl DnsDiscovery {
 
 #[async_trait]
 impl Discovery for DnsDiscovery {
-    async fn get_new_peer(&mut self) -> StdResult<(SocketAddr, PeerId)> {
+    async fn get_new_peer(&mut self) -> anyhow::Result<(SocketAddr, PeerId)> {
         self.receiver
             .recv()
             .await
-            .ok_or_else(|| "Discovery task is dead.")?
+            .ok_or_else(|| anyhow!("Discovery task is dead."))?
     }
 }

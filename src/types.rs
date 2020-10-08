@@ -1,3 +1,4 @@
+use crate::peer::DisconnectReason;
 use arrayvec::ArrayString;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -5,9 +6,7 @@ use derive_more::Display;
 pub use ethereum_types::H512 as PeerId;
 use rlp::{DecoderError, Rlp, RlpStream};
 use std::{collections::BTreeSet, net::SocketAddr, str::FromStr, sync::Arc};
-
-pub type StdError = Box<dyn std::error::Error + Send + Sync + 'static>;
-pub type StdResult<T> = Result<T, StdError>;
+use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct Shutdown;
@@ -98,8 +97,19 @@ impl From<CapabilityInfo> for CapabilityId {
 pub enum ReputationReport {
     Good,
     Bad,
-    Kick,
-    Ban,
+    Kick {
+        ban: bool,
+        reason: Option<DisconnectReason>,
+    },
+}
+
+impl From<DisconnectReason> for ReputationReport {
+    fn from(reason: DisconnectReason) -> Self {
+        Self::Kick {
+            ban: false,
+            reason: Some(reason),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -111,16 +121,12 @@ pub struct IngressPeer {
     pub capability: CapabilityId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum HandleError {
-    Rlp(rlp::DecoderError),
-    Other(Box<dyn std::error::Error + Send + Sync>),
-}
-
-impl From<rlp::DecoderError> for HandleError {
-    fn from(err: rlp::DecoderError) -> Self {
-        Self::Rlp(err)
-    }
+    #[error("rlp error")]
+    Rlp(#[from] rlp::DecoderError),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
 
 impl HandleError {

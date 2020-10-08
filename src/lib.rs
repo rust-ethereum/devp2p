@@ -21,7 +21,7 @@ mod util;
 
 pub use disc::*;
 pub use mux::MuxServer;
-pub use peer::PeerStream;
+pub use peer::{DisconnectReason, PeerStream};
 pub use rlpx::{
     DiscoveryOptions, ListenOptions, Server as RLPxNode, ServerBuilder as RLPxNodeBuilder,
 };

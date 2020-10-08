@@ -1,4 +1,4 @@
-use crate::types::*;
+use crate::{peer::DisconnectReason, types::*};
 use async_trait::async_trait;
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -165,7 +165,10 @@ impl<P2P: CapabilityRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
                                     "Peer sent us wrong reply! Expected: {:?}, Got: {:?}",
                                     expected_response_id, response
                                 );
-                                reputation_report = Some(ReputationReport::Kick);
+                                reputation_report = Some(ReputationReport::Kick {
+                                    ban: false,
+                                    reason: Some(DisconnectReason::ProtocolBreach),
+                                });
                             } else {
                                 let payload = message
                                     .data
@@ -180,7 +183,10 @@ impl<P2P: CapabilityRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
                         } else {
                             trace!("Peer {} sent us unsolicited reply!", peer.id);
 
-                            reputation_report = Some(ReputationReport::Kick);
+                            reputation_report = Some(ReputationReport::Kick {
+                                ban: false,
+                                reason: Some(DisconnectReason::ProtocolBreach),
+                            });
                         }
                     }
                     Some(MessageKind::Request(request)) => {

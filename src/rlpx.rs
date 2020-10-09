@@ -13,7 +13,6 @@ use std::{
     future::Future,
     io,
     net::SocketAddr,
-    num::NonZeroUsize,
     pin::Pin,
     sync::{Arc, Weak},
     time::Duration,
@@ -139,11 +138,7 @@ enum PeerState {
 
 impl PeerState {
     const fn is_connected(&self) -> bool {
-        if let Self::Connected(_) = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Connected(_))
     }
 }
 
@@ -613,15 +608,9 @@ pub struct CapabilityFilter {
 
 #[derive(Derivative)]
 #[derivative(Clone, Debug)]
-pub struct DiscoveryOptions {
-    #[derivative(Debug = "ignore")]
-    pub discovery: Arc<AsyncMutex<dyn Discovery>>,
-    pub tasks: NonZeroUsize,
-}
-
-#[derive(Clone, Debug)]
 pub struct ListenOptions {
-    pub discovery: Option<DiscoveryOptions>,
+    #[derivative(Debug = "ignore")]
+    pub discovery_tasks: Vec<Arc<AsyncMutex<dyn Discovery>>>,
     pub max_peers: usize,
     pub addr: SocketAddr,
 }
@@ -681,15 +670,16 @@ impl Server {
         });
 
         // TODO: Use semaphore
-        if let Some(options) = listen_options.and_then(|options| options.discovery) {
-            let interval = std::time::Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS)
-                / options.tasks.get() as u32;
-            for num in 0..options.tasks.get() {
+        if let Some(options) = listen_options {
+            let num = options.discovery_tasks.len();
+            for discovery in options.discovery_tasks {
                 if num > 0 {
-                    tokio::time::delay_for(interval).await;
+                    tokio::time::delay_for(
+                        Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS) / num as u32,
+                    )
+                    .await;
                 }
                 tasks.spawn({
-                    let discovery = options.discovery.clone();
                     let server = Arc::downgrade(&server);
                     let tasks = Arc::downgrade(&tasks);
                     async move {

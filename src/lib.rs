@@ -22,9 +22,7 @@ pub mod util;
 pub use disc::*;
 pub use mux::MuxServer;
 pub use peer::{DisconnectReason, PeerStream};
-pub use rlpx::{
-    DiscoveryOptions, ListenOptions, Server as RLPxNode, ServerBuilder as RLPxNodeBuilder,
-};
+pub use rlpx::{ListenOptions, Server as RLPxNode, ServerBuilder as RLPxNodeBuilder};
 pub use types::{
     CapabilityId, CapabilityInfo, CapabilityName, CapabilityRegistrar, CapabilityServer,
     HandleError, IngressPeer, Message, NodeRecord, PeerConnectOutcome, PeerId, ReputationReport,

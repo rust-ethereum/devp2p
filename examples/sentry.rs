@@ -9,13 +9,14 @@ use k256::ecdsa::SigningKey;
 use rand::rngs::OsRng;
 use rlp_derive::{RlpDecodable, RlpEncodable};
 use std::{
-    convert::{identity, TryInto},
+    convert::identity,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
 };
 use task_group::TaskGroup;
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::*;
 use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
@@ -95,7 +96,13 @@ impl CapabilityServer for CapabilityServerImpl {
                 }
                 Err(e) => {
                     info!("Failed to decode status message: {}! Kicking peer.", e);
-                    return Ok((None, Some(ReputationReport::Kick)));
+                    return Ok((
+                        None,
+                        Some(ReputationReport::Kick {
+                            reason: Some(DisconnectReason::ProtocolBreach),
+                            ban: false,
+                        }),
+                    ));
                 }
             }
         }
@@ -136,13 +143,12 @@ async fn main() {
 
     let discovery = DnsDiscovery::new(Arc::new(dns_resolver), DNS_BOOTNODE.to_string(), None);
 
+    let discovery: Arc<AsyncMutex<dyn Discovery>> = Arc::new(AsyncMutex::new(discovery));
+
     let client = RLPxNodeBuilder::new()
         .with_task_group(task_group.clone())
         .with_listen_options(ListenOptions {
-            discovery: Some(DiscoveryOptions {
-                discovery: Arc::new(tokio::sync::Mutex::new(discovery)),
-                tasks: 1_usize.try_into().unwrap(),
-            }),
+            discovery_tasks: std::iter::repeat(discovery).take(1).collect(),
             max_peers: 50,
             addr: "0.0.0.0:30303".parse().unwrap(),
         })

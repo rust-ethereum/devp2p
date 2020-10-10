@@ -47,12 +47,11 @@ task-group = { git = "https://github.com/vorot93/task-group" }
 thiserror = "1"
 tokio = { version = "0.2", features = ["stream", "sync", "time"] }
 tokio-util = { version = "0.3", features = ["codec"] }
-tracing = "0.1"
+tracing = { version = "0.1", default-features = false }
 tracing-futures = "0.2"
 uuid = { version = "0.8", features = ["v4"] }
 
 [dev-dependencies]
-env_logger = "0.7"
 hex-literal = "0.3"
 sha3 = "0.9"
 tokio = { version = "0.2", features = ["full"] }

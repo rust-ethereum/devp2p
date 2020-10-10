@@ -94,7 +94,7 @@ impl ServerHandle for ServerHandleImpl {
     ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown> {
         let pool = self.pool.upgrade().ok_or(Shutdown)?;
         Ok(pool
-            .connected_peers(
+            .connected_peers_filtered(
                 |_| 1,
                 Some(&CapabilityFilter {
                     name: self.capability.name,
@@ -892,9 +892,25 @@ impl Server {
         self.streams.lock().mapping.keys().copied().collect()
     }
 
+    #[must_use]
+    pub fn connected_peers(&self) -> HashSet<PeerId> {
+        self.streams
+            .lock()
+            .mapping
+            .iter()
+            .filter_map(|(id, state)| {
+                if matches!(state, PeerState::Connected(..)) {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Get peers by capability with desired limit.
     #[must_use]
-    pub fn connected_peers(
+    pub fn connected_peers_filtered(
         &self,
         limit: impl Fn(usize) -> usize,
         cap_filter: Option<&CapabilityFilter>,

@@ -17,10 +17,7 @@ impl Discovery for Discv5 {
                 if let Some(ip) = node.ip() {
                     if let Some(port) = node.tcp() {
                         if let enr::CombinedPublicKey::Secp256k1(pk) = node.public_key() {
-                            return Ok((
-                                (ip, port).into(),
-                                pk2id(&k256::ecdsa::VerifyKey::new(&pk.serialize()).unwrap()),
-                            ));
+                            return Ok(((ip, port).into(), pk2id(&pk)));
                         }
                     }
                 }

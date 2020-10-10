@@ -671,14 +671,7 @@ impl Server {
 
         // TODO: Use semaphore
         if let Some(options) = listen_options {
-            let num = options.discovery_tasks.len();
-            for discovery in options.discovery_tasks {
-                if num > 0 {
-                    tokio::time::delay_for(
-                        Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS) / num as u32,
-                    )
-                    .await;
-                }
+            for (num, discovery) in options.discovery_tasks.into_iter().enumerate() {
                 tasks.spawn({
                     let server = Arc::downgrade(&server);
                     let tasks = Arc::downgrade(&tasks);

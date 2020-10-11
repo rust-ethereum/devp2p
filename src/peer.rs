@@ -370,11 +370,23 @@ where
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum InboundMessage {
+    Disconnect(DisconnectReason),
+    Ping,
+    Pong,
+    Subprotocol {
+        capability: CapabilityInfo,
+        message_id: usize,
+        payload: Bytes,
+    },
+}
+
 impl<Io> Stream for PeerStream<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Item = Result<(CapabilityInfo, usize, Bytes), io::Error>;
+    type Item = Result<InboundMessage, io::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut s = self.get_mut();
@@ -422,7 +434,21 @@ where
                             match message_id {
                                 0x01 /* disconnect */ => {
                                     s.disconnected = true;
-                                    return Poll::Ready(Some(Err(make_disconnect_err(&*data))));
+                                    if let Some(reason) = Rlp::new(&*data)
+                                        .val_at::<u8>(0)
+                                        .ok()
+                                        .and_then(DisconnectReason::from_u8)
+                                    {
+                                        return Poll::Ready(Some(Ok(InboundMessage::Disconnect(reason))));
+                                    } else {
+                                        return Poll::Ready(Some(Err(io::Error::new(
+                                            io::ErrorKind::Other,
+                                            format!(
+                                                "peer disconnected with malformed message: {}",
+                                                hex::encode(data)
+                                            ),
+                                        ))));
+                                    }
                                 },
                                 0x02 /* ping */ => {
                                     debug!("received ping message data {:?}", data);
@@ -473,7 +499,11 @@ where
                     hex::encode(&data)
                 );
 
-                Poll::Ready(Some(Ok((cap, id, data))))
+                Poll::Ready(Some(Ok(InboundMessage::Subprotocol {
+                    capability: cap,
+                    message_id: id,
+                    payload: data,
+                })))
             }
             Some(Err(e)) => Poll::Ready(Some(Err(e))),
             None => Poll::Ready(None),

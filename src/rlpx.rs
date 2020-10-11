@@ -125,10 +125,21 @@ pub struct RLPxSendMessage {
 
 pub type PeerSender = tokio::sync::mpsc::Sender<RLPxSendMessage>;
 
+#[derive(Clone, Copy)]
+enum DisconnectInitiator {
+    Local,
+    Remote,
+}
+
+struct DisconnectSignal {
+    initiator: DisconnectInitiator,
+    reason: DisconnectReason,
+}
+
 #[derive(Debug)]
 struct ConnectedPeerState {
     sender: PeerSender,
-    disconnector: UnboundedSender<DisconnectReason>,
+    disconnector: UnboundedSender<DisconnectSignal>,
     tasks: TaskGroup,
     capabilities: BTreeSet<CapabilityId>,
     notes: HashMap<String, String>,
@@ -229,7 +240,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
         let peer_disconnect_tx = peer_disconnect_tx.clone();
         let peer_sender_tx = peer_sender_tx.clone();
         async move {
-            let reason = {
+            let disconnect_signal = {
                 let mut peer_sender_tx = peer_sender_tx.clone();
                 async move {
                     while let Some(message) = stream.next().await {
@@ -238,7 +249,11 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                                 debug!("Peer incoming error: {}", e);
                                 break;
                             }
-                            Ok((capability, message_id, message)) => {
+                            Ok(InboundMessage::Subprotocol {
+                                capability,
+                                message_id,
+                                payload,
+                            }) => {
                                 // Extract capability's ingress handler
                                 let handler =
                                     capabilities.read().get_inner().get(&capability.into()).map(
@@ -259,7 +274,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                                             },
                                             Message {
                                                 id: message_id,
-                                                data: message,
+                                                data: payload,
                                             },
                                         )
                                         .await
@@ -271,8 +286,11 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                                     // Check reputation report
                                     if let Some(ReputationReport::Kick { reason, .. }) = report {
                                         debug!("Received damning report about peer, disconnecting");
-                                        return reason
-                                            .unwrap_or(DisconnectReason::DisconnectRequested);
+                                        return DisconnectSignal {
+                                            initiator: DisconnectInitiator::Local,
+                                            reason: reason
+                                                .unwrap_or(DisconnectReason::DisconnectRequested),
+                                        };
                                     }
 
                                     // And send any reply if necessary
@@ -286,15 +304,27 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                                     }
                                 }
                             }
+                            Ok(InboundMessage::Disconnect(reason)) => {
+                                // Peer has requested disconnection.
+                                return DisconnectSignal {
+                                    initiator: DisconnectInitiator::Remote,
+                                    reason,
+                                };
+                            }
+                            Ok(_) => {}
                         }
                     }
 
-                    DisconnectReason::DisconnectRequested
+                    // Ingress stream is closed, force disconnect the peer.
+                    DisconnectSignal {
+                        initiator: DisconnectInitiator::Remote,
+                        reason: DisconnectReason::DisconnectRequested,
+                    }
                 }
             }
             .await;
 
-            let _ = peer_disconnect_tx.send(reason);
+            let _ = peer_disconnect_tx.send(disconnect_signal);
         }
         .instrument(span!(
             Level::DEBUG,
@@ -326,13 +356,13 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                 }
             }
 
-            let mut peer_disconnect_rx: Pin<Box<dyn Stream<Item = DisconnectReason> + Send + Sync>> = if useless_peer {
+            let mut peer_disconnect_rx: Pin<Box<dyn Stream<Item = DisconnectSignal> + Send + Sync>> = if useless_peer {
                 debug!("peer disavowed by all caps, disconnecting");
-                Box::pin(stream::iter(vec![DisconnectReason::UselessPeer]))
+                Box::pin(stream::iter(vec![DisconnectSignal { initiator: DisconnectInitiator::Local, reason: DisconnectReason::UselessPeer }]))
             } else {
                 Box::pin(peer_disconnect_rx)
             };
-            let mut message_stream = stream::iter(initial_messages)
+            let mut egress_stream = stream::iter(initial_messages)
                 .chain(peer_sender_rx)
                 .map(|v| EgressMessage::Subprotocol {
                     cap_name: v.capability_name,
@@ -340,37 +370,56 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                 }).fuse();
 
             loop {
-                let mut disconnecting = false;
-                let message;
+                let mut disconnecting = None;
+                let mut message = None;
                 tokio::select! {
-                    v = message_stream.next() => {
+                    v = egress_stream.next() => {
                         match v {
                             Some(msg) => {
-                                message = msg;
+                                message = Some(msg);
                             }
                             None => {
-                                disconnecting = true;
-                                message = EgressMessage::Disconnect { reason: DisconnectReason::DisconnectRequested };
+                                disconnecting = Some(DisconnectInitiator::Remote);
                             }
                         }
                     },
-                    v = peer_disconnect_rx.next() => {
-                        disconnecting = true;
-                        message = EgressMessage::Disconnect { reason: v.unwrap_or(DisconnectReason::DisconnectRequested) };
+                    Some(DisconnectSignal { initiator, reason }) = peer_disconnect_rx.next() => {
+                        match initiator {
+                            DisconnectInitiator::Local => {
+                                message = Some(EgressMessage::Disconnect { reason });
+                            }
+                            DisconnectInitiator::Remote => {
+                                let capabilities = capabilities.read().get_inner().values().map(|meta| meta.protocol_server.clone()).collect::<Vec<_>>();
+                                for cap in capabilities {
+                                    cap.on_peer_disconnect(remote_id).await;
+                                }
+                            }
+                        }
+                        disconnecting = Some(initiator)
                     },
+                    else => {
+                        break;
+                    }
                 };
 
-                if let Err(e) = sink.send(message).await {
-                    debug!("peer disconnected with error {:?}", e);
-                    break;
+                if let Some(message) = message {
+                    // Send egress message, force disconnect on error.
+                    if let Err(e) = sink.send(message).await {
+                        debug!("peer disconnected with error {:?}", e);
+                        break;
+                    }
                 }
 
-                if disconnecting {
-                    tokio::time::delay_for(Duration::from_secs(GRACE_PERIOD_SECS)).await;
+                if let Some(kind) = disconnecting {
+                    if let DisconnectInitiator::Local = kind {
+                        // We have sent disconnect message, wait for grace period.
+                        tokio::time::delay_for(Duration::from_secs(GRACE_PERIOD_SECS)).await;
+                    }
                     break;
                 }
             }
 
+            // We are done, drop the peer state.
             if let Some(streams) = streams.upgrade() {
                 streams.lock().disconnect_peer(remote_id);
             }
@@ -892,7 +941,10 @@ impl Server {
         let mut s = self.streams.lock();
         if let Some(peer) = s.mapping.get_mut(&remote_id) {
             if let PeerState::Connected(state) = peer {
-                let _ = state.disconnector.send(reason);
+                let _ = state.disconnector.send(DisconnectSignal {
+                    initiator: DisconnectInitiator::Local,
+                    reason,
+                });
             } else {
                 s.disconnect_peer(remote_id);
             }

@@ -133,6 +133,8 @@ impl<P2P: CapabilityRegistrar, Protocol: MuxProtocol> MuxServer<P2P, Protocol> {
                 }
             }
 
+            async fn on_peer_disconnect(&self, _: PeerId) {}
+
             async fn on_ingress_message(
                 &self,
                 peer: IngressPeer,

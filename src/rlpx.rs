@@ -123,7 +123,7 @@ pub struct RLPxSendMessage {
 pub type PeerSender = tokio::sync::mpsc::Sender<RLPxSendMessage>;
 
 #[derive(Debug)]
-struct StreamHandle {
+struct ConnectedPeerState {
     sender: PeerSender,
     tasks: TaskGroup,
     capabilities: BTreeSet<CapabilityId>,
@@ -133,7 +133,7 @@ struct StreamHandle {
 #[derive(Debug)]
 enum PeerState {
     Connecting { connection_id: Uuid },
-    Connected(StreamHandle),
+    Connected(ConnectedPeerState),
 }
 
 impl PeerState {
@@ -207,7 +207,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
     capabilities: Arc<RwLock<CapabilityMap>>,
     remote_id: PeerId,
     peer: PeerStream<Io>,
-) -> StreamHandle {
+) -> ConnectedPeerState {
     let capability_set = peer
         .capabilities()
         .iter()
@@ -229,6 +229,10 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                 async move {
                     while let Some(message) = stream.next().await {
                         match message {
+                            Err(e) => {
+                                debug!("Peer incoming error: {}", e);
+                                break;
+                            }
                             Ok((capability, message_id, message)) => {
                                 // Extract capability's ingress handler
                                 let handler =
@@ -276,10 +280,6 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                                             .await;
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                debug!("Peer incoming error: {}", e);
-                                break;
                             }
                         }
                     }
@@ -375,7 +375,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
             remote_id.to_string(),
         ))
     });
-    StreamHandle {
+    ConnectedPeerState {
         sender: peer_sender_tx,
         tasks,
         capabilities: capability_set,

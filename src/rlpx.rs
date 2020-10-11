@@ -22,7 +22,10 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     stream::{self, Stream, StreamExt},
-    sync::Mutex as AsyncMutex,
+    sync::{
+        mpsc::{unbounded_channel, UnboundedSender},
+        Mutex as AsyncMutex,
+    },
 };
 use tracing::*;
 use uuid::Uuid;
@@ -125,6 +128,7 @@ pub type PeerSender = tokio::sync::mpsc::Sender<RLPxSendMessage>;
 #[derive(Debug)]
 struct ConnectedPeerState {
     sender: PeerSender,
+    disconnector: UnboundedSender<DisconnectReason>,
     tasks: TaskGroup,
     capabilities: BTreeSet<CapabilityId>,
     notes: HashMap<String, String>,
@@ -215,13 +219,14 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
         .map(From::from)
         .collect::<BTreeSet<_>>();
     let (mut sink, mut stream) = futures::StreamExt::split(peer);
-    let (mut peer_disconnect_tx, peer_disconnect_rx) = tokio::sync::mpsc::channel(1);
+    let (peer_disconnect_tx, peer_disconnect_rx) = unbounded_channel();
     let (peer_sender_tx, peer_sender_rx) = tokio::sync::mpsc::channel(1);
     let tasks = TaskGroup::default();
 
     // Ingress router
     tasks.spawn({
         let capabilities = capabilities.clone();
+        let peer_disconnect_tx = peer_disconnect_tx.clone();
         let peer_sender_tx = peer_sender_tx.clone();
         async move {
             let reason = {
@@ -289,7 +294,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
             }
             .await;
 
-            let _ = peer_disconnect_tx.send(reason).await;
+            let _ = peer_disconnect_tx.send(reason);
         }
         .instrument(span!(
             Level::DEBUG,
@@ -379,6 +384,7 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
     });
     ConnectedPeerState {
         sender: peer_sender_tx,
+        disconnector: peer_disconnect_tx,
         tasks,
         capabilities: capability_set,
         notes: Default::default(),
@@ -880,11 +886,26 @@ impl Server {
         false
     }
 
-    /// Force disconnecting a peer if it is already connected or about
-    /// to be connected. Useful for removing peers on a different hard
-    /// fork network
+    /// Gradefully disconnect an already connected peer or force disconnect a peer that is about to be connected.
     #[must_use]
-    pub fn disconnect_peer(&self, remote_id: PeerId) -> bool {
+    pub fn disconnect_peer(&self, remote_id: PeerId, reason: DisconnectReason) -> bool {
+        let mut s = self.streams.lock();
+        if let Some(peer) = s.mapping.get_mut(&remote_id) {
+            if let PeerState::Connected(state) = peer {
+                let _ = state.disconnector.send(reason);
+            } else {
+                s.disconnect_peer(remote_id);
+            }
+            return true;
+        }
+
+        false
+    }
+
+    /// Force disconnect a peer if it is already connected or about
+    /// to be connected.
+    #[must_use]
+    pub fn drop_peer(&self, remote_id: PeerId) -> bool {
         self.streams.lock().disconnect_peer(remote_id)
     }
 

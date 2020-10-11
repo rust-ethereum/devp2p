@@ -203,7 +203,7 @@ async fn handle_incoming(
 
 /// Set up newly connected peer's state, start its tasks
 fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>(
-    streams: Arc<Mutex<PeerStreams>>,
+    streams: Weak<Mutex<PeerStreams>>,
     capabilities: Arc<RwLock<CapabilityMap>>,
     remote_id: PeerId,
     peer: PeerStream<Io>,
@@ -366,7 +366,9 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                 }
             }
 
-            streams.lock().disconnect_peer(remote_id);
+            if let Some(streams) = streams.upgrade() {
+                streams.lock().disconnect_peer(remote_id);
+            }
         }
         .instrument(span!(
             Level::DEBUG,
@@ -442,7 +444,7 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Debug + Send + Unp
                     if node_filter.lock().allow(total_connections, remote_id) {
                         debug!("New incoming peer connected: {}", remote_id);
                         entry.insert(PeerState::Connected(setup_peer_state(
-                            streams,
+                            Arc::downgrade(&streams),
                             capabilities,
                             remote_id,
                             peer,
@@ -843,7 +845,7 @@ impl Server {
                             debug!("New peer connected: {}", remote_id);
 
                             *peer_state.get_mut() = PeerState::Connected(setup_peer_state(
-                                streams,
+                                Arc::downgrade(&streams),
                                 capabilities,
                                 remote_id,
                                 peer,

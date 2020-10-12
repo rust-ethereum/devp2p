@@ -12,7 +12,6 @@ mod disc;
 pub mod ecies;
 mod errors;
 mod mac;
-mod mux;
 mod node_filter;
 mod peer;
 mod rlpx;
@@ -20,10 +19,9 @@ mod types;
 pub mod util;
 
 pub use disc::*;
-pub use mux::MuxServer;
 pub use peer::{DisconnectReason, PeerStream};
 pub use rlpx::{ListenOptions, Server as RLPxNode, ServerBuilder as RLPxNodeBuilder};
 pub use types::{
-    CapabilityId, CapabilityInfo, CapabilityName, CapabilityRegistrar, CapabilityServer,
-    HandleError, IngressPeer, Message, NodeRecord, PeerConnectOutcome, PeerId, ReputationReport,
+    CapabilityId, CapabilityInfo, CapabilityName, CapabilityServer, InboundEvent, Message,
+    NodeRecord, OutboundEvent, PeerId,
 };

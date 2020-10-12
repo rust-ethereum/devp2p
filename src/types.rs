@@ -5,17 +5,7 @@ use bytes::Bytes;
 use derive_more::Display;
 pub use ethereum_types::H512 as PeerId;
 use rlp::{DecoderError, Rlp, RlpStream};
-use std::{collections::BTreeSet, net::SocketAddr, str::FromStr, sync::Arc};
-use thiserror::Error;
-
-#[derive(Clone, Debug)]
-pub struct Shutdown;
-
-impl From<task_group::Shutdown> for Shutdown {
-    fn from(_: task_group::Shutdown) -> Self {
-        Self
-    }
-}
+use std::{collections::BTreeSet, net::SocketAddr, str::FromStr};
 
 /// Record that specifies information necessary to connect to RLPx node
 #[derive(Clone, Copy, Debug)]
@@ -72,19 +62,32 @@ impl rlp::Decodable for CapabilityName {
     }
 }
 
+pub type CapabilityLength = usize;
+pub type CapabilityVersion = usize;
+
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 /// Capability information
 pub struct CapabilityInfo {
     pub name: CapabilityName,
-    pub version: usize,
-    pub length: usize,
+    pub version: CapabilityVersion,
+    pub length: CapabilityLength,
+}
+
+impl CapabilityInfo {
+    pub fn new(CapabilityId { name, version }: CapabilityId, length: CapabilityLength) -> Self {
+        Self {
+            name,
+            version,
+            length,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Display, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[display(fmt = "{}/{}", name, version)]
 pub struct CapabilityId {
     pub name: CapabilityName,
-    pub version: usize,
+    pub version: CapabilityVersion,
 }
 
 impl From<CapabilityInfo> for CapabilityId {
@@ -93,106 +96,40 @@ impl From<CapabilityInfo> for CapabilityId {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum ReputationReport {
-    Good,
-    Bad,
-    Kick {
-        ban: bool,
+#[derive(Clone, Debug)]
+pub enum InboundEvent {
+    Disconnect {
         reason: Option<DisconnectReason>,
+    },
+    Message {
+        capability_name: CapabilityName,
+        message: Message,
     },
 }
 
-impl From<DisconnectReason> for ReputationReport {
-    fn from(reason: DisconnectReason) -> Self {
-        Self::Kick {
-            ban: false,
-            reason: Some(reason),
-        }
-    }
-}
-
-#[derive(Debug)]
-/// Represents a peers that sent us a message.
-pub struct IngressPeer {
-    /// Peer ID
-    pub id: PeerId,
-    /// Capability of this inbound message
-    pub capability: CapabilityId,
-}
-
-#[derive(Debug, Error)]
-pub enum HandleError {
-    #[error("rlp error")]
-    Rlp(#[from] rlp::DecoderError),
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
-
-impl HandleError {
-    pub const fn to_reputation_report(&self) -> Option<ReputationReport> {
-        Some(match self {
-            Self::Rlp(_) => ReputationReport::Bad,
-            Self::Other(_) => return None,
-        })
-    }
-}
-
-pub enum PeerConnectOutcome {
-    Disavow,
-    Retain { hello: Option<Message> },
+#[derive(Clone, Debug)]
+pub enum OutboundEvent {
+    Disconnect {
+        reason: DisconnectReason,
+    },
+    Message {
+        capability_name: CapabilityName,
+        message: Message,
+    },
 }
 
 #[async_trait]
 pub trait CapabilityServer: Send + Sync + 'static {
-    async fn on_peer_connect(&self, peer_id: PeerId) -> PeerConnectOutcome;
-    async fn on_peer_disconnect(&self, peer_id: PeerId);
-    async fn on_ingress_message(
-        &self,
-        peer: IngressPeer,
-        message: Message,
-    ) -> Result<(Option<Message>, Option<ReputationReport>), HandleError>;
-}
-
-pub enum PeerSendError {
-    Shutdown,
-    PeerGone,
+    /// Should be used to set up relevant state for the peer.
+    fn on_peer_connect(&self, peer_id: PeerId, caps: BTreeSet<CapabilityId>);
+    /// Called on the next event for peer.
+    async fn on_peer_event(&self, peer_id: PeerId, event: InboundEvent);
+    /// Get the next event for peer.
+    async fn next(&self, peer_id: PeerId) -> OutboundEvent;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
     pub id: usize,
     pub data: Bytes,
-}
-
-/// Represents a peer that we requested ourselves from the pool.
-#[async_trait]
-pub trait EgressPeerHandle: Send + Sync {
-    fn capability_version(&self) -> usize;
-    fn peer_id(&self) -> PeerId;
-    async fn send_message(self, message: Message) -> Result<(), PeerSendError>;
-}
-
-/// DevP2P server handle that can be used by the owning protocol server to access peer pool.
-#[async_trait]
-pub trait ServerHandle: Send + Sync + 'static {
-    type EgressPeerHandle: EgressPeerHandle;
-    /// Get peers that match the specified capability version. Returns peer ID and actual capability version.
-    async fn get_peers(
-        &self,
-        versions: BTreeSet<usize>,
-        note: Option<(String, String)>,
-    ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown>;
-}
-
-#[async_trait]
-pub trait CapabilityRegistrar: Send + Sync {
-    type ServerHandle: ServerHandle;
-
-    /// Register support for the capability. Takes the server for the capability. Returns personal handle to the peer pool.
-    fn register(
-        &self,
-        info: CapabilityInfo,
-        capability_server: Arc<dyn CapabilityServer>,
-    ) -> Self::ServerHandle;
 }

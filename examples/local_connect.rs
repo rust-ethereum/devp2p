@@ -1,10 +1,34 @@
+use arrayvec::ArrayString;
+use async_trait::async_trait;
 use devp2p::*;
 use k256::ecdsa::SigningKey;
+use maplit::btreemap;
 use rand::{rngs::OsRng, seq::SliceRandom};
-use std::time::Duration;
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use tokio::time::delay_for;
 use tracing::*;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Debug)]
+struct DummyServer;
+
+#[async_trait]
+impl CapabilityServer for DummyServer {
+    #[instrument(skip(self))]
+    fn on_peer_connect(&self, peer_id: PeerId, caps: BTreeSet<CapabilityId>) {
+        info!("Peer connected")
+    }
+
+    #[instrument(skip(self))]
+    async fn on_peer_event(&self, peer_id: PeerId, event: InboundEvent) {
+        info!("Received event");
+    }
+
+    #[instrument(skip(self))]
+    async fn next(&self, peer_id: PeerId) -> OutboundEvent {
+        futures::future::pending().await
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -37,7 +61,11 @@ async fn main() {
     debug!("Connecting to {}", node.addr);
 
     let client = RLPxNodeBuilder::new()
-        .build(SigningKey::random(&mut OsRng))
+        .build(
+            btreemap! { CapabilityId { name: CapabilityName(ArrayString::from("eth").unwrap()), version: 63 } => 15 },
+            Arc::new(DummyServer),
+            SigningKey::random(&mut OsRng),
+        )
         .await
         .unwrap();
 

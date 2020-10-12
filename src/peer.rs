@@ -511,14 +511,17 @@ where
     }
 }
 
+/// Sending message for RLPx
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubprotocolMessage {
+    pub cap_name: CapabilityName,
+    pub message: Message,
+}
+
+#[derive(Debug)]
 pub enum EgressMessage {
-    Disconnect {
-        reason: DisconnectReason,
-    },
-    Subprotocol {
-        cap_name: CapabilityName,
-        message: Message,
-    },
+    Disconnect { reason: DisconnectReason },
+    Subprotocol(SubprotocolMessage),
 }
 
 impl<Io> Sink<EgressMessage> for PeerStream<Io>
@@ -548,7 +551,7 @@ where
                 Pin::new(&mut this.stream).start_send(msg)?;
                 this.disconnected = true;
             }
-            EgressMessage::Subprotocol { cap_name, message } => {
+            EgressMessage::Subprotocol(SubprotocolMessage { cap_name, message }) => {
                 let Message { id, data } = message;
                 let cap = this
                     .shared_capabilities

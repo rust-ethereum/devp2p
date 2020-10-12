@@ -2,18 +2,16 @@
 
 use crate::{disc::*, node_filter::*, peer::*, types::*};
 use anyhow::anyhow;
-use async_trait::async_trait;
 use derivative::Derivative;
 use futures::sink::SinkExt;
 use k256::ecdsa::SigningKey;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use std::{
     collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::{Debug, Display},
     future::Future,
     io,
     net::SocketAddr,
-    pin::Pin,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -21,7 +19,7 @@ use task_group::TaskGroup;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
-    stream::{self, Stream, StreamExt},
+    stream::StreamExt,
     sync::{
         mpsc::{unbounded_channel, UnboundedSender},
         Mutex as AsyncMutex,
@@ -35,99 +33,10 @@ const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 const DISCOVERY_TIMEOUT_SECS: u64 = 5;
 const DISCOVERY_CONNECT_TIMEOUT_SECS: u64 = 5;
 
-pub struct EgressPeerHandleImpl {
-    capability: CapabilityName,
-    capability_version: usize,
-    peer_id: PeerId,
-    sender: tokio::sync::mpsc::Sender<RLPxSendMessage>,
-}
-
-#[async_trait]
-impl EgressPeerHandle for EgressPeerHandleImpl {
-    fn capability_version(&self) -> usize {
-        self.capability_version
-    }
-    fn peer_id(&self) -> PeerId {
-        self.peer_id
-    }
-    async fn send_message(mut self, message: Message) -> Result<(), PeerSendError> {
-        self.sender
-            .send(RLPxSendMessage {
-                capability_name: self.capability,
-                message,
-            })
-            .await
-            .map_err(|_| PeerSendError::PeerGone)?;
-
-        Ok(())
-    }
-}
-
-pub struct ServerHandleImpl {
-    capability: CapabilityId,
-    pool: Weak<Server>,
-}
-
-impl Drop for ServerHandleImpl {
-    fn drop(&mut self) {
-        if let Some(pool) = self.pool.upgrade() {
-            let mut streams = pool.streams.lock();
-            let mut protocols = pool.protocols.write();
-
-            // Kick all peers with capability
-            streams.mapping.retain(|_, state| match state {
-                PeerState::Connecting { .. } => false,
-                PeerState::Connected(handle) => !handle.capabilities.contains(&self.capability),
-            });
-
-            // Remove protocol handler
-            protocols.delete_capability(self.capability)
-        }
-    }
-}
-
-#[async_trait]
-impl ServerHandle for ServerHandleImpl {
-    type EgressPeerHandle = EgressPeerHandleImpl;
-
-    async fn get_peers(
-        &self,
-        versions: BTreeSet<usize>,
-        note: Option<(String, String)>,
-    ) -> Result<Vec<Self::EgressPeerHandle>, Shutdown> {
-        let pool = self.pool.upgrade().ok_or(Shutdown)?;
-        Ok(pool
-            .connected_peers_filtered(
-                |_| 1,
-                Some(&CapabilityFilter {
-                    name: self.capability.name,
-                    versions,
-                }),
-                note.as_ref(),
-            )
-            .into_iter()
-            .map(|(peer_id, (sender, capabilities))| EgressPeerHandleImpl {
-                capability: self.capability.name,
-                capability_version: capabilities[&self.capability.name],
-                peer_id,
-                sender,
-            })
-            .collect())
-    }
-}
-
-/// Sending message for RLPx
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RLPxSendMessage {
-    pub capability_name: CapabilityName,
-    pub message: Message,
-}
-
-pub type PeerSender = tokio::sync::mpsc::Sender<RLPxSendMessage>;
-
 #[derive(Clone, Copy)]
 enum DisconnectInitiator {
     Local,
+    LocalForceful,
     Remote,
 }
 
@@ -138,7 +47,6 @@ struct DisconnectSignal {
 
 #[derive(Debug)]
 struct ConnectedPeerState {
-    sender: PeerSender,
     disconnector: UnboundedSender<DisconnectSignal>,
     tasks: TaskGroup,
     capabilities: BTreeSet<CapabilityId>,
@@ -179,22 +87,27 @@ impl Default for PeerStreams {
     }
 }
 
-#[derive(Clone)]
-struct PeerStreamHandshakeData {
+#[derive(Derivative)]
+#[derivative(Clone)]
+struct PeerStreamHandshakeData<C> {
     port: u16,
     protocol_version: ProtocolVersion,
     secret_key: Arc<SigningKey>,
     client_version: String,
-    capabilities: Arc<RwLock<CapabilityMap>>,
+    capabilities: Arc<CapabilitySet>,
+    #[derivative(Clone(bound = ""))]
+    capability_server: Arc<C>,
 }
 
-async fn handle_incoming(
+async fn handle_incoming<C>(
     task_group: Weak<TaskGroup>,
     streams: Arc<Mutex<PeerStreams>>,
     node_filter: Arc<Mutex<dyn NodeFilter>>,
     mut tcp_incoming: TcpListener,
-    handshake_data: PeerStreamHandshakeData,
-) {
+    handshake_data: PeerStreamHandshakeData<C>,
+) where
+    C: CapabilityServer,
+{
     loop {
         match tcp_incoming.accept().await {
             Err(e) => {
@@ -217,12 +130,16 @@ async fn handle_incoming(
 }
 
 /// Set up newly connected peer's state, start its tasks
-fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>(
+fn setup_peer_state<C, Io>(
     streams: Weak<Mutex<PeerStreams>>,
-    capabilities: Arc<RwLock<CapabilityMap>>,
+    capability_server: Arc<C>,
     remote_id: PeerId,
     peer: PeerStream<Io>,
-) -> ConnectedPeerState {
+) -> ConnectedPeerState
+where
+    C: CapabilityServer,
+    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static,
+{
     let capability_set = peer
         .capabilities()
         .iter()
@@ -230,18 +147,17 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
         .map(From::from)
         .collect::<BTreeSet<_>>();
     let (mut sink, mut stream) = futures::StreamExt::split(peer);
-    let (peer_disconnect_tx, peer_disconnect_rx) = unbounded_channel();
-    let (peer_sender_tx, peer_sender_rx) = tokio::sync::mpsc::channel(1);
+    let (peer_disconnect_tx, mut peer_disconnect_rx) = unbounded_channel();
     let tasks = TaskGroup::default();
+
+    capability_server.on_peer_connect(remote_id, capability_set.clone());
 
     // Ingress router
     tasks.spawn({
-        let capabilities = capabilities.clone();
+        let capability_server = capability_server.clone();
         let peer_disconnect_tx = peer_disconnect_tx.clone();
-        let peer_sender_tx = peer_sender_tx.clone();
         async move {
             let disconnect_signal = {
-                let mut peer_sender_tx = peer_sender_tx.clone();
                 async move {
                     while let Some(message) = stream.next().await {
                         match message {
@@ -254,55 +170,19 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
                                 message_id,
                                 payload,
                             }) => {
-                                // Extract capability's ingress handler
-                                let handler =
-                                    capabilities.read().get_inner().get(&capability.into()).map(
-                                        |CapabilityMeta {
-                                             protocol_server, ..
-                                         }| {
-                                            protocol_server.clone()
-                                        },
-                                    );
-
                                 // Actually handle the message
-                                if let Some(handler) = handler {
-                                    let (message, report) = handler
-                                        .on_ingress_message(
-                                            IngressPeer {
-                                                id: remote_id,
-                                                capability: capability.into(),
-                                            },
-                                            Message {
+                                capability_server
+                                    .on_peer_event(
+                                        remote_id,
+                                        InboundEvent::Message {
+                                            capability_name: capability.name,
+                                            message: Message {
                                                 id: message_id,
                                                 data: payload,
                                             },
-                                        )
-                                        .await
-                                        .unwrap_or_else(|err| {
-                                            debug!("Ingress handler error: {:?}", err);
-                                            (None, err.to_reputation_report())
-                                        });
-
-                                    // Check reputation report
-                                    if let Some(ReputationReport::Kick { reason, .. }) = report {
-                                        debug!("Received damning report about peer, disconnecting");
-                                        return DisconnectSignal {
-                                            initiator: DisconnectInitiator::Local,
-                                            reason: reason
-                                                .unwrap_or(DisconnectReason::DisconnectRequested),
-                                        };
-                                    }
-
-                                    // And send any reply if necessary
-                                    if let Some(message) = message {
-                                        let _ = peer_sender_tx
-                                            .send(RLPxSendMessage {
-                                                capability_name: capability.name,
-                                                message,
-                                            })
-                                            .await;
-                                    }
-                                }
+                                        },
+                                    )
+                                    .await
                             }
                             Ok(InboundMessage::Disconnect(reason)) => {
                                 // Peer has requested disconnection.
@@ -336,85 +216,65 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
     // Egress router & disconnector
     tasks.spawn({
         async move {
-            // Send initial messages
-            let mut useless_peer = false;
-            let mut initial_messages = vec![];
-            let caps = capabilities.read().get_inner().iter().map(|(cap, cap_info)| (cap.name, cap_info.protocol_server.clone())).collect::<Vec<_>>();
-            for (capability_name, ps) in caps {
-                if let PeerConnectOutcome::Retain { hello } =
-                    ps.on_peer_connect(remote_id).await
-                {
-                    useless_peer = false;
-                    if let Some(message) = hello {
-                        initial_messages.push(RLPxSendMessage {
-                            capability_name,
-                            message,
-                        });
-                    }
-                } else {
-                    useless_peer = true;
-                }
-            }
-
-            let mut peer_disconnect_rx: Pin<Box<dyn Stream<Item = DisconnectSignal> + Send + Sync>> = if useless_peer {
-                debug!("peer disavowed by all caps, disconnecting");
-                Box::pin(stream::iter(vec![DisconnectSignal { initiator: DisconnectInitiator::Local, reason: DisconnectReason::UselessPeer }]))
-            } else {
-                Box::pin(peer_disconnect_rx)
-            };
-            let mut egress_stream = stream::iter(initial_messages)
-                .chain(peer_sender_rx)
-                .map(|v| EgressMessage::Subprotocol {
-                    cap_name: v.capability_name,
-                    message: v.message,
-                }).fuse();
-
             loop {
                 let mut disconnecting = None;
-                let mut message = None;
+                let mut egress = None;
                 tokio::select! {
-                    v = egress_stream.next() => {
-                        match v {
-                            Some(msg) => {
-                                message = Some(msg);
+                    msg = capability_server.next(remote_id) => {
+                        match msg {
+                            OutboundEvent::Message {
+                                capability_name, message
+                            } => {
+                                egress = Some(EgressMessage::Subprotocol(SubprotocolMessage {
+                                    cap_name: capability_name, message
+                                }));
                             }
-                            None => {
-                                disconnecting = Some(DisconnectInitiator::Remote);
+                            OutboundEvent::Disconnect {
+                                reason
+                            } => {
+                                disconnecting = Some(DisconnectSignal {
+                                    initiator: DisconnectInitiator::Local, reason
+                                });
                             }
-                        }
+                        };
                     },
                     Some(DisconnectSignal { initiator, reason }) = peer_disconnect_rx.next() => {
-                        match initiator {
-                            DisconnectInitiator::Local => {
-                                message = Some(EgressMessage::Disconnect { reason });
-                            }
-                            DisconnectInitiator::Remote => {
-                                let capabilities = capabilities.read().get_inner().values().map(|meta| meta.protocol_server.clone()).collect::<Vec<_>>();
-                                for cap in capabilities {
-                                    cap.on_peer_disconnect(remote_id).await;
-                                }
-                            }
+                        if let DisconnectInitiator::Local = initiator {
+                            egress = Some(EgressMessage::Disconnect { reason });
                         }
-                        disconnecting = Some(initiator)
+                        disconnecting = Some(DisconnectSignal { initiator, reason })
                     },
                     else => {
                         break;
                     }
                 };
 
-                if let Some(message) = message {
+                if let Some(message) = egress {
+                    trace!("Sending message: {:?}", message);
+
                     // Send egress message, force disconnect on error.
                     if let Err(e) = sink.send(message).await {
                         debug!("peer disconnected with error {:?}", e);
-                        break;
+                        disconnecting.get_or_insert(DisconnectSignal {
+                            initiator: DisconnectInitiator::LocalForceful,
+                            reason: DisconnectReason::TcpSubsystemError,
+                        });
                     }
                 }
 
-                if let Some(kind) = disconnecting {
-                    if let DisconnectInitiator::Local = kind {
+                if let Some(DisconnectSignal { initiator, reason }) = disconnecting {
+                    if let DisconnectInitiator::Local = initiator {
                         // We have sent disconnect message, wait for grace period.
                         tokio::time::delay_for(Duration::from_secs(GRACE_PERIOD_SECS)).await;
                     }
+                    capability_server
+                        .on_peer_event(
+                            remote_id,
+                            InboundEvent::Disconnect {
+                                reason: Some(reason),
+                            },
+                        )
+                        .await;
                     break;
                 }
             }
@@ -432,7 +292,6 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
         ))
     });
     ConnectedPeerState {
-        sender: peer_sender_tx,
         disconnector: peer_disconnect_tx,
         tasks,
         capabilities: capability_set,
@@ -441,20 +300,23 @@ fn setup_peer_state<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>
 }
 
 /// Establishes the connection with peer and adds them to internal state.
-async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static>(
+async fn handle_incoming_request<C, Io>(
     streams: Arc<Mutex<PeerStreams>>,
     node_filter: Arc<Mutex<dyn NodeFilter>>,
     stream: Io,
-    handshake_data: PeerStreamHandshakeData,
-) {
+    handshake_data: PeerStreamHandshakeData<C>,
+) where
+    C: CapabilityServer,
+    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static,
+{
     let PeerStreamHandshakeData {
         secret_key,
         protocol_version,
         client_version,
         capabilities,
+        capability_server,
         port,
     } = handshake_data;
-    let capability_set = capabilities.read().get_capabilities().to_vec();
     // Do handshake and convert incoming connection into stream.
     let peer_res = tokio::time::timeout(
         Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
@@ -463,7 +325,7 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Debug + Send + Unp
             secret_key,
             protocol_version,
             client_version,
-            capability_set,
+            capabilities.get_capabilities().to_vec(),
             port,
         ),
     )
@@ -474,6 +336,7 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Debug + Send + Unp
             "incoming connection timeout",
         ))
     });
+
     match peer_res {
         Ok(peer) => {
             let remote_id = peer.remote_id();
@@ -500,7 +363,7 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Debug + Send + Unp
                         debug!("New incoming peer connected: {}", remote_id);
                         entry.insert(PeerState::Connected(setup_peer_state(
                             Arc::downgrade(&streams),
-                            capabilities,
+                            capability_server,
                             remote_id,
                             peer,
                         )));
@@ -516,67 +379,36 @@ async fn handle_incoming_request<Io: AsyncRead + AsyncWrite + Debug + Send + Unp
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
-struct CapabilityMeta {
-    length: usize,
-    #[derivative(Debug = "ignore")]
-    protocol_server: Arc<dyn CapabilityServer>,
-}
-
 #[derive(Debug, Default)]
-struct CapabilityMap {
-    inner: BTreeMap<CapabilityId, CapabilityMeta>,
+struct CapabilitySet {
+    inner: BTreeMap<CapabilityId, CapabilityLength>,
 
     capability_cache: Vec<CapabilityInfo>,
 }
 
-impl CapabilityMap {
-    fn update_cache(&mut self) {
-        self.capability_cache = self
-            .inner
-            .iter()
-            .map(
-                |(&CapabilityId { name, version }, &CapabilityMeta { length, .. })| {
-                    CapabilityInfo {
-                        name,
-                        version,
-                        length,
-                    }
-                },
-            )
-            .collect();
-    }
-
-    fn register_capability(
-        &mut self,
-        id: CapabilityId,
-        length: usize,
-        protocol_server: Arc<dyn CapabilityServer>,
-    ) {
-        self.inner.insert(
-            id,
-            CapabilityMeta {
-                length,
-                protocol_server,
-            },
-        );
-
-        self.update_cache()
-    }
-
-    fn delete_capability(&mut self, cap: CapabilityId) {
-        self.inner.remove(&cap);
-
-        self.update_cache()
-    }
-
+impl CapabilitySet {
     fn get_capabilities(&self) -> &[CapabilityInfo] {
         &self.capability_cache
     }
+}
 
-    const fn get_inner(&self) -> &BTreeMap<CapabilityId, CapabilityMeta> {
-        &self.inner
+impl From<BTreeMap<CapabilityId, CapabilityLength>> for CapabilitySet {
+    fn from(inner: BTreeMap<CapabilityId, CapabilityLength>) -> Self {
+        let capability_cache = inner
+            .iter()
+            .map(
+                |(&CapabilityId { name, version }, &length)| CapabilityInfo {
+                    name,
+                    version,
+                    length,
+                },
+            )
+            .collect();
+
+        Self {
+            inner,
+            capability_cache,
+        }
     }
 }
 
@@ -591,7 +423,7 @@ impl CapabilityMap {
 /// All continuously running workers are inside the task scope owned by the server struct.
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct Server {
+pub struct Server<C: CapabilityServer> {
     #[allow(unused)]
     tasks: Arc<TaskGroup>,
 
@@ -599,7 +431,8 @@ pub struct Server {
 
     node_filter: Arc<Mutex<dyn NodeFilter>>,
 
-    protocols: Arc<RwLock<CapabilityMap>>,
+    capabilities: Arc<CapabilitySet>,
+    capability_server: Arc<C>,
 
     #[derivative(Debug = "ignore")]
     secret_key: Arc<SigningKey>,
@@ -631,36 +464,38 @@ impl ServerBuilder {
         }
     }
 
-    pub fn with_task_group(&mut self, task_group: Arc<TaskGroup>) -> &mut Self {
+    pub fn with_task_group(mut self, task_group: Arc<TaskGroup>) -> Self {
         self.task_group = Some(task_group);
         self
     }
 
-    pub fn with_listen_options(&mut self, options: ListenOptions) -> &mut Self {
+    pub fn with_listen_options(mut self, options: ListenOptions) -> Self {
         self.listen_options = Some(options);
         self
     }
 
-    pub fn with_client_version(&mut self, version: String) -> &mut Self {
+    pub fn with_client_version(mut self, version: String) -> Self {
         self.client_version = version;
         self
     }
 
     /// Create a new RLPx node
-    pub async fn build(&self, secret_key: SigningKey) -> Result<Arc<Server>, io::Error> {
+    pub async fn build<C: CapabilityServer>(
+        self,
+        capability_mask: BTreeMap<CapabilityId, CapabilityLength>,
+        capability_server: Arc<C>,
+        secret_key: SigningKey,
+    ) -> Result<Arc<Server<C>>, io::Error> {
         Server::new(
             secret_key,
-            self.client_version.clone(),
-            self.task_group.clone(),
-            self.listen_options.clone(),
+            self.client_version,
+            self.task_group,
+            capability_mask.into(),
+            capability_server,
+            self.listen_options,
         )
         .await
     }
-}
-
-pub struct CapabilityFilter {
-    pub name: CapabilityName,
-    pub versions: BTreeSet<usize>,
 }
 
 #[derive(Derivative)]
@@ -672,11 +507,13 @@ pub struct ListenOptions {
     pub addr: SocketAddr,
 }
 
-impl Server {
+impl<C: CapabilityServer> Server<C> {
     async fn new(
         secret_key: SigningKey,
         client_version: String,
         task_group: Option<Arc<TaskGroup>>,
+        capabilities: CapabilitySet,
+        capability_server: Arc<C>,
         listen_options: Option<ListenOptions>,
     ) -> Result<Arc<Self>, io::Error> {
         let tasks = task_group.unwrap_or_default();
@@ -696,7 +533,7 @@ impl Server {
                 .map_or(0.into(), |options| options.max_peers.into()),
         ))));
 
-        let protocols = Arc::new(RwLock::new(Default::default()));
+        let capabilities = Arc::new(capabilities);
 
         if let Some(options) = &listen_options {
             let tcp_incoming = TcpListener::bind(options.addr).await?;
@@ -710,7 +547,8 @@ impl Server {
                     protocol_version,
                     secret_key: secret_key.clone(),
                     client_version: client_version.clone(),
-                    capabilities: protocols.clone(),
+                    capabilities: capabilities.clone(),
+                    capability_server: capability_server.clone(),
                 },
             ));
         }
@@ -719,7 +557,8 @@ impl Server {
             tasks: tasks.clone(),
             streams,
             node_filter,
-            protocols,
+            capabilities,
+            capability_server,
             secret_key,
             protocol_version,
             client_version,
@@ -800,8 +639,9 @@ impl Server {
         let streams = self.streams.clone();
         let node_filter = self.node_filter.clone();
 
-        let capabilities = self.protocols.clone();
-        let capability_set = capabilities.read().get_capabilities().to_vec();
+        let capabilities = self.capabilities.clone();
+        let capability_set = capabilities.get_capabilities().to_vec();
+        let capability_server = self.capability_server.clone();
 
         let secret_key = self.secret_key.clone();
         let protocol_version = self.protocol_version;
@@ -901,7 +741,7 @@ impl Server {
 
                             *peer_state.get_mut() = PeerState::Connected(setup_peer_state(
                                 Arc::downgrade(&streams),
-                                capabilities,
+                                capability_server,
                                 remote_id,
                                 peer,
                             ));
@@ -981,104 +821,5 @@ impl Server {
                 }
             })
             .collect()
-    }
-
-    /// Get peers by capability with desired limit.
-    #[must_use]
-    pub fn connected_peers_filtered(
-        &self,
-        limit: impl Fn(usize) -> usize,
-        cap_filter: Option<&CapabilityFilter>,
-        note_filter: Option<&(String, String)>,
-    ) -> HashMap<PeerId, (PeerSender, BTreeMap<CapabilityName, usize>)> {
-        let peers = self.streams.lock();
-
-        let peer_num = peers.mapping.len();
-
-        peers
-            .mapping
-            .iter()
-            .filter_map(|(id, peer)| {
-                match peer {
-                    PeerState::Connecting { .. } => {
-                        // Peer is connecting, not yet live
-                        return None;
-                    }
-                    PeerState::Connected(handle) => {
-                        // Check if peer supports capability
-                        if let Some(cap_filter) = &cap_filter {
-                            if cap_filter.versions.is_empty() {
-                                // No cap version filter
-                                for cap in &handle.capabilities {
-                                    if cap.name == cap_filter.name {
-                                        return Some((id, handle));
-                                    }
-                                }
-                            } else if !handle.capabilities.is_disjoint(
-                                &cap_filter
-                                    .versions
-                                    .iter()
-                                    .map(|&version| CapabilityId {
-                                        name: cap_filter.name,
-                                        version,
-                                    })
-                                    .collect(),
-                            ) {
-                                // We have an intersection of at least *some* versions
-                                return Some((id, handle));
-                            }
-                        } else {
-                            // No cap filter
-                            return Some((id, handle));
-                        }
-                    }
-                };
-                None
-            })
-            .filter(|(_, peer)| {
-                if let Some((key, value)) = &note_filter {
-                    if let Some(v) = peer.notes.get(key) {
-                        return v == value;
-                    }
-
-                    return false;
-                }
-
-                true
-            })
-            // TODO: what if user holds sender past peer drop?
-            .map(|(remote_id, state)| {
-                (
-                    *remote_id,
-                    (
-                        state.sender.clone(),
-                        state
-                            .capabilities
-                            .iter()
-                            .map(|&CapabilityId { name, version }| (name, version))
-                            .collect(),
-                    ),
-                )
-            })
-            .take((limit)(peer_num))
-            .collect()
-    }
-}
-
-impl CapabilityRegistrar for Arc<Server> {
-    type ServerHandle = ServerHandleImpl;
-
-    fn register(
-        &self,
-        info: CapabilityInfo,
-        capability_server: Arc<dyn CapabilityServer>,
-    ) -> Self::ServerHandle {
-        let mut protocols = self.protocols.write();
-        protocols.register_capability(info.into(), info.length, capability_server);
-        let pool = Arc::downgrade(self);
-        ServerHandleImpl {
-            pool,
-            capability: info.into(),
-        }
     }
 }

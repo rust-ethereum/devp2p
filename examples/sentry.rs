@@ -4,25 +4,38 @@ use arrayvec::ArrayString;
 use async_trait::async_trait;
 use devp2p::*;
 use ethereum_types::*;
+use futures::stream::BoxStream;
 use hex_literal::hex;
 use k256::ecdsa::SigningKey;
+use maplit::btreemap;
+use parking_lot::RwLock;
 use rand::rngs::OsRng;
 use rlp_derive::{RlpDecodable, RlpEncodable};
 use std::{
-    convert::identity,
+    collections::{BTreeSet, HashMap},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
 };
 use task_group::TaskGroup;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::{
+    stream::StreamExt,
+    sync::{
+        mpsc::{channel, Sender},
+        Mutex as AsyncMutex,
+    },
+};
 use tracing::*;
 use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
 use uuid::Uuid;
 
 const DNS_BOOTNODE: &str = "all.mainnet.ethdisco.net";
+
+fn eth() -> CapabilityName {
+    CapabilityName(ArrayString::from("eth").unwrap())
+}
 
 #[derive(Debug, Default)]
 struct TaskMetrics {
@@ -50,12 +63,31 @@ struct StatusMessage {
     genesis_hash: H256,
 }
 
-#[derive(Debug)]
-struct CapabilityServerImpl;
+#[derive(Clone)]
+struct Pipes {
+    sender: Sender<OutboundEvent>,
+    receiver: Arc<AsyncMutex<BoxStream<'static, OutboundEvent>>>,
+}
+
+#[derive(Default)]
+struct CapabilityServerImpl {
+    on_event_pipes: Arc<RwLock<HashMap<PeerId, Pipes>>>,
+}
+
+impl CapabilityServerImpl {
+    fn setup_pipes(&self, peer: PeerId, pipes: Pipes) {
+        assert!(self.on_event_pipes.write().insert(peer, pipes).is_none());
+    }
+    fn get_pipes(&self, peer: PeerId) -> Pipes {
+        self.on_event_pipes.read().get(&peer).unwrap().clone()
+    }
+}
 
 #[async_trait]
 impl CapabilityServer for CapabilityServerImpl {
-    async fn on_peer_connect(&self, _: PeerId) -> PeerConnectOutcome {
+    #[instrument(skip(self))]
+    fn on_peer_connect(&self, peer: PeerId, _: BTreeSet<CapabilityId>) {
+        info!("Settting up peer state");
         let status_message = StatusMessage {
             protocol_version: 63,
             network_id: 1,
@@ -68,58 +100,96 @@ impl CapabilityServer for CapabilityServerImpl {
             )),
         };
 
-        PeerConnectOutcome::Retain {
-            hello: Some(Message {
-                id: 0,
-                data: rlp::encode(&status_message).into(),
-            }),
-        }
-    }
-    #[instrument(skip(peer, message), level = "debug", name = "ingress", fields(peer=&*peer.id.to_string(), id=message.id))]
-    async fn on_ingress_message(
-        &self,
-        peer: IngressPeer,
-        message: Message,
-    ) -> Result<(Option<Message>, Option<ReputationReport>), HandleError> {
-        let Message { id, data } = message;
-
-        info!(
-            "Received message with id {}, data {}",
-            id,
-            hex::encode(&data)
+        let (sender, receiver) = channel(1);
+        let receiver = Box::pin(
+            tokio::stream::iter(std::iter::once(OutboundEvent::Message {
+                capability_name: eth(),
+                message: Message {
+                    id: 0,
+                    data: rlp::encode(&status_message).into(),
+                },
+            }))
+            .chain(receiver),
         );
+        self.setup_pipes(
+            peer,
+            Pipes {
+                sender,
+                receiver: Arc::new(AsyncMutex::new(receiver)),
+            },
+        );
+    }
+    #[instrument(skip(self))]
+    async fn on_peer_event(&self, peer: PeerId, event: InboundEvent) {
+        match event {
+            InboundEvent::Disconnect { .. } => {
+                self.on_event_pipes.write().remove(&peer);
+            }
+            InboundEvent::Message { message, .. } => {
+                info!(
+                    "Received message with id {}, data {}",
+                    message.id,
+                    hex::encode(&message.data)
+                );
 
-        if id == 0 {
-            match rlp::decode::<StatusMessage>(&data) {
-                Ok(v) => {
-                    info!("Decoded status message: {:?}", v);
+                if message.id == 0 {
+                    match rlp::decode::<StatusMessage>(&message.data) {
+                        Ok(v) => {
+                            info!("Decoded status message: {:?}", v);
+                        }
+                        Err(e) => {
+                            info!("Failed to decode status message: {}! Kicking peer.", e);
+                            let _ = self
+                                .get_pipes(peer)
+                                .sender
+                                .send(OutboundEvent::Disconnect {
+                                    reason: DisconnectReason::ProtocolBreach,
+                                })
+                                .await;
+
+                            return;
+                        }
+                    }
                 }
-                Err(e) => {
-                    info!("Failed to decode status message: {}! Kicking peer.", e);
-                    return Ok((
-                        None,
-                        Some(ReputationReport::Kick {
-                            reason: Some(DisconnectReason::ProtocolBreach),
-                            ban: false,
-                        }),
-                    ));
+
+                let out_id = match message.id {
+                    3 => Some(4),
+                    5 => Some(6),
+                    _ => None,
+                };
+
+                if let Some(id) = out_id {
+                    let _ = self
+                        .get_pipes(peer)
+                        .sender
+                        .send(OutboundEvent::Message {
+                            capability_name: eth(),
+                            message: Message {
+                                id,
+                                data: rlp::encode_list::<String, String>(&[]).into(),
+                            },
+                        })
+                        .await;
                 }
             }
         }
+    }
+    #[instrument(skip(self))]
+    async fn next(&self, peer_id: PeerId) -> OutboundEvent {
+        let outbound = self
+            .get_pipes(peer_id)
+            .receiver
+            .lock()
+            .await
+            .next()
+            .await
+            .unwrap_or(OutboundEvent::Disconnect {
+                reason: DisconnectReason::DisconnectRequested,
+            });
 
-        let out_id = match id {
-            3 => Some(4),
-            5 => Some(6),
-            _ => None,
-        };
+        info!("Sending outbound event {:?}", outbound);
 
-        Ok((
-            out_id.map(|id| Message {
-                id,
-                data: rlp::encode_list::<String, String>(&[]).into(),
-            }),
-            None,
-        ))
+        outbound
     }
 }
 
@@ -152,24 +222,19 @@ async fn main() {
             max_peers: 50,
             addr: "0.0.0.0:30303".parse().unwrap(),
         })
-        .build(secret_key)
+        .build(
+            btreemap! { CapabilityId {
+                name: eth(),
+                version: 63,
+            } => 17 },
+            Arc::new(CapabilityServerImpl::default()),
+            secret_key,
+        )
         .await
         .unwrap();
 
-    let _handle = client.register(
-        CapabilityInfo {
-            name: CapabilityName(ArrayString::from("eth").unwrap()),
-            version: 63,
-            length: 17,
-        },
-        Arc::new(CapabilityServerImpl),
-    );
-
     loop {
         tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
-        info!(
-            "Peers: {}.",
-            client.connected_peers(identity, None, None).len()
-        );
+        info!("Peers: {}.", client.connected_peers().len());
     }
 }

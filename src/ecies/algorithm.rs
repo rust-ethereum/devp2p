@@ -9,9 +9,9 @@ use aes_ctr::{
     Aes128Ctr, Aes256Ctr,
 };
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use derivative::Derivative;
 use digest::Digest;
 use ecdsa::{elliptic_curve::Field, hazmat::RecoverableSignPrimitive};
+use educe::Educe;
 use ethereum_types::{H128, H256};
 use generic_array::GenericArray;
 use k256::{
@@ -78,17 +78,17 @@ fn kdf(secret: H256, s1: &[u8], dest: &mut [u8]) {
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Educe)]
+#[educe(Debug)]
 pub struct ECIES {
-    #[derivative(Debug = "ignore")]
+    #[educe(Debug(ignore))]
     secret_key: Arc<SigningKey>,
     public_key: VerifyKey,
     remote_public_key: Option<VerifyKey>,
 
     remote_id: Option<PeerId>,
 
-    #[derivative(Debug = "ignore")]
+    #[educe(Debug(ignore))]
     ephemeral_secret_key: SigningKey,
     ephemeral_public_key: VerifyKey,
     ephemeral_shared_secret: Option<H256>,

@@ -2,7 +2,7 @@
 
 use crate::{disc::*, node_filter::*, peer::*, types::*};
 use anyhow::anyhow;
-use derivative::Derivative;
+use educe::Educe;
 use futures::sink::SinkExt;
 use k256::ecdsa::SigningKey;
 use parking_lot::Mutex;
@@ -82,15 +82,14 @@ impl Default for PeerStreams {
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Clone)]
+#[derive(Educe)]
+#[educe(Clone)]
 struct PeerStreamHandshakeData<C> {
     port: u16,
     protocol_version: ProtocolVersion,
     secret_key: Arc<SigningKey>,
     client_version: String,
     capabilities: Arc<CapabilitySet>,
-    #[derivative(Clone(bound = ""))]
     capability_server: Arc<C>,
 }
 
@@ -413,8 +412,8 @@ impl From<BTreeMap<CapabilityId, CapabilityLength>> for CapabilitySet {
 /// Internal state is managed by a multitude of workers that run in separate runtime tasks
 /// spawned on the running executor during the server creation and addition of new peers.
 /// All continuously running workers are inside the task scope owned by the server struct.
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Educe)]
+#[educe(Debug)]
 pub struct Swarm<C: CapabilityServer> {
     #[allow(unused)]
     tasks: Arc<TaskGroup>,
@@ -426,7 +425,7 @@ pub struct Swarm<C: CapabilityServer> {
     capabilities: Arc<CapabilitySet>,
     capability_server: Arc<C>,
 
-    #[derivative(Debug = "ignore")]
+    #[educe(Debug(ignore))]
     secret_key: Arc<SigningKey>,
     protocol_version: ProtocolVersion,
     client_version: String,
@@ -476,10 +475,10 @@ impl SwarmBuilder {
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Clone, Debug)]
+#[derive(Educe)]
+#[educe(Clone, Debug)]
 pub struct ListenOptions {
-    #[derivative(Debug = "ignore")]
+    #[educe(Debug(ignore))]
     pub discovery_tasks: Vec<Arc<AsyncMutex<dyn Discovery>>>,
     pub max_peers: usize,
     pub addr: SocketAddr,

@@ -12,6 +12,7 @@ use std::{
     future::Future,
     io,
     net::SocketAddr,
+    ops::Deref,
     sync::{Arc, Weak},
     time::Duration,
 };
@@ -758,5 +759,13 @@ impl<C: CapabilityServer> Swarm<C> {
             Ok(false)
         }
         .instrument(span!(Level::DEBUG, "add peer",))
+    }
+}
+
+impl<C: CapabilityServer> Deref for Swarm<C> {
+    type Target = C;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.capability_server
     }
 }

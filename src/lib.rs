@@ -20,7 +20,7 @@ pub mod util;
 
 pub use disc::*;
 pub use peer::{DisconnectReason, PeerStream};
-pub use rlpx::{ListenOptions, Server as RLPxNode, ServerBuilder as RLPxNodeBuilder};
+pub use rlpx::{ListenOptions, Swarm, SwarmBuilder};
 pub use types::{
     CapabilityId, CapabilityInfo, CapabilityName, CapabilityServer, InboundEvent, Message,
     NodeRecord, OutboundEvent, PeerId,

@@ -60,8 +60,7 @@ async fn main() {
 
     debug!("Connecting to {}", node.addr);
 
-    let client = RLPxNodeBuilder::new()
-        .build(
+    let client = Swarm::new(
             btreemap! { CapabilityId { name: CapabilityName(ArrayString::from("eth").unwrap()), version: 63 } => 15 },
             Arc::new(DummyServer),
             SigningKey::random(&mut OsRng),

@@ -220,7 +220,7 @@ async fn main() {
 
     let capability_server = Arc::new(CapabilityServerImpl::default());
 
-    let _client = RLPxNodeBuilder::new()
+    let _client = Swarm::builder()
         .with_task_group(task_group.clone())
         .with_listen_options(ListenOptions {
             discovery_tasks: std::iter::repeat(discovery).take(1).collect(),

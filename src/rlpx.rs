@@ -406,7 +406,7 @@ impl From<BTreeMap<CapabilityId, CapabilityLength>> for CapabilitySet {
 
 /// This is an asynchronous RLPx server implementation.
 ///
-/// `Server` is the RLPx server handle that supports adding and removing peers and
+/// `Swarm` is the representation of swarm of connected RLPx peers
 /// supports registration for capability servers.
 ///
 /// This implementation is based on the concept of structured concurrency.
@@ -415,7 +415,7 @@ impl From<BTreeMap<CapabilityId, CapabilityLength>> for CapabilitySet {
 /// All continuously running workers are inside the task scope owned by the server struct.
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct Server<C: CapabilityServer> {
+pub struct Swarm<C: CapabilityServer> {
     #[allow(unused)]
     tasks: Arc<TaskGroup>,
 
@@ -435,27 +435,13 @@ pub struct Server<C: CapabilityServer> {
 
 /// Builder for ergonomically creating a new `Server`.
 #[derive(Debug)]
-pub struct ServerBuilder {
+pub struct SwarmBuilder {
     task_group: Option<Arc<TaskGroup>>,
     listen_options: Option<ListenOptions>,
     client_version: String,
 }
 
-impl Default for ServerBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ServerBuilder {
-    pub fn new() -> Self {
-        Self {
-            task_group: None,
-            listen_options: None,
-            client_version: format!("rust-devp2p/{}", env!("CARGO_PKG_VERSION")),
-        }
-    }
-
+impl SwarmBuilder {
     pub fn with_task_group(mut self, task_group: Arc<TaskGroup>) -> Self {
         self.task_group = Some(task_group);
         self
@@ -477,8 +463,8 @@ impl ServerBuilder {
         capability_mask: BTreeMap<CapabilityId, CapabilityLength>,
         capability_server: Arc<C>,
         secret_key: SigningKey,
-    ) -> Result<Arc<Server<C>>, io::Error> {
-        Server::new(
+    ) -> Result<Arc<Swarm<C>>, io::Error> {
+        Swarm::new_inner(
             secret_key,
             self.client_version,
             self.task_group,
@@ -499,8 +485,28 @@ pub struct ListenOptions {
     pub addr: SocketAddr,
 }
 
-impl<C: CapabilityServer> Server<C> {
-    async fn new(
+impl Swarm<()> {
+    pub fn builder() -> SwarmBuilder {
+        SwarmBuilder {
+            task_group: None,
+            listen_options: None,
+            client_version: format!("rust-devp2p/{}", env!("CARGO_PKG_VERSION")),
+        }
+    }
+}
+
+impl<C: CapabilityServer> Swarm<C> {
+    pub async fn new(
+        capability_mask: BTreeMap<CapabilityId, CapabilityLength>,
+        capability_server: Arc<C>,
+        secret_key: SigningKey,
+    ) -> Result<Arc<Self>, io::Error> {
+        Swarm::builder()
+            .build(capability_mask, capability_server, secret_key)
+            .await
+    }
+
+    async fn new_inner(
         secret_key: SigningKey,
         client_version: String,
         task_group: Option<Arc<TaskGroup>>,

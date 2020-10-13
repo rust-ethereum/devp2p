@@ -1,11 +1,12 @@
 use crate::peer::DisconnectReason;
 use arrayvec::ArrayString;
 use async_trait::async_trait;
+use auto_impl::auto_impl;
 use bytes::Bytes;
 use derive_more::Display;
 pub use ethereum_types::H512 as PeerId;
 use rlp::{DecoderError, Rlp, RlpStream};
-use std::{collections::BTreeSet, net::SocketAddr, str::FromStr};
+use std::{collections::BTreeSet, fmt::Debug, net::SocketAddr, str::FromStr};
 
 /// Record that specifies information necessary to connect to RLPx node
 #[derive(Clone, Copy, Debug)]
@@ -119,13 +120,25 @@ pub enum OutboundEvent {
 }
 
 #[async_trait]
-pub trait CapabilityServer: Send + Sync + 'static {
+#[auto_impl(&, Box, Arc)]
+pub trait CapabilityServer: Debug + Send + Sync + 'static {
     /// Should be used to set up relevant state for the peer.
     fn on_peer_connect(&self, peer_id: PeerId, caps: BTreeSet<CapabilityId>);
     /// Called on the next event for peer.
     async fn on_peer_event(&self, peer_id: PeerId, event: InboundEvent);
     /// Get the next event for peer.
     async fn next(&self, peer_id: PeerId) -> OutboundEvent;
+}
+
+#[async_trait]
+impl CapabilityServer for () {
+    fn on_peer_connect(&self, _: PeerId, _: BTreeSet<CapabilityId>) {}
+
+    async fn on_peer_event(&self, _: PeerId, _: InboundEvent) {}
+
+    async fn next(&self, _: PeerId) -> OutboundEvent {
+        futures::future::pending().await
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

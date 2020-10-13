@@ -60,7 +60,7 @@ async fn main() {
 
     debug!("Connecting to {}", node.addr);
 
-    let client = Swarm::new(
+    let swarm = Swarm::new(
             btreemap! { CapabilityId { name: CapabilityName(ArrayString::from("eth").unwrap()), version: 63 } => 15 },
             Arc::new(DummyServer),
             SigningKey::random(&mut OsRng),
@@ -68,7 +68,7 @@ async fn main() {
         .await
         .unwrap();
 
-    client.add_peer(node).await.unwrap();
+    swarm.add_peer(node).await.unwrap();
 
     let timeout = 5;
     delay_for(Duration::from_secs(timeout)).await;

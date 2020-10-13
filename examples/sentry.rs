@@ -220,7 +220,7 @@ async fn main() {
 
     let capability_server = Arc::new(CapabilityServerImpl::default());
 
-    let _client = Swarm::builder()
+    let swarm = Swarm::builder()
         .with_task_group(task_group.clone())
         .with_listen_options(ListenOptions {
             discovery_tasks: std::iter::repeat(discovery).take(1).collect(),
@@ -232,7 +232,7 @@ async fn main() {
                 name: eth(),
                 version: 63,
             } => 17 },
-            capability_server.clone(),
+            capability_server,
             secret_key,
         )
         .await
@@ -240,6 +240,6 @@ async fn main() {
 
     loop {
         tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
-        info!("Peers: {}.", capability_server.connected_peers());
+        info!("Peers: {}.", swarm.connected_peers());
     }
 }

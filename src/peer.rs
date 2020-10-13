@@ -339,6 +339,8 @@ where
 
                 shared_capabilities.sort_by_key(|v| v.name);
 
+                let no_shared_caps = shared_capabilities.is_empty();
+
                 let snappy = match protocol_version {
                     ProtocolVersion::V4 => None,
                     ProtocolVersion::V5 => Some(Snappy {
@@ -347,7 +349,7 @@ where
                     }),
                 };
 
-                Ok(Self {
+                let mut this = Self {
                     remote_id: transport.remote_id(),
                     stream: transport,
                     client_version: nonhello_client_version,
@@ -357,7 +359,23 @@ where
                     snappy,
                     pending_pong: false,
                     disconnected: false,
-                })
+                };
+
+                if no_shared_caps {
+                    debug!("No shared capabilities, disconnecting.");
+                    let _ = this
+                        .send(EgressMessage::Disconnect {
+                            reason: DisconnectReason::UselessPeer,
+                        })
+                        .await;
+
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "handshake failed - no shared capabilities",
+                    ));
+                }
+
+                Ok(this)
             }
             Err(e) => {
                 debug!("hello failed because message rlp parsing failed");

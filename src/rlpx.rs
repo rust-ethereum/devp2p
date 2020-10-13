@@ -7,8 +7,8 @@ use futures::sink::SinkExt;
 use k256::ecdsa::SigningKey;
 use parking_lot::Mutex;
 use std::{
-    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
-    fmt::{Debug, Display},
+    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
+    fmt::Debug,
     future::Future,
     io,
     net::SocketAddr,
@@ -20,10 +20,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     stream::StreamExt,
-    sync::{
-        mpsc::{unbounded_channel, UnboundedSender},
-        Mutex as AsyncMutex,
-    },
+    sync::{mpsc::unbounded_channel, Mutex as AsyncMutex},
 };
 use tracing::*;
 use uuid::Uuid;
@@ -47,10 +44,8 @@ struct DisconnectSignal {
 
 #[derive(Debug)]
 struct ConnectedPeerState {
-    disconnector: UnboundedSender<DisconnectSignal>,
     tasks: TaskGroup,
     capabilities: BTreeSet<CapabilityId>,
-    notes: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -155,7 +150,6 @@ where
     // Ingress router
     tasks.spawn({
         let capability_server = capability_server.clone();
-        let peer_disconnect_tx = peer_disconnect_tx.clone();
         async move {
             let disconnect_signal = {
                 async move {
@@ -292,10 +286,8 @@ where
         ))
     });
     ConnectedPeerState {
-        disconnector: peer_disconnect_tx,
         tasks,
         capabilities: capability_set,
-        notes: Default::default(),
     }
 }
 
@@ -761,65 +753,5 @@ impl<C: CapabilityServer> Server<C> {
             Ok(false)
         }
         .instrument(span!(Level::DEBUG, "add peer",))
-    }
-
-    /// Add a note to the peer
-    #[must_use]
-    pub fn note_peer(&self, remote_id: PeerId, key: impl Display, value: impl Display) -> bool {
-        if let Some(PeerState::Connected(state)) = self.streams.lock().mapping.get_mut(&remote_id) {
-            state.notes.insert(key.to_string(), value.to_string());
-
-            return true;
-        }
-
-        false
-    }
-
-    /// Gradefully disconnect an already connected peer or force disconnect a peer that is about to be connected.
-    #[must_use]
-    pub fn disconnect_peer(&self, remote_id: PeerId, reason: DisconnectReason) -> bool {
-        let mut s = self.streams.lock();
-        if let Some(peer) = s.mapping.get_mut(&remote_id) {
-            if let PeerState::Connected(state) = peer {
-                let _ = state.disconnector.send(DisconnectSignal {
-                    initiator: DisconnectInitiator::Local,
-                    reason,
-                });
-            } else {
-                s.disconnect_peer(remote_id);
-            }
-            return true;
-        }
-
-        false
-    }
-
-    /// Force disconnect a peer if it is already connected or about
-    /// to be connected.
-    #[must_use]
-    pub fn drop_peer(&self, remote_id: PeerId) -> bool {
-        self.streams.lock().disconnect_peer(remote_id)
-    }
-
-    /// Active peers
-    #[must_use]
-    pub fn active_peers(&self) -> HashSet<PeerId> {
-        self.streams.lock().mapping.keys().copied().collect()
-    }
-
-    #[must_use]
-    pub fn connected_peers(&self) -> HashSet<PeerId> {
-        self.streams
-            .lock()
-            .mapping
-            .iter()
-            .filter_map(|(id, state)| {
-                if matches!(state, PeerState::Connected(..)) {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 }

@@ -81,6 +81,9 @@ impl CapabilityServerImpl {
     fn get_pipes(&self, peer: PeerId) -> Pipes {
         self.on_event_pipes.read().get(&peer).unwrap().clone()
     }
+    fn connected_peers(&self) -> usize {
+        self.on_event_pipes.read().len()
+    }
 }
 
 #[async_trait]
@@ -215,7 +218,9 @@ async fn main() {
 
     let discovery: Arc<AsyncMutex<dyn Discovery>> = Arc::new(AsyncMutex::new(discovery));
 
-    let client = RLPxNodeBuilder::new()
+    let capability_server = Arc::new(CapabilityServerImpl::default());
+
+    let _client = RLPxNodeBuilder::new()
         .with_task_group(task_group.clone())
         .with_listen_options(ListenOptions {
             discovery_tasks: std::iter::repeat(discovery).take(1).collect(),
@@ -227,7 +232,7 @@ async fn main() {
                 name: eth(),
                 version: 63,
             } => 17 },
-            Arc::new(CapabilityServerImpl::default()),
+            capability_server.clone(),
             secret_key,
         )
         .await
@@ -235,6 +240,6 @@ async fn main() {
 
     loop {
         tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
-        info!("Peers: {}.", client.connected_peers().len());
+        info!("Peers: {}.", capability_server.connected_peers());
     }
 }

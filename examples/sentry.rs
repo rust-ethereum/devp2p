@@ -181,9 +181,9 @@ impl CapabilityServer for CapabilityServerImpl {
         }
     }
     #[instrument(skip(self))]
-    async fn next(&self, peer_id: PeerId) -> OutboundEvent {
+    async fn next(&self, peer: PeerId) -> OutboundEvent {
         let outbound = self
-            .get_pipes(peer_id)
+            .get_pipes(peer)
             .receiver
             .lock()
             .await

@@ -71,18 +71,21 @@ struct Pipes {
 
 #[derive(Default)]
 struct CapabilityServerImpl {
-    on_event_pipes: Arc<RwLock<HashMap<PeerId, Pipes>>>,
+    peer_pipes: Arc<RwLock<HashMap<PeerId, Pipes>>>,
 }
 
 impl CapabilityServerImpl {
     fn setup_pipes(&self, peer: PeerId, pipes: Pipes) {
-        assert!(self.on_event_pipes.write().insert(peer, pipes).is_none());
+        assert!(self.peer_pipes.write().insert(peer, pipes).is_none());
     }
     fn get_pipes(&self, peer: PeerId) -> Pipes {
-        self.on_event_pipes.read().get(&peer).unwrap().clone()
+        self.peer_pipes.read().get(&peer).unwrap().clone()
+    }
+    fn teardown(&self, peer: PeerId) {
+        self.peer_pipes.write().remove(&peer);
     }
     fn connected_peers(&self) -> usize {
-        self.on_event_pipes.read().len()
+        self.peer_pipes.read().len()
     }
 }
 
@@ -103,17 +106,17 @@ impl CapabilityServer for CapabilityServerImpl {
             )),
         };
 
+        let first_message = OutboundEvent::Message {
+            capability_name: eth(),
+            message: Message {
+                id: 0,
+                data: rlp::encode(&status_message).into(),
+            },
+        };
+
         let (sender, receiver) = channel(1);
-        let receiver = Box::pin(
-            tokio::stream::iter(std::iter::once(OutboundEvent::Message {
-                capability_name: eth(),
-                message: Message {
-                    id: 0,
-                    data: rlp::encode(&status_message).into(),
-                },
-            }))
-            .chain(receiver),
-        );
+        let receiver =
+            Box::pin(tokio::stream::iter(std::iter::once(first_message)).chain(receiver));
         self.setup_pipes(
             peer,
             Pipes {
@@ -126,7 +129,7 @@ impl CapabilityServer for CapabilityServerImpl {
     async fn on_peer_event(&self, peer: PeerId, event: InboundEvent) {
         match event {
             InboundEvent::Disconnect { .. } => {
-                self.on_event_pipes.write().remove(&peer);
+                self.teardown(peer);
             }
             InboundEvent::Message { message, .. } => {
                 info!(

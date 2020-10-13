@@ -121,7 +121,7 @@ pub enum OutboundEvent {
 
 #[async_trait]
 #[auto_impl(&, Box, Arc)]
-pub trait CapabilityServer: Debug + Send + Sync + 'static {
+pub trait CapabilityServer: Send + Sync + 'static {
     /// Should be used to set up relevant state for the peer.
     fn on_peer_connect(&self, peer_id: PeerId, caps: BTreeSet<CapabilityId>);
     /// Called on the next event for peer.

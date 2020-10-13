@@ -424,6 +424,7 @@ pub struct Swarm<C: CapabilityServer> {
     node_filter: Arc<Mutex<dyn NodeFilter>>,
 
     capabilities: Arc<CapabilitySet>,
+    #[educe(Debug(ignore))]
     capability_server: Arc<C>,
 
     #[educe(Debug(ignore))]

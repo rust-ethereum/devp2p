@@ -22,6 +22,7 @@ byteorder = "1"
 bytes = "0.5"
 derive_more = "0.99"
 digest = "0.9"
+discv4 = { git = "https://github.com/rust-ethereum/discv4", optional = true }
 discv5 = { git = "https://github.com/sigp/discv5", optional = true }
 dnsdisc = { git = "https://github.com/rust-ethereum/dnsdisc", optional = true }
 ecdsa = "0.8"
@@ -58,8 +59,7 @@ sha3 = "0.9"
 tokio = { version = "0.2", features = ["full"] }
 tracing-subscriber = "0.2"
 trust-dns-resolver = "0.19"
-url = "2"
 
 [[example]]
 name = "sentry"
-required-features = ["dnsdisc", "dnsdisc/trust-dns"]
+required-features = ["discv4"]

@@ -4,7 +4,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use dnsdisc::{Backend, Resolver};
 use k256::ecdsa::VerifyKey;
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use task_group::TaskGroup;
 use tokio::{stream::StreamExt, sync::mpsc::Receiver};
 use tracing::*;
@@ -15,7 +15,7 @@ const MAX_RESOLUTION_DURATION: u64 = 1800;
 pub struct DnsDiscovery {
     #[allow(unused)]
     tasks: TaskGroup,
-    receiver: Receiver<anyhow::Result<(SocketAddr, PeerId)>>,
+    receiver: Receiver<anyhow::Result<NodeRecord>>,
 }
 
 impl DnsDiscovery {
@@ -48,8 +48,15 @@ impl DnsDiscovery {
                             break;
                         }
                         Ok(Some(Ok(v))) => {
-                            if let Some(socket) = v.tcp_socket() {
-                                if tx.send(Ok((socket, pk2id(&v.public_key())))).await.is_err() {
+                            if let Some(addr) = v.tcp_socket() {
+                                if tx
+                                    .send(Ok(NodeRecord {
+                                        addr,
+                                        id: pk2id(&v.public_key()),
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
                                     return;
                                 }
                             }
@@ -74,7 +81,7 @@ impl DnsDiscovery {
 
 #[async_trait]
 impl Discovery for DnsDiscovery {
-    async fn get_new_peer(&mut self) -> anyhow::Result<(SocketAddr, PeerId)> {
+    async fn get_new_peer(&mut self) -> anyhow::Result<NodeRecord> {
         self.receiver
             .recv()
             .await

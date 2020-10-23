@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 const GRACE_PERIOD_SECS: u64 = 2;
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
-const DISCOVERY_TIMEOUT_SECS: u64 = 5;
+const DISCOVERY_TIMEOUT_SECS: u64 = 90;
 const DISCOVERY_CONNECT_TIMEOUT_SECS: u64 = 5;
 
 #[derive(Clone, Copy)]
@@ -536,20 +536,23 @@ impl<C: CapabilityServer> Swarm<C> {
 
         if let Some(options) = &listen_options {
             let tcp_incoming = TcpListener::bind(options.addr).await?;
-            tasks.spawn(handle_incoming(
-                Arc::downgrade(&tasks),
-                streams.clone(),
-                node_filter.clone(),
-                tcp_incoming,
-                PeerStreamHandshakeData {
-                    port,
-                    protocol_version,
-                    secret_key: secret_key.clone(),
-                    client_version: client_version.clone(),
-                    capabilities: capabilities.clone(),
-                    capability_server: capability_server.clone(),
-                },
-            ));
+            tasks.spawn_with_name(
+                "incoming handler",
+                handle_incoming(
+                    Arc::downgrade(&tasks),
+                    streams.clone(),
+                    node_filter.clone(),
+                    tcp_incoming,
+                    PeerStreamHandshakeData {
+                        port,
+                        protocol_version,
+                        secret_key: secret_key.clone(),
+                        client_version: client_version.clone(),
+                        capabilities: capabilities.clone(),
+                        capability_server: capability_server.clone(),
+                    },
+                ),
+            );
         }
 
         let server = Arc::new(Self {
@@ -567,7 +570,7 @@ impl<C: CapabilityServer> Swarm<C> {
         // TODO: Use semaphore
         if let Some(options) = listen_options {
             for (num, discovery) in options.discovery_tasks.into_iter().enumerate() {
-                tasks.spawn({
+                tasks.spawn_with_name(format!("discovery #{}", num), {
                     let server = Arc::downgrade(&server);
                     let tasks = Arc::downgrade(&tasks);
                     async move {
@@ -591,10 +594,10 @@ impl<C: CapabilityServer> Swarm<C> {
                                     .unwrap_or_else(|_| {
                                         Err(anyhow!("timed out"))
                                     }) {
-                                        Ok((addr, remote_id)) => {
+                                        Ok(NodeRecord { addr, id: remote_id }) => {
                                             debug!("Discovered peer: {:?}", remote_id);
                                             if let Some(tasks) = tasks.upgrade() {
-                                                tasks.spawn(async move {
+                                                tasks.spawn_with_name(format!("add peer {} at {}", remote_id, addr), async move {
                                                     if tokio::time::timeout(Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS), server.add_peer_inner(addr, remote_id, true)).await.is_err() {
                                                         debug!("Timed out adding peer {}", remote_id);
                                                     }

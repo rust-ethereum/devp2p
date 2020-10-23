@@ -11,18 +11,18 @@ repository = "https://github.com/rust-ethereum/devp2p"
 edition = "2018"
 
 [dependencies]
-aes = "0.5"
-aes-ctr = "0.5"
+aes = "0.6"
+aes-ctr = "0.6"
 anyhow = "1"
 arrayvec = "0.5"
 async-trait = "0.1"
 auto_impl = "0.4"
-block-modes = "0.6"
+block-modes = "0.7"
 byteorder = "1"
 bytes = "0.5"
 derive_more = "0.99"
 digest = "0.9"
-discv5 = { git = "https://github.com/sigp/discv5", branch = "version-5.1", optional = true }
+discv5 = { git = "https://github.com/sigp/discv5", optional = true }
 dnsdisc = { git = "https://github.com/rust-ethereum/dnsdisc", optional = true }
 ecdsa = "0.8"
 educe = { version = "0.4", default-features = false, features = ["Clone", "Debug"] }
@@ -32,7 +32,7 @@ ethereum-types = "0.9"
 futures = "0.3"
 generic-array = "0.14"
 hex = "0.4"
-hmac = "0.9"
+hmac = "0.10"
 k256 = { version = "0.5", features = ["ecdh", "ecdsa"] }
 maplit = "1"
 num-traits = "0.2"

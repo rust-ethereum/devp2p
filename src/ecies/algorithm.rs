@@ -5,7 +5,7 @@ use crate::{
     util::{hmac_sha256, id2pk, keccak256, pk2id, sha256},
 };
 use aes_ctr::{
-    stream_cipher::{NewStreamCipher, StreamCipher},
+    cipher::{NewStreamCipher, StreamCipher},
     Aes128Ctr, Aes256Ctr,
 };
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};

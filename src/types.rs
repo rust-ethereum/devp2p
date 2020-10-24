@@ -97,11 +97,14 @@ impl From<CapabilityInfo> for CapabilityId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Display)]
 pub enum InboundEvent {
-    Disconnect {
-        reason: Option<DisconnectReason>,
-    },
+    #[display(
+        fmt = "disconnect/{}",
+        "reason.map(|r| r.to_string()).unwrap_or_else(|| \"(no reason)\".to_string())"
+    )]
+    Disconnect { reason: Option<DisconnectReason> },
+    #[display(fmt = "message/{}/{}", capability_name, "message.id.to_string()")]
     Message {
         capability_name: CapabilityName,
         message: Message,

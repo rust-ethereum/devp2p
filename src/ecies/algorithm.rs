@@ -211,7 +211,9 @@ impl ECIES {
     }
 
     fn decrypt_message(&self, encrypted: &[u8]) -> Result<Vec<u8>, ECIESError> {
-        let public_key = VerifyKey::new(&encrypted[0..65]).context("public key parse failed")?;
+        let pubkey_bytes = &encrypted[0..65];
+        let public_key = VerifyKey::new(&pubkey_bytes)
+            .with_context(|| format!("bad public key {}", hex::encode(pubkey_bytes)))?;
         let data_iv = &encrypted[65..(encrypted.len() - 32)];
         let tag = H256::from_slice(&encrypted[(encrypted.len() - 32)..]);
 

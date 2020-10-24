@@ -8,6 +8,7 @@ use aes_ctr::{
     cipher::{NewStreamCipher, StreamCipher},
     Aes128Ctr, Aes256Ctr,
 };
+use anyhow::Context;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use digest::Digest;
 use ecdsa::{elliptic_curve::Field, hazmat::RecoverableSignPrimitive};
@@ -26,7 +27,7 @@ use rand::rngs::OsRng;
 use sha2::Sha256;
 use sha3::Keccak256;
 use signature::Signature as _;
-use std::{convert::TryFrom, io, sync::Arc};
+use std::{convert::TryFrom, sync::Arc};
 
 const AUTH_LEN: usize = 65 /* signature with recovery */ + 32 /* keccak256 ephemeral */ +
     64 /* public key */ + 32 /* nonce */ + 1;
@@ -174,7 +175,7 @@ impl ECIES {
         self.remote_id.unwrap()
     }
 
-    fn encrypt_message(&self, data: &[u8]) -> Result<Vec<u8>, ECIESError> {
+    fn encrypt_message(&self, data: &[u8]) -> Vec<u8> {
         let secret_key = SigningKey::random(&mut OsRng);
         let x = ecdh_x(&self.remote_public_key.unwrap(), &secret_key);
         let mut key = [0_u8; 32];
@@ -206,11 +207,11 @@ impl ECIES {
         ret[65..(65 + 16 + data.len())].copy_from_slice(&iv_encrypted);
         ret[(65 + 16 + data.len())..].copy_from_slice(tag.as_ref());
 
-        Ok(ret)
+        ret
     }
 
     fn decrypt_message(&self, encrypted: &[u8]) -> Result<Vec<u8>, ECIESError> {
-        let public_key = VerifyKey::new(&encrypted[0..65])?;
+        let public_key = VerifyKey::new(&encrypted[0..65]).context("public key parse failed")?;
         let data_iv = &encrypted[65..(encrypted.len() - 32)];
         let tag = H256::from_slice(&encrypted[(encrypted.len() - 32)..]);
 
@@ -235,7 +236,7 @@ impl ECIES {
         Ok(decrypted_data)
     }
 
-    fn create_auth_unencrypted(&self) -> Result<[u8; AUTH_LEN], ECIESError> {
+    fn create_auth_unencrypted(&self) -> [u8; AUTH_LEN] {
         let x = ecdh_x(&self.remote_public_key.unwrap(), &self.secret_key);
         let msg = x ^ self.nonce;
         let (sig, is_r_odd) = SecretKey::from_bytes(self.ephemeral_secret_key.to_bytes())
@@ -254,21 +255,22 @@ impl ECIES {
             .copy_from_slice(keccak256(pk2id(&self.ephemeral_public_key).as_bytes()).as_bytes());
         out[97..161].copy_from_slice(pk2id(&self.public_key).as_bytes());
         out[161..193].copy_from_slice(self.nonce.as_bytes());
-        Ok(out)
+        out
     }
 
-    pub fn create_auth(&mut self) -> Result<Vec<u8>, ECIESError> {
-        let unencrypted = self.create_auth_unencrypted()?;
-        let encrypted = self.encrypt_message(unencrypted.as_ref())?;
+    pub fn create_auth(&mut self) -> Vec<u8> {
+        let unencrypted = self.create_auth_unencrypted();
+        let encrypted = self.encrypt_message(unencrypted.as_ref());
         self.init_msg = Some(encrypted.clone());
-        Ok(encrypted)
+        encrypted
     }
 
     fn parse_auth_unencrypted(&mut self, data: [u8; AUTH_LEN]) -> Result<(), ECIESError> {
-        let signature = Signature::from_bytes(&data[0..65])?;
+        let signature = Signature::from_bytes(&data[0..65]).context("failed to parse signature")?;
         let heid = H256::from_slice(&data[65..97]);
         self.remote_id = Some(PeerId::from_slice(&data[97..161]));
-        self.remote_public_key = Some(id2pk(PeerId::from_slice(&data[97..161]))?);
+        self.remote_public_key =
+            Some(id2pk(PeerId::from_slice(&data[97..161])).context("failed to parse peer id")?);
         self.remote_nonce = Some(H256::from_slice(&data[161..193]));
         if data[193] != 0_u8 {
             return Err(ECIESError::InvalidAuthData);
@@ -310,12 +312,12 @@ impl ECIES {
         ret
     }
 
-    pub fn create_ack(&mut self) -> Result<Vec<u8>, ECIESError> {
+    pub fn create_ack(&mut self) -> Vec<u8> {
         let unencrypted = self.create_ack_unencrypted();
-        let encrypted = self.encrypt_message(&unencrypted)?;
+        let encrypted = self.encrypt_message(&unencrypted);
         self.init_msg = Some(encrypted.clone());
         self.setup_frame(true);
-        Ok(encrypted)
+        encrypted
     }
 
     fn parse_ack_unencrypted(&mut self, data: [u8; ACK_LEN]) -> Result<(), ECIESError> {
@@ -445,9 +447,8 @@ impl ECIES {
         let mut decrypted = header.to_vec();
         self.ingress_aes.as_mut().unwrap().decrypt(&mut decrypted);
         self.body_size = Some(
-            usize::try_from(decrypted.as_slice().read_uint::<BigEndian>(3)?).map_err(|_| {
-                io::Error::new(io::ErrorKind::Other, "32 bit systems are not supported")
-            })?,
+            usize::try_from(decrypted.as_slice().read_uint::<BigEndian>(3)?)
+                .context("excessive body len")?,
         );
 
         Ok(self.body_size.unwrap())
@@ -545,10 +546,10 @@ mod tests {
             ECIES::new_client(Arc::new(client_secret_key), pk2id(&server_public_key)).unwrap();
 
         // Handshake
-        let auth = client_ecies.create_auth().unwrap();
+        let auth = client_ecies.create_auth();
         assert_eq!(auth.len(), ECIES::auth_len());
         server_ecies.parse_auth(auth.as_ref()).unwrap();
-        let ack = server_ecies.create_ack().unwrap();
+        let ack = server_ecies.create_ack();
         assert_eq!(ack.len(), ECIES::ack_len());
         client_ecies.parse_ack(ack.as_ref()).unwrap();
 

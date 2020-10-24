@@ -1,12 +1,18 @@
 use std::io;
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ECIESError {
-    SECP256K1(k256::ecdsa::Error),
-    IO(io::Error),
+    #[error("IO error")]
+    IO(#[from] io::Error),
+    #[error("tag check failure")]
     TagCheckFailed,
+    #[error("invalid auth data")]
     InvalidAuthData,
+    #[error("invalid ack data")]
     InvalidAckData,
+    #[error("other")]
+    Other(#[from] anyhow::Error),
 }
 
 impl From<ECIESError> for io::Error {
@@ -15,14 +21,8 @@ impl From<ECIESError> for io::Error {
     }
 }
 
-impl From<io::Error> for ECIESError {
-    fn from(error: io::Error) -> Self {
-        Self::IO(error)
-    }
-}
-
 impl From<k256::ecdsa::Error> for ECIESError {
     fn from(error: k256::ecdsa::Error) -> Self {
-        Self::SECP256K1(error)
+        Self::Other(error.into())
     }
 }

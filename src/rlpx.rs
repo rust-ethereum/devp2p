@@ -10,7 +10,6 @@ use std::{
     collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
     fmt::Debug,
     future::Future,
-    io,
     net::SocketAddr,
     ops::Deref,
     sync::{Arc, Weak},
@@ -324,12 +323,7 @@ async fn handle_incoming_request<C, Io>(
         ),
     )
     .await
-    .unwrap_or_else(|_| {
-        Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "incoming connection timeout",
-        ))
-    });
+    .unwrap_or_else(|_| Err(anyhow!("incoming connection timeout")));
 
     match peer_res {
         Ok(peer) => {
@@ -466,7 +460,7 @@ impl SwarmBuilder {
         capability_mask: BTreeMap<CapabilityId, CapabilityLength>,
         capability_server: Arc<C>,
         secret_key: SigningKey,
-    ) -> Result<Arc<Swarm<C>>, io::Error> {
+    ) -> anyhow::Result<Arc<Swarm<C>>> {
         Swarm::new_inner(
             secret_key,
             self.client_version,
@@ -503,7 +497,7 @@ impl<C: CapabilityServer> Swarm<C> {
         capability_mask: BTreeMap<CapabilityId, CapabilityLength>,
         capability_server: Arc<C>,
         secret_key: SigningKey,
-    ) -> Result<Arc<Self>, io::Error> {
+    ) -> anyhow::Result<Arc<Self>> {
         Swarm::builder()
             .build(capability_mask, capability_server, secret_key)
             .await
@@ -516,7 +510,7 @@ impl<C: CapabilityServer> Swarm<C> {
         capabilities: CapabilitySet,
         capability_server: Arc<C>,
         listen_options: Option<ListenOptions>,
-    ) -> Result<Arc<Self>, io::Error> {
+    ) -> anyhow::Result<Arc<Self>> {
         let tasks = task_group.unwrap_or_default();
 
         let secret_key = Arc::new(secret_key);
@@ -629,7 +623,7 @@ impl<C: CapabilityServer> Swarm<C> {
     pub fn add_peer(
         &self,
         node_record: NodeRecord,
-    ) -> impl Future<Output = io::Result<bool>> + Send + 'static {
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send + 'static {
         self.add_peer_inner(node_record.addr, node_record.id, false)
     }
 
@@ -638,7 +632,7 @@ impl<C: CapabilityServer> Swarm<C> {
         addr: SocketAddr,
         remote_id: PeerId,
         check_peer: bool,
-    ) -> impl Future<Output = io::Result<bool>> + Send + 'static {
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send + 'static {
         let tasks = self.tasks.clone();
         let streams = self.streams.clone();
         let node_filter = self.node_filter.clone();

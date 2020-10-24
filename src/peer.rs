@@ -1,4 +1,5 @@
 use crate::{ecies::ECIESStream, types::*, util::pk2id};
+use anyhow::{anyhow, bail, Context as _};
 use bytes::Bytes;
 use derive_more::Display;
 use enum_primitive_derive::Primitive;
@@ -50,22 +51,6 @@ pub enum DisconnectReason {
     PingTimeout = 0x0b,
     #[display(fmt = "some other reason specific to a subprotocol")]
     SubprotocolSpecific = 0x10,
-}
-
-fn make_disconnect_err(rlp: &[u8]) -> io::Error {
-    let reason = Rlp::new(rlp)
-        .val_at::<u8>(0)
-        .ok()
-        .and_then(DisconnectReason::from_u8);
-    io::Error::new(
-        io::ErrorKind::Other,
-        format!(
-            "explicit disconnect: {}",
-            reason
-                .map(|r| r.to_string())
-                .unwrap_or_else(|| "(unknown)".to_string())
-        ),
-    )
 }
 
 /// RLPx protocol version.
@@ -188,7 +173,7 @@ where
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Result<Self, io::Error> {
+    ) -> anyhow::Result<Self> {
         Ok(Self::new(
             ECIESStream::connect(transport, secret_key.clone(), remote_id).await?,
             secret_key,
@@ -219,7 +204,7 @@ where
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Result<Self, io::Error> {
+    ) -> anyhow::Result<Self> {
         Ok(Self::new(
             ECIESStream::incoming(transport, secret_key.clone()).await?,
             secret_key,
@@ -240,7 +225,7 @@ where
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
-    ) -> Result<Self, io::Error> {
+    ) -> anyhow::Result<Self> {
         let public_key = secret_key.verify_key();
         let id = pk2id(&public_key);
         let nonhello_capabilities = capabilities.clone();
@@ -265,126 +250,109 @@ where
             },
         };
         trace!("Sending hello message: {:?}", hello);
-        let hello = rlp::encode(&hello);
-        trace!("Outbound hello: {}", hex::encode(&hello));
-        let message_id: Vec<u8> = rlp::encode(&0_usize).to_vec();
-        assert!(message_id.len() == 1);
-        let mut ret: Vec<u8> = Vec::new();
-        ret.push(message_id[0]);
-        for d in &hello {
-            ret.push(*d);
-        }
-        transport.send(ret).await?;
+        let outbound_hello = rlp::encode(&0_usize)
+            .into_iter()
+            .chain(rlp::encode(&hello))
+            .collect();
+        trace!("Outbound hello: {}", hex::encode(&outbound_hello));
+        transport.send(outbound_hello).await?;
 
         let hello = transport.try_next().await?;
 
         let hello = hello.ok_or_else(|| {
             debug!("Hello failed because of no value");
-            io::Error::new(io::ErrorKind::Other, "Hello failed (no value)")
+            anyhow!("hello failed (no value)")
         })?;
         trace!("Receiving hello message: {:02x?}", hello);
 
         let message_id_rlp = Rlp::new(&hello[0..1]);
-        let message_id: Result<usize, rlp::DecoderError> = message_id_rlp.as_val();
+        let message_id = message_id_rlp
+            .as_val::<usize>()
+            .context("hello failed (message id)")?;
+        let payload = &hello[1..];
         match message_id {
-            Ok(message_id) => match message_id {
-                0 => {}
-                1 => {
-                    return Err(make_disconnect_err(&hello[1..]));
-                }
-                _ => {
-                    debug!(
-                        "Hello failed because message id is not 0 but {}: {:02x?}",
-                        message_id,
-                        &hello[1..]
-                    );
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "Hello failed (message id)",
-                    ));
-                }
-            },
-            Err(e) => {
-                debug!("hello failed because message id cannot be parsed");
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("hello failed (message id parsing: {})", e),
-                ));
+            0 => {}
+            1 => {
+                let reason = Rlp::new(payload)
+                    .val_at::<u8>(0)
+                    .ok()
+                    .and_then(DisconnectReason::from_u8);
+                bail!(
+                    "explicit disconnect: {}",
+                    reason
+                        .map(|r| r.to_string())
+                        .unwrap_or_else(|| "(unknown)".to_string())
+                );
+            }
+            _ => {
+                bail!(
+                    "Hello failed because message id is not 0 but {}: {:02x?}",
+                    message_id,
+                    payload
+                );
             }
         }
 
-        let rlp: Result<HelloMessage, rlp::DecoderError> = Rlp::new(&hello[1..]).as_val();
-        match rlp {
-            Ok(val) => {
-                debug!("hello message: {:?}", val);
-                let mut shared_capabilities: Vec<CapabilityInfo> = Vec::new();
+        let val = Rlp::new(payload)
+            .as_val::<HelloMessage>()
+            .context("hello failed (rlp)")?;
+        debug!("hello message: {:?}", val);
+        let mut shared_capabilities: Vec<CapabilityInfo> = Vec::new();
 
-                for cap_info in nonhello_capabilities {
-                    let cap_match = val
-                        .capabilities
-                        .iter()
-                        .any(|v| v.name == cap_info.name && v.version == cap_info.version);
+        for cap_info in nonhello_capabilities {
+            let cap_match = val
+                .capabilities
+                .iter()
+                .any(|v| v.name == cap_info.name && v.version == cap_info.version);
 
-                    if cap_match {
-                        shared_capabilities.push(cap_info);
-                    }
-                }
-
-                let shared_caps_original = shared_capabilities.clone();
-
-                for cap_info in shared_caps_original {
-                    shared_capabilities
-                        .retain(|v| v.name != cap_info.name || v.version >= cap_info.version);
-                }
-
-                shared_capabilities.sort_by_key(|v| v.name);
-
-                let no_shared_caps = shared_capabilities.is_empty();
-
-                let snappy = match protocol_version {
-                    ProtocolVersion::V4 => None,
-                    ProtocolVersion::V5 => Some(Snappy {
-                        encoder: snap::raw::Encoder::new(),
-                        decoder: snap::raw::Decoder::new(),
-                    }),
-                };
-
-                let mut this = Self {
-                    remote_id: transport.remote_id(),
-                    stream: transport,
-                    client_version: nonhello_client_version,
-                    port,
-                    id,
-                    shared_capabilities,
-                    snappy,
-                    pending_pong: false,
-                    disconnected: false,
-                };
-
-                if no_shared_caps {
-                    debug!("No shared capabilities, disconnecting.");
-                    let _ = this
-                        .send(EgressMessage::Disconnect {
-                            reason: DisconnectReason::UselessPeer,
-                        })
-                        .await;
-
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "handshake failed - no shared capabilities",
-                    ));
-                }
-
-                Ok(this)
-            }
-            Err(e) => {
-                debug!("hello failed because message rlp parsing failed");
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("hello failed (rlp error: {})", e),
-                ))
+            if cap_match {
+                shared_capabilities.push(cap_info);
             }
         }
+
+        let shared_caps_original = shared_capabilities.clone();
+
+        for cap_info in shared_caps_original {
+            shared_capabilities
+                .retain(|v| v.name != cap_info.name || v.version >= cap_info.version);
+        }
+
+        shared_capabilities.sort_by_key(|v| v.name);
+
+        let no_shared_caps = shared_capabilities.is_empty();
+
+        let snappy = match protocol_version {
+            ProtocolVersion::V4 => None,
+            ProtocolVersion::V5 => Some(Snappy {
+                encoder: snap::raw::Encoder::new(),
+                decoder: snap::raw::Decoder::new(),
+            }),
+        };
+
+        let mut this = Self {
+            remote_id: transport.remote_id(),
+            stream: transport,
+            client_version: nonhello_client_version,
+            port,
+            id,
+            shared_capabilities,
+            snappy,
+            pending_pong: false,
+            disconnected: false,
+        };
+
+        if no_shared_caps {
+            debug!("No shared capabilities, disconnecting.");
+            let _ = this
+                .send(EgressMessage::Disconnect {
+                    reason: DisconnectReason::UselessPeer,
+                })
+                .await;
+
+            bail!("handshake failed - no shared capabilities");
+        }
+
+        Ok(this)
     }
 }
 

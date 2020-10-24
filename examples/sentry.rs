@@ -102,7 +102,7 @@ impl CapabilityServerImpl {
 
 #[async_trait]
 impl CapabilityServer for CapabilityServerImpl {
-    #[instrument(skip(self))]
+    #[instrument(skip(self, peer), fields(peer=&*peer.to_string()))]
     fn on_peer_connect(&self, peer: PeerId, _: BTreeSet<CapabilityId>) {
         info!("Settting up peer state");
         let status_message = StatusMessage {
@@ -136,7 +136,7 @@ impl CapabilityServer for CapabilityServerImpl {
             },
         );
     }
-    #[instrument(skip(self))]
+    #[instrument(skip(self, peer, event), fields(peer=&*peer.to_string(), event=&*event.to_string()))]
     async fn on_peer_event(&self, peer: PeerId, event: InboundEvent) {
         match event {
             InboundEvent::Disconnect { .. } => {
@@ -191,7 +191,7 @@ impl CapabilityServer for CapabilityServerImpl {
             }
         }
     }
-    #[instrument(skip(self))]
+    #[instrument(skip(self, peer), fields(peer=&*peer.to_string()))]
     async fn next(&self, peer: PeerId) -> OutboundEvent {
         let outbound = self
             .get_pipes(peer)

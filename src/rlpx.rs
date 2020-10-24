@@ -109,7 +109,7 @@ async fn handle_incoming<C>(
                 error!("failed to accept peer: {:?}, shutting down", e);
                 return;
             }
-            Ok((stream, _remote_addr)) => {
+            Ok((stream, remote_addr)) => {
                 if let Some(tasks) = task_group.upgrade() {
                     let f = handle_incoming_request(
                         streams.clone(),
@@ -117,7 +117,7 @@ async fn handle_incoming<C>(
                         stream,
                         handshake_data.clone(),
                     );
-                    tasks.spawn(f);
+                    tasks.spawn_with_name(format!("Incoming connection setup: {}", remote_addr), f);
                 }
             }
         }
@@ -147,8 +147,7 @@ where
 
     capability_server.on_peer_connect(remote_id, capability_set.clone());
 
-    // Ingress router
-    tasks.spawn({
+    tasks.spawn_with_name(format!("peer {} ingress router", remote_id), {
         let capability_server = capability_server.clone();
         async move {
             let disconnect_signal = {
@@ -207,9 +206,11 @@ where
             remote_id.to_string(),
         ))
     });
-    // Egress router & disconnector
-    tasks.spawn({
-        async move {
+
+    tasks.spawn_with_name(
+        format!("peer {} egress router & disconnector", remote_id),
+        {
+            async move {
             loop {
                 let mut disconnecting = None;
                 let mut egress = None;
@@ -284,7 +285,8 @@ where
             "peer={}",
             remote_id.to_string(),
         ))
-    });
+        },
+    );
     ConnectedPeerState {
         tasks,
         capabilities: capability_set,
@@ -654,7 +656,7 @@ impl<C: CapabilityServer> Swarm<C> {
         let connection_id = Uuid::new_v4();
 
         // Start reaper task that will terminate this connection if connection future gets dropped.
-        tasks.spawn({
+        tasks.spawn_with_name(format!("connection {} reaper", connection_id), {
             let cid = connection_id;
             let streams = streams.clone();
             async move {

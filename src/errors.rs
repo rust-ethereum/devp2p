@@ -26,3 +26,9 @@ impl From<k256::ecdsa::Error> for ECIESError {
         Self::Other(error.into())
     }
 }
+
+impl From<rlp::DecoderError> for ECIESError {
+    fn from(error: rlp::DecoderError) -> Self {
+        Self::Other(error.into())
+    }
+}

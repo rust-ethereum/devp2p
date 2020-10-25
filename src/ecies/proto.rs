@@ -71,11 +71,19 @@ impl Decoder for ECIESCodec {
         match self.state {
             ECIESState::Auth => {
                 trace!("parsing auth");
-                if buf.len() < ECIES::auth_len() {
+                if buf.len() < 2 {
                     return Ok(None);
                 }
 
-                let data = buf.split_to(ECIES::auth_len());
+                let payload_size = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+                let total_size = payload_size + 2;
+
+                if buf.len() < total_size {
+                    trace!("current len {}, need {}", buf.len(), total_size);
+                    return Ok(None);
+                }
+
+                let data = buf.split_to(total_size);
                 self.ecies.parse_auth(&data)?;
 
                 self.state = ECIESState::Header;
@@ -83,11 +91,19 @@ impl Decoder for ECIESCodec {
             }
             ECIESState::Ack => {
                 trace!("parsing ack with len {}", buf.len());
-                if buf.len() < ECIES::ack_len() {
+                if buf.len() < 2 {
                     return Ok(None);
                 }
 
-                let data = buf.split_to(ECIES::ack_len());
+                let payload_size = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+                let total_size = payload_size + 2;
+
+                if buf.len() < total_size {
+                    trace!("current len {}, need {}", buf.len(), total_size);
+                    return Ok(None);
+                }
+
+                let data = buf.split_to(total_size);
                 self.ecies.parse_ack(&data)?;
 
                 self.state = ECIESState::Header;

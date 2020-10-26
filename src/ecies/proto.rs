@@ -259,10 +259,13 @@ where
         if !this.polled_header {
             match ready!(Pin::new(&mut this.stream).poll_next(cx)) {
                 Some(Ok(ECIESValue::Header(_))) => (),
-                Some(_) => {
+                Some(other) => {
                     return Poll::Ready(Some(Err(io::Error::new(
                         io::ErrorKind::Other,
-                        "ECIES stream protocol error",
+                        format!(
+                            "ECIES stream protocol error: expected header, received {:?}",
+                            other
+                        ),
                     ))))
                 }
                 None => return Poll::Ready(None),
@@ -271,10 +274,13 @@ where
         }
         let body = match ready!(Pin::new(&mut this.stream).poll_next(cx)) {
             Some(Ok(ECIESValue::Body(val))) => val,
-            Some(_) => {
+            Some(other) => {
                 return Poll::Ready(Some(Err(io::Error::new(
                     io::ErrorKind::Other,
-                    "ECIES stream protocol error",
+                    format!(
+                        "ECIES stream protocol error: expected header, received {:?}",
+                        other
+                    ),
                 ))))
             }
             None => return Poll::Ready(None),

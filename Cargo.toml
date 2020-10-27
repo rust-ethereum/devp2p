@@ -31,6 +31,7 @@ enr = { version = "0.4", default-features = false, features = ["k256"] }
 enum-primitive-derive = "0.2"
 ethereum-types = "0.9"
 futures = "0.3"
+futures-intrusive = "0.3"
 generic-array = "0.14"
 hex = "0.4"
 hmac = "0.10"

@@ -23,7 +23,7 @@ use k256::{
     elliptic_curve::sec1::FromEncodedPoint,
     EncodedPoint, FieldBytes, Scalar, SecretKey,
 };
-use rand::rngs::OsRng;
+use rand::{thread_rng, Rng};
 use rlp::{Rlp, RlpStream};
 use sha2::Sha256;
 use sha3::Keccak256;
@@ -144,7 +144,7 @@ impl ECIES {
 
     pub fn new_client(secret_key: Arc<SigningKey>, remote_id: PeerId) -> Result<Self, ECIESError> {
         let nonce = H256::random();
-        let ephemeral_secret_key = SigningKey::random(&mut OsRng);
+        let ephemeral_secret_key = SigningKey::random(thread_rng());
 
         Self::new_static_client(secret_key, remote_id, nonce, ephemeral_secret_key)
     }
@@ -183,7 +183,7 @@ impl ECIES {
 
     pub fn new_server(secret_key: Arc<SigningKey>) -> Result<Self, ECIESError> {
         let nonce = H256::random();
-        let ephemeral_secret_key = SigningKey::random(&mut OsRng);
+        let ephemeral_secret_key = SigningKey::random(thread_rng());
 
         Self::new_static_server(secret_key, nonce, ephemeral_secret_key)
     }
@@ -193,7 +193,7 @@ impl ECIES {
     }
 
     fn encrypt_message(&self, data: &[u8]) -> Vec<u8> {
-        let secret_key = SigningKey::random(&mut OsRng);
+        let secret_key = SigningKey::random(thread_rng());
         let x = ecdh_x(&self.remote_public_key.unwrap(), &secret_key);
         let mut key = [0_u8; 32];
         kdf(x, &[], &mut key);
@@ -270,7 +270,7 @@ impl ECIES {
             .unwrap()
             .secret_scalar()
             .try_sign_recoverable_prehashed(
-                &Scalar::random(&mut OsRng),
+                &Scalar::random(thread_rng()),
                 &Scalar::from_bytes_reduced(&FieldBytes::clone_from_slice(msg.as_ref())),
             )
             .unwrap();
@@ -284,7 +284,7 @@ impl ECIES {
 
         out.out()
             .into_iter()
-            .chain(repeat(0).take(100 + rand::random::<usize>() % 200))
+            .chain(repeat(0).take(thread_rng().gen_range(100, 301)))
             .collect()
     }
 
@@ -575,9 +575,9 @@ mod tests {
 
     #[test]
     fn communicate() {
-        let server_secret_key = SigningKey::random(&mut OsRng);
+        let server_secret_key = SigningKey::random(thread_rng());
         let server_public_key = server_secret_key.verify_key();
-        let client_secret_key = SigningKey::random(&mut OsRng);
+        let client_secret_key = SigningKey::random(thread_rng());
 
         let mut server_ecies = ECIES::new_server(Arc::new(server_secret_key)).unwrap();
         let mut client_ecies =

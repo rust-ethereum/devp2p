@@ -35,11 +35,11 @@ pub fn id2pk(id: PeerId) -> Result<VerifyKey, signature::Error> {
 mod tests {
     use super::*;
     use k256::ecdsa::SigningKey;
-    use rand::rngs::OsRng;
+    use rand::thread_rng;
 
     #[test]
     fn pk2id2pk() {
-        let prikey = SigningKey::random(&mut OsRng);
+        let prikey = SigningKey::random(thread_rng());
         let pubkey = prikey.verify_key();
         assert_eq!(pubkey, id2pk(pk2id(&pubkey)).unwrap());
     }

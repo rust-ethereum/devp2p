@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use devp2p::*;
 use k256::ecdsa::SigningKey;
 use maplit::btreemap;
-use rand::{rngs::OsRng, seq::SliceRandom};
+use rand::{seq::SliceRandom, thread_rng};
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use tokio::time::delay_for;
 use tracing::*;
@@ -53,7 +53,7 @@ async fn main() {
     ];
 
     let node = bootnodes
-        .choose(&mut OsRng)
+        .choose(&mut thread_rng())
         .unwrap()
         .parse::<NodeRecord>()
         .unwrap();
@@ -63,7 +63,7 @@ async fn main() {
     let swarm = Swarm::new(
             btreemap! { CapabilityId { name: CapabilityName(ArrayString::from("eth").unwrap()), version: 63 } => 15 },
             Arc::new(DummyServer),
-            SigningKey::random(&mut OsRng),
+            SigningKey::random(thread_rng()),
         )
         .await
         .unwrap();

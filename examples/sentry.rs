@@ -9,7 +9,7 @@ use hex_literal::hex;
 use k256::ecdsa::SigningKey;
 use maplit::btreemap;
 use parking_lot::RwLock;
-use rand::rngs::OsRng;
+use rand::thread_rng;
 use rlp_derive::{RlpDecodable, RlpEncodable};
 use std::{
     collections::{BTreeSet, HashMap},
@@ -216,7 +216,7 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let secret_key = SigningKey::random(&mut OsRng);
+    let secret_key = SigningKey::random(thread_rng());
 
     let task_metrics = Arc::new(TaskMetrics::default());
     let task_group = Arc::new(TaskGroup::new_with_metrics(task_metrics.clone()));
@@ -226,7 +226,7 @@ async fn main() {
     let discovery = Discv4::new(
         discv4::Node::new(
             format!("0.0.0.0:{}", port).parse().unwrap(),
-            SigningKey::random(&mut OsRng),
+            SigningKey::random(thread_rng()),
             DISCV4_BOOTNODES
                 .iter()
                 .map(|v| v.parse().unwrap())

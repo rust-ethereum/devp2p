@@ -22,7 +22,7 @@ impl Discv5 {
         let tasks = TaskGroup::default();
 
         let errors = Arc::new(UnbufferedChannel::new());
-        let (mut tx, receiver) = channel(cache);
+        let (tx, receiver) = channel(cache);
 
         tasks.spawn_with_name("discv5 pump", {
             let errors = errors.clone();

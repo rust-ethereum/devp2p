@@ -19,7 +19,7 @@ async-trait = "0.1"
 auto_impl = "0.4"
 block-modes = "0.7"
 byteorder = "1"
-bytes = "0.5"
+bytes = "0.6"
 derive_more = "0.99"
 digest = "0.9"
 discv4 = { git = "https://github.com/rust-ethereum/discv4", optional = true }
@@ -48,8 +48,8 @@ signature = { version = "1", features = ["std"] }
 snap = "1"
 task-group = { git = "https://github.com/vorot93/task-group" }
 thiserror = "1"
-tokio = { version = "0.2", features = ["macros", "net", "stream", "sync", "time"] }
-tokio-util = { version = "0.3", features = ["codec"] }
+tokio = { version = "0.3", features = ["macros", "net", "stream", "sync", "time"] }
+tokio-util = { version = "0.5", features = ["codec"] }
 tracing = "0.1"
 tracing-futures = "0.2"
 uuid = { version = "0.8", features = ["v4"] }
@@ -57,7 +57,7 @@ uuid = { version = "0.8", features = ["v4"] }
 [dev-dependencies]
 hex-literal = "0.3"
 sha3 = "0.9"
-tokio = { version = "0.2", features = ["full"] }
+tokio = { version = "0.3", features = ["full"] }
 tracing-subscriber = "0.2"
 trust-dns-resolver = "0.19"
 

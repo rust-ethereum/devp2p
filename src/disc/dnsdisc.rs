@@ -27,7 +27,7 @@ impl DnsDiscovery {
     ) -> Self {
         let tasks = TaskGroup::default();
 
-        let (mut tx, receiver) = tokio::sync::mpsc::channel(1);
+        let (tx, receiver) = tokio::sync::mpsc::channel(1);
         tasks.spawn_with_name("DNS discovery pump", async move {
             loop {
                 let mut query = discovery.query(domain.clone(), public_key);

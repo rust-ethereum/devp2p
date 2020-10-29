@@ -18,7 +18,7 @@ impl Discv4 {
     pub fn new(node: Arc<Node>, cache: usize) -> Self {
         let tasks = TaskGroup::default();
 
-        let (mut tx, receiver) = channel(cache);
+        let (tx, receiver) = channel(cache);
 
         tasks.spawn_with_name("discv4 pump", async move {
             loop {

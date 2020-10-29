@@ -21,6 +21,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     stream::StreamExt,
     sync::{mpsc::unbounded_channel, Mutex as AsyncMutex},
+    time::sleep,
 };
 use tracing::*;
 use uuid::Uuid;
@@ -97,7 +98,7 @@ async fn handle_incoming<C>(
     task_group: Weak<TaskGroup>,
     streams: Arc<Mutex<PeerStreams>>,
     node_filter: Arc<Mutex<dyn NodeFilter>>,
-    mut tcp_incoming: TcpListener,
+    tcp_incoming: TcpListener,
     handshake_data: PeerStreamHandshakeData<C>,
 ) where
     C: CapabilityServer,
@@ -259,7 +260,7 @@ where
                 if let Some(DisconnectSignal { initiator, reason }) = disconnecting {
                     if let DisconnectInitiator::Local = initiator {
                         // We have sent disconnect message, wait for grace period.
-                        tokio::time::delay_for(Duration::from_secs(GRACE_PERIOD_SECS)).await;
+                        sleep(Duration::from_secs(GRACE_PERIOD_SECS)).await;
                     }
                     capability_server
                         .on_peer_event(
@@ -602,10 +603,10 @@ impl<C: CapabilityServer> Swarm<C> {
                                         }
                                         Err(e) => warn!("Failed to get new peer: {}", e)
                                     }
-                                    tokio::time::delay_for(Duration::from_millis(2000)).await;
+                                    sleep(Duration::from_millis(2000)).await;
                                 } else {
                                     trace!("Skipping discovery as current number of peers is too high: {} >= {}", streams_len, max_peers);
-                                    tokio::time::delay_for(Duration::from_secs(2)).await;
+                                    sleep(Duration::from_secs(2)).await;
                                 }
                             } else {
                                 return;

@@ -5,7 +5,7 @@ use k256::ecdsa::SigningKey;
 use maplit::btreemap;
 use rand::{seq::SliceRandom, thread_rng};
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
-use tokio::time::delay_for;
+use tokio::time::sleep;
 use tracing::*;
 use tracing_subscriber::EnvFilter;
 
@@ -71,5 +71,5 @@ async fn main() {
     swarm.add_peer(node).await.unwrap();
 
     let timeout = 5;
-    delay_for(Duration::from_secs(timeout)).await;
+    sleep(Duration::from_secs(timeout)).await;
 }

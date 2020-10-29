@@ -25,6 +25,7 @@ use tokio::{
         mpsc::{channel, Sender},
         Mutex as AsyncMutex,
     },
+    time::sleep,
 };
 use tracing::*;
 use tracing_subscriber::EnvFilter;
@@ -263,7 +264,7 @@ async fn main() {
         .unwrap();
 
     loop {
-        tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
+        sleep(std::time::Duration::from_secs(5)).await;
         info!("Peers: {}.", swarm.connected_peers());
     }
 }

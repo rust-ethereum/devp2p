@@ -30,6 +30,8 @@ use sha3::Keccak256;
 use signature::Signature as _;
 use std::{convert::TryFrom, iter::repeat, sync::Arc};
 
+const PROTOCOL_VERSION: usize = 4;
+
 fn ecdh_x(public_key: &VerifyKey, secret_key: &SigningKey) -> H256 {
     H256::from_slice(
         k256::elliptic_curve::ecdh::PublicKey::from(
@@ -278,7 +280,7 @@ impl ECIES {
         out.append(&sig.as_ref());
         out.append(&pk2id(&self.public_key));
         out.append(&self.nonce);
-        out.append(&4_usize);
+        out.append(&PROTOCOL_VERSION);
 
         out.out()
             .into_iter()
@@ -343,7 +345,7 @@ impl ECIES {
         let mut out = RlpStream::new_list(3);
         out.append(&pk2id(&self.ephemeral_public_key));
         out.append(&self.nonce);
-        out.append(&4_usize);
+        out.append(&PROTOCOL_VERSION);
         out.out()
     }
 

@@ -1,6 +1,6 @@
 //! RLPx protocol implementation in Rust
 
-use crate::{disc::*, node_filter::*, peer::*, types::*};
+use crate::{node_filter::*, peer::*, types::*};
 use anyhow::anyhow;
 use educe::Educe;
 use futures::sink::SinkExt;
@@ -19,7 +19,7 @@ use task_group::TaskGroup;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
-    stream::StreamExt,
+    stream::{Stream, StreamExt},
     sync::{mpsc::unbounded_channel, Mutex as AsyncMutex},
     time::sleep,
 };
@@ -478,7 +478,9 @@ impl SwarmBuilder {
 #[educe(Clone, Debug)]
 pub struct ListenOptions {
     #[educe(Debug(ignore))]
-    pub discovery_tasks: Vec<Arc<AsyncMutex<dyn Discovery>>>,
+    pub discovery_tasks: Vec<
+        Arc<AsyncMutex<dyn Stream<Item = anyhow::Result<NodeRecord>> + Send + Unpin + 'static>>,
+    >,
     pub max_peers: usize,
     pub addr: SocketAddr,
 }
@@ -583,15 +585,19 @@ impl<C: CapabilityServer> Swarm<C> {
                                         {
                                             let discovery = discovery.clone();
                                             async move {
-                                                discovery.lock().await.get_new_peer().await
+                                                discovery.lock().await.next().await
                                             }
                                         },
                                     )
                                     .await
                                     .unwrap_or_else(|_| {
-                                        Err(anyhow!("timed out"))
+                                        Some(Err(anyhow!("timed out")))
                                     }) {
-                                        Ok(NodeRecord { addr, id: remote_id }) => {
+                                        None => {
+                                            debug!("Discovery task ending");
+                                            return;
+                                        }
+                                        Some(Ok(NodeRecord { addr, id: remote_id })) => {
                                             debug!("Discovered peer: {:?}", remote_id);
                                             if let Some(tasks) = tasks.upgrade() {
                                                 tasks.spawn_with_name(format!("add peer {} at {}", remote_id, addr), async move {
@@ -601,7 +607,7 @@ impl<C: CapabilityServer> Swarm<C> {
                                                 });
                                             }
                                         }
-                                        Err(e) => warn!("Failed to get new peer: {}", e)
+                                        Some(Err(e)) => warn!("Failed to get new peer: {}", e)
                                     }
                                     sleep(Duration::from_millis(2000)).await;
                                 } else {

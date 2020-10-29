@@ -1,11 +1,11 @@
-use super::Discovery;
 use crate::types::*;
-use anyhow::anyhow;
-use async_trait::async_trait;
 use discv4::Node;
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc};
 use task_group::TaskGroup;
-use tokio::sync::mpsc::{channel, Receiver};
+use tokio::{
+    stream::Stream,
+    sync::mpsc::{channel, Receiver},
+};
 
 pub struct Discv4 {
     #[allow(unused)]
@@ -37,13 +37,15 @@ impl Discv4 {
     }
 }
 
-#[async_trait]
-impl Discovery for Discv4 {
-    async fn get_new_peer(&mut self) -> anyhow::Result<NodeRecord> {
-        Ok(self
-            .receiver
-            .recv()
-            .await
-            .ok_or_else(|| anyhow!("Discovery task is dead."))?)
+impl Stream for Discv4 {
+    type Item = anyhow::Result<NodeRecord>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        Pin::new(&mut self.receiver)
+            .poll_next(cx)
+            .map(|opt| opt.map(Ok))
     }
 }

@@ -1,12 +1,12 @@
-use super::Discovery;
 use crate::{types::*, util::*};
-use anyhow::anyhow;
-use async_trait::async_trait;
 use dnsdisc::{Backend, Resolver};
 use k256::ecdsa::VerifyKey;
-use std::{sync::Arc, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 use task_group::TaskGroup;
-use tokio::{stream::StreamExt, sync::mpsc::Receiver};
+use tokio::{
+    stream::{Stream, StreamExt},
+    sync::mpsc::{channel, Receiver},
+};
 use tracing::*;
 
 const MAX_SINGLE_RESOLUTION: u64 = 10;
@@ -27,7 +27,7 @@ impl DnsDiscovery {
     ) -> Self {
         let tasks = TaskGroup::default();
 
-        let (tx, receiver) = tokio::sync::mpsc::channel(1);
+        let (tx, receiver) = channel(1);
         tasks.spawn_with_name("DNS discovery pump", async move {
             loop {
                 let mut query = discovery.query(domain.clone(), public_key);
@@ -79,12 +79,13 @@ impl DnsDiscovery {
     }
 }
 
-#[async_trait]
-impl Discovery for DnsDiscovery {
-    async fn get_new_peer(&mut self) -> anyhow::Result<NodeRecord> {
-        self.receiver
-            .recv()
-            .await
-            .ok_or_else(|| anyhow!("Discovery task is dead."))?
+impl Stream for DnsDiscovery {
+    type Item = anyhow::Result<NodeRecord>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        Pin::new(&mut self.receiver).poll_next(cx)
     }
 }

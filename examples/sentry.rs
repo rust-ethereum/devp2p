@@ -20,7 +20,7 @@ use std::{
 };
 use task_group::*;
 use tokio::{
-    stream::StreamExt,
+    stream::{Stream, StreamExt},
     sync::{
         mpsc::{channel, Sender},
         Mutex as AsyncMutex,
@@ -241,7 +241,9 @@ async fn main() {
         20,
     );
 
-    let discovery: Arc<AsyncMutex<dyn Discovery>> = Arc::new(AsyncMutex::new(discovery));
+    let discovery: Arc<
+        AsyncMutex<dyn Stream<Item = anyhow::Result<NodeRecord>> + Send + Unpin + 'static>,
+    > = Arc::new(AsyncMutex::new(discovery));
 
     let capability_server = Arc::new(CapabilityServerImpl::default());
 

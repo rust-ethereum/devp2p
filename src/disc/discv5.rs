@@ -1,20 +1,21 @@
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc};
 
-use super::Discovery;
 use crate::{types::*, util::*};
 use anyhow::anyhow;
-use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures_intrusive::channel::UnbufferedChannel;
 use task_group::TaskGroup;
-use tokio::{select, stream::StreamExt, sync::mpsc::channel};
+use tokio::{
+    select,
+    stream::{Stream, StreamExt},
+    sync::mpsc::channel,
+};
 use tracing::*;
 
 pub struct Discv5 {
     #[allow(unused)]
     tasks: TaskGroup,
-    errors: Arc<UnbufferedChannel<anyhow::Error>>,
-    receiver: BoxStream<'static, NodeRecord>,
+    receiver: BoxStream<'static, anyhow::Result<NodeRecord>>,
 }
 
 impl Discv5 {
@@ -22,7 +23,7 @@ impl Discv5 {
         let tasks = TaskGroup::default();
 
         let errors = Arc::new(UnbufferedChannel::new());
-        let (tx, receiver) = channel(cache);
+        let (tx, mut nodes) = channel(cache);
 
         tasks.spawn_with_name("discv5 pump", {
             let errors = errors.clone();
@@ -70,28 +71,44 @@ impl Discv5 {
             }
         });
 
+        let (tx, receiver) = channel(1);
+        tasks.spawn_with_name("discv4 pump 2", async move {
+            loop {
+                let err_fut = errors.receive();
+                let node_fut = nodes.next();
+
+                select! {
+                    Some(error) = err_fut => {
+                        if tx.send(Err(error)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Some(node) = node_fut => {
+                        if tx.send(Ok(node)).await.is_err() {
+                            return;
+                        }
+                    }
+                    else => {
+                        return;
+                    }
+                }
+            }
+        });
+
         Self {
             tasks,
-            errors,
-            receiver: Box::pin(receiver.fuse()),
+            receiver: Box::pin(receiver),
         }
     }
 }
 
-#[async_trait]
-impl Discovery for Discv5 {
-    async fn get_new_peer(&mut self) -> anyhow::Result<NodeRecord> {
-        let err_fut = self.errors.receive();
-        let node_fut = self.receiver.next();
+impl Stream for Discv5 {
+    type Item = anyhow::Result<NodeRecord>;
 
-        select! {
-            error = err_fut => {
-                Err(error.ok_or_else(|| anyhow!("Discovery task is dead."))?)
-            }
-            node = node_fut => {
-                Ok(node
-                    .ok_or_else(|| anyhow!("Discovery task is dead."))?)
-            }
-        }
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        Pin::new(&mut self.receiver).poll_next(cx)
     }
 }

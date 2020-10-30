@@ -134,7 +134,6 @@ pub struct PeerStream<Io> {
 
     snappy: Option<Snappy>,
 
-    pending_pong: bool,
     disconnected: bool,
 }
 
@@ -337,16 +336,13 @@ where
             id,
             shared_capabilities,
             snappy,
-            pending_pong: false,
             disconnected: false,
         };
 
         if no_shared_caps {
             debug!("No shared capabilities, disconnecting.");
             let _ = this
-                .send(EgressMessage::Disconnect {
-                    reason: DisconnectReason::UselessPeer,
-                })
+                .send(PeerMessage::Disconnect(DisconnectReason::UselessPeer))
                 .await;
 
             bail!("handshake failed - no shared capabilities");
@@ -356,37 +352,32 @@ where
     }
 }
 
+/// Sending message for RLPx
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubprotocolMessage {
+    pub cap_name: CapabilityName,
+    pub message: Message,
+}
+
 #[derive(Clone, Debug)]
-pub enum InboundMessage {
+pub enum PeerMessage {
     Disconnect(DisconnectReason),
     Ping,
     Pong,
-    Subprotocol {
-        capability: CapabilityInfo,
-        message_id: usize,
-        payload: Bytes,
-    },
+    Subprotocol(SubprotocolMessage),
 }
 
 impl<Io> Stream for PeerStream<Io>
 where
     Io: AsyncRead + AsyncWrite + Unpin,
 {
-    type Item = Result<InboundMessage, io::Error>;
+    type Item = Result<PeerMessage, io::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut s = self.get_mut();
 
         if s.disconnected {
             return Poll::Ready(None);
-        }
-        if s.pending_pong && Pin::new(&mut s.stream).poll_ready(cx)?.is_ready() {
-            let mut payload: Vec<u8> = rlp::encode(&0x03_usize /* pong */).to_vec();
-            payload.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
-            debug!("sending pong message payload {:?}", payload);
-
-            Pin::new(&mut s.stream).start_send(payload)?;
-            let _ = Pin::new(&mut s.stream).poll_flush(cx)?;
         }
 
         match ready!(Pin::new(&mut s.stream).poll_next(cx)) {
@@ -418,14 +409,16 @@ where
 
                         if message_id < 0x10 {
                             match message_id {
-                                0x01 /* disconnect */ => {
+                                0x01 => {
                                     s.disconnected = true;
                                     if let Some(reason) = Rlp::new(&*data)
                                         .val_at::<u8>(0)
                                         .ok()
                                         .and_then(DisconnectReason::from_u8)
                                     {
-                                        return Poll::Ready(Some(Ok(InboundMessage::Disconnect(reason))));
+                                        return Poll::Ready(Some(Ok(PeerMessage::Disconnect(
+                                            reason,
+                                        ))));
                                     } else {
                                         return Poll::Ready(Some(Err(io::Error::new(
                                             io::ErrorKind::Other,
@@ -435,23 +428,23 @@ where
                                             ),
                                         ))));
                                     }
-                                },
-                                0x02 /* ping */ => {
+                                }
+                                0x02 => {
                                     debug!("received ping message data {:?}", data);
-                                    s.pending_pong = true;
-                                    cx.waker().wake_by_ref();
-                                    return Poll::Pending
-                                },
-                                0x03 /* pong */ => {
+                                    return Poll::Ready(Some(Ok(PeerMessage::Ping)));
+                                }
+                                0x03 => {
                                     debug!("received pong message");
-                                },
+                                    return Poll::Ready(Some(Ok(PeerMessage::Pong)));
+                                }
                                 _ => {
                                     debug!("received unknown reserved message");
-                                    return Poll::Ready(Some(Err(io::Error::new(io::ErrorKind::Other,
-                                                                               "unhandled reserved message"))))
-                                },
+                                    return Poll::Ready(Some(Err(io::Error::new(
+                                        io::ErrorKind::Other,
+                                        "unhandled reserved message",
+                                    ))));
+                                }
                             }
-                            return Poll::Pending;
                         }
 
                         let mut message_id = message_id - 0x10;
@@ -465,7 +458,7 @@ where
                         if index >= s.shared_capabilities.len() {
                             return Poll::Ready(Some(Err(io::Error::new(
                                 io::ErrorKind::Other,
-                                "message id parsing failed (too big)",
+                                "invalid message id (out of cap range)",
                             ))));
                         }
                         (s.shared_capabilities[index], message_id, data)
@@ -485,11 +478,10 @@ where
                     hex::encode(&data)
                 );
 
-                Poll::Ready(Some(Ok(InboundMessage::Subprotocol {
-                    capability: cap,
-                    message_id: id,
-                    payload: data,
-                })))
+                Poll::Ready(Some(Ok(PeerMessage::Subprotocol(SubprotocolMessage {
+                    cap_name: cap.name,
+                    message: Message { id, data },
+                }))))
             }
             Some(Err(e)) => Poll::Ready(Some(Err(e))),
             None => Poll::Ready(None),
@@ -497,20 +489,7 @@ where
     }
 }
 
-/// Sending message for RLPx
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubprotocolMessage {
-    pub cap_name: CapabilityName,
-    pub message: Message,
-}
-
-#[derive(Debug)]
-pub enum EgressMessage {
-    Disconnect { reason: DisconnectReason },
-    Subprotocol(SubprotocolMessage),
-}
-
-impl<Io> Sink<EgressMessage> for PeerStream<Io>
+impl<Io> Sink<PeerMessage> for PeerStream<Io>
 where
     Io: AsyncRead + AsyncWrite + Debug + Send + Unpin,
 {
@@ -520,7 +499,7 @@ where
         Pin::new(&mut self.get_mut().stream).poll_ready(cx)
     }
 
-    fn start_send(self: Pin<&mut Self>, message: EgressMessage) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, message: PeerMessage) -> Result<(), Self::Error> {
         let this = self.get_mut();
 
         if this.disconnected {
@@ -530,14 +509,26 @@ where
             ));
         }
 
-        match message {
-            EgressMessage::Disconnect { reason } => {
-                let mut msg = vec![0x01];
-                msg.append(&mut rlp::encode(&reason.to_u8().unwrap()));
-                Pin::new(&mut this.stream).start_send(msg)?;
+        let msg = match message {
+            PeerMessage::Disconnect(reason) => {
                 this.disconnected = true;
+                let mut msg: Vec<u8> = rlp::encode(&0x01_u8);
+                msg.append(&mut rlp::encode(&reason.to_u8().unwrap()));
+                msg
             }
-            EgressMessage::Subprotocol(SubprotocolMessage { cap_name, message }) => {
+            PeerMessage::Ping => {
+                let mut msg: Vec<u8> = rlp::encode(&0x02_u8).to_vec();
+                msg.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
+                debug!("sending ping message payload {:?}", msg);
+                msg
+            }
+            PeerMessage::Pong => {
+                let mut msg: Vec<u8> = rlp::encode(&0x03_u8).to_vec();
+                msg.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
+                debug!("sending pong message payload {:?}", msg);
+                msg
+            }
+            PeerMessage::Subprotocol(SubprotocolMessage { cap_name, message }) => {
                 let Message { id, data } = message;
                 let cap = this
                     .shared_capabilities
@@ -546,11 +537,11 @@ where
 
                 if cap.is_none() {
                     debug!(
-                "giving up sending cap {} of id {} to 0x{:x} because remote does not support.",
-                cap_name.0,
-                id,
-                this.remote_id()
-            );
+                        "giving up sending cap {} of id {} to 0x{:x} because remote does not support.",
+                        cap_name.0,
+                        id,
+                        this.remote_id()
+                    );
                     return Ok(());
                 }
 
@@ -586,9 +577,11 @@ where
                     ret.extend_from_slice(&*data)
                 }
 
-                Pin::new(&mut this.stream).start_send(ret)?;
+                ret
             }
-        }
+        };
+
+        Pin::new(&mut this.stream).start_send(msg)?;
 
         Ok(())
     }

@@ -1,7 +1,7 @@
 //! RLPx protocol implementation in Rust
 
 use crate::{node_filter::*, peer::*, types::*};
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use educe::Educe;
 use futures::sink::SinkExt;
 use k256::ecdsa::SigningKey;
@@ -12,7 +12,10 @@ use std::{
     future::Future,
     net::SocketAddr,
     ops::Deref,
-    sync::{Arc, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Weak,
+    },
     time::Duration,
 };
 use task_group::TaskGroup;
@@ -20,7 +23,11 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     stream::{Stream, StreamExt},
-    sync::{mpsc::unbounded_channel, Mutex as AsyncMutex},
+    sync::{
+        mpsc::{channel, unbounded_channel},
+        oneshot::{channel as oneshot, Sender as OneshotSender},
+        Mutex as AsyncMutex,
+    },
     time::sleep,
 };
 use tracing::*;
@@ -28,6 +35,7 @@ use uuid::Uuid;
 
 const GRACE_PERIOD_SECS: u64 = 2;
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+const PING_TIMEOUT: Duration = Duration::from_secs(60);
 const DISCOVERY_TIMEOUT_SECS: u64 = 90;
 const DISCOVERY_CONNECT_TIMEOUT_SECS: u64 = 5;
 
@@ -142,13 +150,22 @@ where
         .map(From::from)
         .collect::<BTreeSet<_>>();
     let (mut sink, mut stream) = futures::StreamExt::split(peer);
-    let (peer_disconnect_tx, mut peer_disconnect_rx) = unbounded_channel();
+    let (peer_disconnect_tx, peer_disconnect_rx) = unbounded_channel();
+    let mut peer_disconnect_rx = peer_disconnect_rx.fuse();
     let tasks = TaskGroup::default();
 
     capability_server.on_peer_connect(remote_id, capability_set.clone());
 
+    let awaiting_ping = Arc::new(AtomicBool::default());
+    let (pings_tx, pings) = channel(1);
+    let mut pings = pings.fuse();
+    let (pongs_tx, pongs) = channel(1);
+    let mut pongs = pongs.fuse();
+
     tasks.spawn_with_name(format!("peer {} ingress router", remote_id), {
+        let peer_disconnect_tx = peer_disconnect_tx.clone();
         let capability_server = capability_server.clone();
+        let awaiting_ping = awaiting_ping.clone();
         async move {
             let disconnect_signal = {
                 async move {
@@ -158,33 +175,34 @@ where
                                 debug!("Peer incoming error: {}", e);
                                 break;
                             }
-                            Ok(InboundMessage::Subprotocol {
-                                capability,
-                                message_id,
-                                payload,
-                            }) => {
+                            Ok(PeerMessage::Subprotocol(SubprotocolMessage {
+                                cap_name,
+                                message,
+                            })) => {
                                 // Actually handle the message
                                 capability_server
                                     .on_peer_event(
                                         remote_id,
                                         InboundEvent::Message {
-                                            capability_name: capability.name,
-                                            message: Message {
-                                                id: message_id,
-                                                data: payload,
-                                            },
+                                            capability_name: cap_name,
+                                            message,
                                         },
                                     )
                                     .await
                             }
-                            Ok(InboundMessage::Disconnect(reason)) => {
+                            Ok(PeerMessage::Disconnect(reason)) => {
                                 // Peer has requested disconnection.
                                 return DisconnectSignal {
                                     initiator: DisconnectInitiator::Remote,
                                     reason,
                                 };
                             }
-                            Ok(_) => {}
+                            Ok(PeerMessage::Ping) => {
+                                let _ = pongs_tx.send(()).await;
+                            }
+                            Ok(PeerMessage::Pong) => {
+                                awaiting_ping.store(false, Ordering::Relaxed);
+                            }
                         }
                     }
 
@@ -209,38 +227,50 @@ where
 
     tasks.spawn_with_name(
         format!("peer {} egress router & disconnector", remote_id),
-        {
-            async move {
+        async move {
+            let mut event_fut = capability_server.next(remote_id);
             loop {
                 let mut disconnecting = None;
                 let mut egress = None;
+                let mut trigger: Option<OneshotSender<()>> = None;
                 tokio::select! {
-                    msg = capability_server.next(remote_id) => {
+                    // Event from capability server.
+                    msg = &mut event_fut => {
+                        // Invariant: CapabilityServer::next() will never be called after disconnect event
                         match msg {
                             OutboundEvent::Message {
                                 capability_name, message
                             } => {
-                                egress = Some(EgressMessage::Subprotocol(SubprotocolMessage {
+                                event_fut = capability_server.next(remote_id);
+                                egress = Some(PeerMessage::Subprotocol(SubprotocolMessage {
                                     cap_name: capability_name, message
                                 }));
                             }
                             OutboundEvent::Disconnect {
                                 reason
                             } => {
+                                egress = Some(PeerMessage::Disconnect(reason));
                                 disconnecting = Some(DisconnectSignal {
                                     initiator: DisconnectInitiator::Local, reason
                                 });
                             }
                         };
                     },
+                    // We ping the peer.
+                    Some(tx) = pings.next() => {
+                        egress = Some(PeerMessage::Ping);
+                        trigger = Some(tx);
+                    }
+                    // Peer has pinged us.
+                    Some(_) = pongs.next() => {
+                        egress = Some(PeerMessage::Pong);
+                    }
+                    // Ping timeout or signal from ingress router.
                     Some(DisconnectSignal { initiator, reason }) = peer_disconnect_rx.next() => {
                         if let DisconnectInitiator::Local = initiator {
-                            egress = Some(EgressMessage::Disconnect { reason });
+                            egress = Some(PeerMessage::Disconnect(reason));
                         }
                         disconnecting = Some(DisconnectSignal { initiator, reason })
-                    },
-                    else => {
-                        break;
                     }
                 };
 
@@ -254,6 +284,8 @@ where
                             initiator: DisconnectInitiator::LocalForceful,
                             reason: DisconnectReason::TcpSubsystemError,
                         });
+                    } else if let Some(trigger) = trigger {
+                        let _ = trigger.send(());
                     }
                 }
 
@@ -276,6 +308,8 @@ where
 
             // We are done, drop the peer state.
             if let Some(streams) = streams.upgrade() {
+                // This is the last line that is guaranteed to be executed.
+                // After this the peer's task group is dropped and any alive tasks are forcibly cancelled.
                 streams.lock().disconnect_peer(remote_id);
             }
         }
@@ -284,9 +318,30 @@ where
             "egress router",
             "peer={}",
             remote_id.to_string(),
-        ))
-        },
+        )),
     );
+
+    tasks.spawn_with_name(format!("peer {} pinger", remote_id), async move {
+        let _: anyhow::Result<()> = async {
+            loop {
+                awaiting_ping.store(true, Ordering::Relaxed);
+
+                let (tx, rx) = oneshot();
+                pings_tx.send(tx).await?;
+                rx.await?;
+                sleep(PING_TIMEOUT).await;
+
+                if awaiting_ping.load(Ordering::Relaxed) {
+                    let _ = peer_disconnect_tx.send(DisconnectSignal {
+                        initiator: DisconnectInitiator::Local,
+                        reason: DisconnectReason::PingTimeout,
+                    });
+                    bail!("ping timeout");
+                }
+            }
+        }
+        .await;
+    });
     ConnectedPeerState {
         tasks,
         capabilities: capability_set,

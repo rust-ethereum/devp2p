@@ -253,6 +253,7 @@ async fn main() {
             discovery_tasks: std::iter::repeat(discovery).take(1).collect(),
             max_peers: 50,
             addr: format!("0.0.0.0:{}", port).parse().unwrap(),
+            cidr: None,
         })
         .build(
             btreemap! { CapabilityId {

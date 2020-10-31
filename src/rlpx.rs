@@ -2,6 +2,7 @@
 
 use crate::{node_filter::*, peer::*, transport::Transport, types::*};
 use anyhow::{anyhow, bail};
+use cidr::{Cidr, IpCidr};
 use educe::Educe;
 use futures::sink::SinkExt;
 use k256::ecdsa::SigningKey;
@@ -106,18 +107,33 @@ async fn handle_incoming<C>(
     streams: Arc<Mutex<PeerStreams>>,
     node_filter: Arc<Mutex<dyn NodeFilter>>,
     tcp_incoming: TcpListener,
+    cidr: Option<IpCidr>,
     handshake_data: PeerStreamHandshakeData<C>,
 ) where
     C: CapabilityServer,
 {
-    loop {
-        match tcp_incoming.accept().await {
-            Err(e) => {
-                error!("failed to accept peer: {:?}, shutting down", e);
-                return;
-            }
-            Ok((stream, remote_addr)) => {
-                if let Some(tasks) = task_group.upgrade() {
+    let _: anyhow::Result<()> = async {
+        loop {
+            match tcp_incoming.accept().await {
+                Err(e) => {
+                    bail!("failed to accept peer: {:?}, shutting down", e);
+                }
+                Ok((stream, remote_addr)) => {
+                    let tasks = task_group
+                        .upgrade()
+                        .ok_or_else(|| anyhow!("task group is down"))?;
+
+                    if let Some(cidr) = &cidr {
+                        if !cidr.contains(&remote_addr.ip()) {
+                            debug!(
+                                "Ignoring connection request: {} is not in range {}",
+                                remote_addr, cidr
+                            );
+
+                            continue;
+                        }
+                    }
+
                     let f = handle_incoming_request(
                         streams.clone(),
                         node_filter.clone(),
@@ -129,6 +145,7 @@ async fn handle_incoming<C>(
             }
         }
     }
+    .await;
 }
 
 /// Set up newly connected peer's state, start its tasks
@@ -532,6 +549,7 @@ pub struct ListenOptions {
     >,
     pub max_peers: usize,
     pub addr: SocketAddr,
+    pub cidr: Option<IpCidr>,
 }
 
 impl Swarm<()> {
@@ -584,6 +602,7 @@ impl<C: CapabilityServer> Swarm<C> {
 
         if let Some(options) = &listen_options {
             let tcp_incoming = TcpListener::bind(options.addr).await?;
+            let cidr = options.cidr.clone();
             tasks.spawn_with_name(
                 "incoming handler",
                 handle_incoming(
@@ -591,6 +610,7 @@ impl<C: CapabilityServer> Swarm<C> {
                     streams.clone(),
                     node_filter.clone(),
                     tcp_incoming,
+                    cidr,
                     PeerStreamHandshakeData {
                         port,
                         protocol_version,

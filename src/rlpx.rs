@@ -217,12 +217,7 @@ where
 
             let _ = peer_disconnect_tx.send(disconnect_signal);
         }
-        .instrument(span!(
-            Level::DEBUG,
-            "ingress router",
-            "peer={}",
-            remote_id.to_string(),
-        ))
+        .instrument(span!(Level::DEBUG, "IN", "peer={}", remote_id.to_string(),))
     });
 
     tasks.spawn_with_name(
@@ -315,7 +310,7 @@ where
         }
         .instrument(span!(
             Level::DEBUG,
-            "egress router",
+            "OUT/DISC",
             "peer={}",
             remote_id.to_string(),
         )),

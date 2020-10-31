@@ -1,6 +1,6 @@
 //! RLPx protocol implementation in Rust
 
-use crate::{node_filter::*, peer::*, types::*};
+use crate::{node_filter::*, peer::*, transport::Transport, types::*};
 use anyhow::{anyhow, bail};
 use educe::Educe;
 use futures::sink::SinkExt;
@@ -20,7 +20,6 @@ use std::{
 };
 use task_group::TaskGroup;
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     stream::{Stream, StreamExt},
     sync::{
@@ -141,7 +140,7 @@ fn setup_peer_state<C, Io>(
 ) -> ConnectedPeerState
 where
     C: CapabilityServer,
-    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static,
+    Io: Transport,
 {
     let capability_set = peer
         .capabilities()
@@ -351,7 +350,7 @@ async fn handle_incoming_request<C, Io>(
     handshake_data: PeerStreamHandshakeData<C>,
 ) where
     C: CapabilityServer,
-    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin + 'static,
+    Io: Transport,
 {
     let PeerStreamHandshakeData {
         secret_key,

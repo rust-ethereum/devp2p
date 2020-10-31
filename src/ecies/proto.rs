@@ -1,5 +1,5 @@
 use super::algorithm::ECIES;
-use crate::{errors::ECIESError, types::PeerId};
+use crate::{errors::ECIESError, transport::Transport, types::PeerId};
 use anyhow::{bail, Context as _};
 use bytes::{Bytes, BytesMut};
 use futures::{ready, Sink, SinkExt};
@@ -11,10 +11,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    stream::*,
-};
+use tokio::stream::*;
 use tokio_util::codec::*;
 use tracing::*;
 
@@ -181,9 +178,10 @@ pub struct ECIESStream<Io> {
 
 impl<Io> ECIESStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin,
+    Io: Transport,
 {
     /// Connect to an `ECIES` server
+    #[instrument(skip(transport, secret_key), fields(peer=&*format!("{:?}", transport.remote_addr())))]
     pub async fn connect(
         transport: Io,
         secret_key: Arc<SigningKey>,
@@ -213,6 +211,7 @@ where
     }
 
     /// Listen on a just connected ECIES client
+    #[instrument(skip(transport, secret_key), fields(peer=&*format!("{:?}", transport.remote_addr())))]
     pub async fn incoming(transport: Io, secret_key: Arc<SigningKey>) -> anyhow::Result<Self> {
         let ecies = ECIESCodec::new_server(secret_key).context("handshake error")?;
 
@@ -250,7 +249,7 @@ where
 
 impl<Io> Stream for ECIESStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: Transport,
 {
     type Item = Result<Bytes, io::Error>;
 
@@ -292,7 +291,7 @@ where
 
 impl<Io> Sink<Vec<u8>> for ECIESStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: Transport,
 {
     type Error = io::Error;
 

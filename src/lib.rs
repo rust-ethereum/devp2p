@@ -15,6 +15,7 @@ mod mac;
 mod node_filter;
 mod peer;
 mod rlpx;
+pub mod transport;
 mod types;
 pub mod util;
 

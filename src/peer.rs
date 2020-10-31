@@ -1,4 +1,4 @@
-use crate::{ecies::ECIESStream, types::*, util::pk2id};
+use crate::{ecies::ECIESStream, transport::Transport, types::*, util::pk2id};
 use anyhow::{anyhow, bail, Context as _};
 use bytes::Bytes;
 use derive_more::Display;
@@ -14,10 +14,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    stream::{Stream, StreamExt},
-};
+use tokio::stream::{Stream, StreamExt};
 use tracing::*;
 
 const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024;
@@ -139,7 +136,7 @@ pub struct PeerStream<Io> {
 
 impl<Io> PeerStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin,
+    Io: Transport,
 {
     /// Remote public id of this peer
     pub fn remote_id(&self) -> PeerId {
@@ -369,7 +366,7 @@ pub enum PeerMessage {
 
 impl<Io> Stream for PeerStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Unpin,
+    Io: Transport,
 {
     type Item = Result<PeerMessage, io::Error>;
 
@@ -491,7 +488,7 @@ where
 
 impl<Io> Sink<PeerMessage> for PeerStream<Io>
 where
-    Io: AsyncRead + AsyncWrite + Debug + Send + Unpin,
+    Io: Transport,
 {
     type Error = io::Error;
 

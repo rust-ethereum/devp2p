@@ -506,24 +506,18 @@ where
             ));
         }
 
-        let msg = match message {
+        let (message_id, payload) = match message {
             PeerMessage::Disconnect(reason) => {
                 this.disconnected = true;
-                let mut msg: Vec<u8> = rlp::encode(&0x01_u8);
-                msg.append(&mut rlp::encode(&reason.to_u8().unwrap()));
-                msg
+                (0x01, rlp::encode(&reason.to_u8().unwrap()).into())
             }
             PeerMessage::Ping => {
-                let mut msg: Vec<u8> = rlp::encode(&0x02_u8).to_vec();
-                msg.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
-                debug!("sending ping message payload {:?}", msg);
-                msg
+                debug!("sending ping message");
+                (0x02, rlp::EMPTY_LIST_RLP.to_vec().into())
             }
             PeerMessage::Pong => {
-                let mut msg: Vec<u8> = rlp::encode(&0x03_u8).to_vec();
-                msg.append(&mut rlp::EMPTY_LIST_RLP.to_vec());
-                debug!("sending pong message payload {:?}", msg);
-                msg
+                debug!("sending pong message");
+                (0x03, rlp::EMPTY_LIST_RLP.to_vec().into())
             }
             PeerMessage::Subprotocol(SubprotocolMessage { cap_name, message }) => {
                 let Message { id, data } = message;
@@ -563,20 +557,18 @@ where
                     message_id += scap.length;
                 }
                 message_id += id;
-                let first = rlp::encode(&message_id);
-                assert!(first.len() == 1);
 
-                let mut ret: Vec<u8> = Vec::new();
-                ret.push(first[0]);
-                if let Some(snappy) = &mut this.snappy {
-                    ret.append(&mut snappy.encoder.compress_vec(&*data).unwrap());
-                } else {
-                    ret.extend_from_slice(&*data)
-                }
-
-                ret
+                (message_id, data)
             }
         };
+
+        let mut msg = rlp::encode(&message_id);
+
+        if let Some(snappy) = &mut this.snappy {
+            msg.append(&mut snappy.encoder.compress_vec(&*payload).unwrap());
+        } else {
+            msg.extend_from_slice(&*payload)
+        }
 
         Pin::new(&mut this.stream).start_send(msg)?;
 

@@ -353,7 +353,7 @@ where
 }
 
 /// Sending message for RLPx
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct SubprotocolMessage {
     pub cap_name: CapabilityName,
     pub message: Message,

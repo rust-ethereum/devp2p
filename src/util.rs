@@ -5,6 +5,7 @@ use hmac::{Hmac, Mac, NewMac};
 use k256::{ecdsa::VerifyKey, EncodedPoint};
 use sha2::Sha256;
 use sha3::{Digest, Keccak256};
+use std::fmt::{self, Formatter};
 
 pub fn keccak256(data: &[u8]) -> H256 {
     H256::from(Keccak256::digest(data).as_ref())
@@ -29,6 +30,10 @@ pub fn id2pk(id: PeerId) -> Result<VerifyKey, signature::Error> {
     VerifyKey::from_encoded_point(&EncodedPoint::from_untagged_bytes(
         GenericArray::from_slice(id.as_ref()),
     ))
+}
+
+pub fn hex_debug<T: AsRef<[u8]>>(s: &T, f: &mut Formatter) -> fmt::Result {
+    f.write_str(&hex::encode(&s))
 }
 
 #[cfg(test)]

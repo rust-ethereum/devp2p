@@ -1,9 +1,10 @@
-use crate::peer::DisconnectReason;
+use crate::{peer::DisconnectReason, util::*};
 use arrayvec::ArrayString;
 use async_trait::async_trait;
 use auto_impl::auto_impl;
 use bytes::Bytes;
 use derive_more::Display;
+use educe::Educe;
 pub use ethereum_types::H512 as PeerId;
 use rlp::{DecoderError, Rlp, RlpStream};
 use std::{collections::BTreeSet, fmt::Debug, net::SocketAddr, str::FromStr};
@@ -144,8 +145,10 @@ impl CapabilityServer for () {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Educe)]
+#[educe(Debug)]
 pub struct Message {
     pub id: usize,
+    #[educe(Debug(method = "hex_debug"))]
     pub data: Bytes,
 }

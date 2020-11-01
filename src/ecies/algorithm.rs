@@ -9,7 +9,7 @@ use aes_ctr::{
     Aes128Ctr, Aes256Ctr,
 };
 use anyhow::Context;
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use digest::Digest;
 use ecdsa::{elliptic_curve::Field, hazmat::RecoverableSignPrimitive};
 use educe::Educe;
@@ -31,6 +31,8 @@ use signature::Signature as _;
 use std::{convert::TryFrom, iter::repeat, sync::Arc};
 
 const PROTOCOL_VERSION: usize = 4;
+
+type HeaderBytes = GenericArray<u8, generic_array::typenum::U16>;
 
 fn ecdh_x(public_key: &VerifyKey, secret_key: &SigningKey) -> H256 {
     H256::from_slice(
@@ -456,44 +458,37 @@ impl ECIES {
     }
 
     pub fn create_header(&mut self, size: usize) -> Vec<u8> {
-        let mut buffer = Vec::new();
-        buffer.write_uint::<BigEndian>(size as u64, 3).unwrap();
+        let mut buf = [0; 8];
+        BigEndian::write_uint(&mut buf, size as u64, 3);
         let mut header = [0_u8; 16];
-        header[0..3].copy_from_slice(buffer.as_ref());
-        header[3..6].copy_from_slice([194_u8, 128_u8, 128_u8].as_ref());
+        header[0..3].copy_from_slice(&buf[0..3]);
+        header[3..6].copy_from_slice(&[194, 128, 128]);
 
-        let mut encrypted = GenericArray::from(header);
-        self.egress_aes.as_mut().unwrap().encrypt(&mut encrypted);
-        self.egress_mac
-            .as_mut()
-            .unwrap()
-            .update_header(encrypted.as_ref());
+        let mut header = HeaderBytes::from(header);
+        self.egress_aes.as_mut().unwrap().encrypt(&mut header);
+        self.egress_mac.as_mut().unwrap().update_header(&header);
         let tag = self.egress_mac.as_mut().unwrap().digest();
 
-        let mut ret = Vec::new();
-        for item in &encrypted {
-            ret.push(*item);
-        }
-        for item in tag.as_bytes() {
-            ret.push(*item);
-        }
-        ret
+        std::iter::empty()
+            .chain(&header)
+            .chain(tag.as_bytes())
+            .copied()
+            .collect()
     }
 
     pub fn parse_header(&mut self, data: &[u8]) -> Result<usize, ECIESError> {
-        let header = &data[0..16];
+        let mut header = HeaderBytes::clone_from_slice(&data[0..16]);
         let mac = H128::from_slice(&data[16..32]);
 
-        self.ingress_mac.as_mut().unwrap().update_header(header);
+        self.ingress_mac.as_mut().unwrap().update_header(&header);
         let check_mac = self.ingress_mac.as_mut().unwrap().digest();
         if check_mac != mac {
             return Err(ECIESError::TagCheckFailed);
         }
 
-        let mut decrypted = header.to_vec();
-        self.ingress_aes.as_mut().unwrap().decrypt(&mut decrypted);
+        self.ingress_aes.as_mut().unwrap().decrypt(&mut header);
         self.body_size = Some(
-            usize::try_from(decrypted.as_slice().read_uint::<BigEndian>(3)?)
+            usize::try_from(header.as_slice().read_uint::<BigEndian>(3)?)
                 .context("excessive body len")?,
         );
 

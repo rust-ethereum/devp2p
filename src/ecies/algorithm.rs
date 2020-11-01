@@ -523,10 +523,12 @@ impl ECIES {
             .unwrap()
             .update_body(encrypted.as_ref());
         let tag = self.egress_mac.as_mut().unwrap().digest();
-        let mut ret = vec![0_u8; len + 16];
-        ret[0..len].copy_from_slice(encrypted.as_ref());
-        ret[len..].copy_from_slice(tag.as_ref());
-        ret
+
+        std::iter::empty()
+            .chain(&encrypted)
+            .chain(tag.as_bytes())
+            .copied()
+            .collect()
     }
 
     pub fn parse_body(&mut self, data: &[u8]) -> Result<Vec<u8>, ECIESError> {
@@ -542,9 +544,7 @@ impl ECIES {
         self.body_size = None;
         let mut ret = body.to_vec();
         self.ingress_aes.as_mut().unwrap().decrypt(&mut ret);
-        while ret.len() > size {
-            ret.pop();
-        }
+        ret.truncate(size);
         Ok(ret)
     }
 }

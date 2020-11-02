@@ -1,7 +1,10 @@
 use aes::*;
 use block_modes::{block_padding::NoPadding, BlockMode, Ecb};
 use ethereum_types::{H128, H256};
+use generic_array::{typenum::U16, GenericArray};
 use sha3::{Digest, Keccak256};
+
+pub type HeaderBytes = GenericArray<u8, U16>;
 
 #[derive(Debug)]
 pub struct MAC {
@@ -21,12 +24,13 @@ impl MAC {
         self.hasher.update(data)
     }
 
-    pub fn update_header(&mut self, data: &[u8]) {
+    pub fn update_header(&mut self, data: &HeaderBytes) {
         let aes = Ecb::<_, NoPadding>::new(
             Aes256::new_varkey(self.secret.as_ref()).unwrap(),
             &Default::default(),
         );
-        let mut encrypted = aes.encrypt_vec(self.digest().as_bytes());
+        let mut encrypted = self.digest().to_fixed_bytes();
+        aes.encrypt(&mut encrypted, H128::len_bytes()).unwrap();
         for i in 0..data.len() {
             encrypted[i] ^= data[i];
         }
@@ -40,7 +44,8 @@ impl MAC {
             Aes256::new_varkey(self.secret.as_ref()).unwrap(),
             &Default::default(),
         );
-        let mut encrypted = aes.encrypt_vec(self.digest().as_bytes());
+        let mut encrypted = self.digest().to_fixed_bytes();
+        aes.encrypt(&mut encrypted, H128::len_bytes()).unwrap();
         for i in 0..16 {
             encrypted[i] ^= prev[i];
         }

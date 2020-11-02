@@ -1,6 +1,6 @@
 use crate::{
     errors::ECIESError,
-    mac::MAC,
+    mac::*,
     types::*,
     util::{hmac_sha256, id2pk, pk2id, sha256},
 };
@@ -31,8 +31,6 @@ use signature::Signature as _;
 use std::{convert::TryFrom, iter::repeat, sync::Arc};
 
 const PROTOCOL_VERSION: usize = 4;
-
-type HeaderBytes = GenericArray<u8, generic_array::typenum::U16>;
 
 fn ecdh_x(public_key: &VerifyKey, secret_key: &SigningKey) -> H256 {
     H256::from_slice(

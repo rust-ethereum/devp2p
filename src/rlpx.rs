@@ -14,7 +14,7 @@ use std::{
     net::SocketAddr,
     ops::Deref,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
     },
     time::Duration,
@@ -480,6 +480,8 @@ pub struct Swarm<C: CapabilityServer> {
 
     streams: Arc<Mutex<PeerStreams>>,
 
+    currently_connecting: Arc<AtomicUsize>,
+
     node_filter: Arc<Mutex<dyn NodeFilter>>,
 
     capabilities: Arc<CapabilitySet>,
@@ -620,6 +622,7 @@ impl<C: CapabilityServer> Swarm<C> {
         let server = Arc::new(Self {
             tasks: tasks.clone(),
             streams,
+            currently_connecting: Default::default(),
             node_filter,
             capabilities,
             capability_server,
@@ -721,11 +724,13 @@ impl<C: CapabilityServer> Swarm<C> {
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let connection_id = Uuid::new_v4();
+        let currently_connecting = self.currently_connecting.clone();
 
         // Start reaper task that will terminate this connection if connection future gets dropped.
         tasks.spawn_with_name(format!("connection {} reaper", connection_id), {
             let cid = connection_id;
             let streams = streams.clone();
+            let currently_connecting = currently_connecting.clone();
             async move {
                 if rx.await.is_err() {
                     let mut s = streams.lock();
@@ -740,12 +745,15 @@ impl<C: CapabilityServer> Swarm<C> {
                         }
                     }
                 }
+                currently_connecting.fetch_sub(1, Ordering::Relaxed);
             }
         });
 
         async move {
             trace!("Received request to add peer {}", remote_id);
             let mut inserted = false;
+
+            currently_connecting.fetch_add(1, Ordering::Relaxed);
 
             {
                 let mut streams = streams.lock();
@@ -832,6 +840,11 @@ impl<C: CapabilityServer> Swarm<C> {
             Ok(false)
         }
         .instrument(span!(Level::DEBUG, "add peer",))
+    }
+
+    /// Returns the number of peers we're currently dialing
+    pub fn dialing(&self) -> usize {
+        self.currently_connecting.load(Ordering::Relaxed)
     }
 }
 

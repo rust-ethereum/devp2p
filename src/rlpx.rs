@@ -769,7 +769,7 @@ impl<C: CapabilityServer> Swarm<C> {
                         if check_peer && !node_filter.allow(connection_num, remote_id) {
                             trace!("rejecting peer {}", remote_id);
                         } else {
-                            info!("connecting to peer {}", remote_id);
+                            info!("connecting to peer {} at {}", remote_id, addr);
 
                             vacant.insert(PeerState::Connecting { connection_id });
                             inserted = true;

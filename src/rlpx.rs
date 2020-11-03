@@ -399,7 +399,7 @@ async fn handle_incoming_request<C, Io>(
 
             match mapping.entry(remote_id) {
                 Entry::Occupied(entry) => {
-                    warn!(
+                    debug!(
                         "We are already {} to remote peer {}!",
                         if entry.get().is_connected() {
                             "connected"
@@ -755,8 +755,8 @@ impl<C: CapabilityServer> Swarm<C> {
 
                 match streams.mapping.entry(remote_id) {
                     Entry::Occupied(key) => {
-                        warn!(
-                            "we are already {} to remote peer {}!",
+                        debug!(
+                            "We are already {} to remote peer {}!",
                             if key.get().is_connected() {
                                 "connected"
                             } else {
@@ -769,7 +769,7 @@ impl<C: CapabilityServer> Swarm<C> {
                         if check_peer && !node_filter.allow(connection_num, remote_id) {
                             trace!("rejecting peer {}", remote_id);
                         } else {
-                            info!("connecting to peer {} at {}", remote_id, addr);
+                            debug!("connecting to peer {} at {}", remote_id, addr);
 
                             vacant.insert(PeerState::Connecting { connection_id });
                             inserted = true;

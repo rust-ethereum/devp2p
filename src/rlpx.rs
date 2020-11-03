@@ -54,7 +54,6 @@ struct DisconnectSignal {
 #[derive(Debug)]
 struct ConnectedPeerState {
     tasks: TaskGroup,
-    capabilities: BTreeSet<CapabilityId>,
 }
 
 #[derive(Debug)]
@@ -170,7 +169,7 @@ where
     let mut peer_disconnect_rx = peer_disconnect_rx.fuse();
     let tasks = TaskGroup::default();
 
-    capability_server.on_peer_connect(remote_id, capability_set.clone());
+    capability_server.on_peer_connect(remote_id, capability_set);
 
     let awaiting_ping = Arc::new(AtomicBool::default());
     let (pings_tx, pings) = channel(1);
@@ -353,10 +352,7 @@ where
         }
         .await;
     });
-    ConnectedPeerState {
-        tasks,
-        capabilities: capability_set,
-    }
+    ConnectedPeerState { tasks }
 }
 
 /// Establishes the connection with peer and adds them to internal state.

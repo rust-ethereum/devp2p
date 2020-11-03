@@ -23,6 +23,6 @@ pub use disc::*;
 pub use peer::{DisconnectReason, PeerStream};
 pub use rlpx::{ListenOptions, Swarm, SwarmBuilder};
 pub use types::{
-    CapabilityId, CapabilityInfo, CapabilityName, CapabilityServer, InboundEvent, Message,
-    NodeRecord, OutboundEvent, PeerId,
+    CapabilityId, CapabilityInfo, CapabilityName, CapabilityServer, CapabilityVersion,
+    InboundEvent, Message, NodeRecord, OutboundEvent, PeerId,
 };

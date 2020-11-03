@@ -12,7 +12,7 @@ use parking_lot::RwLock;
 use rand::thread_rng;
 use rlp_derive::{RlpDecodable, RlpEncodable};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -104,10 +104,10 @@ impl CapabilityServerImpl {
 #[async_trait]
 impl CapabilityServer for CapabilityServerImpl {
     #[instrument(skip(self, peer), fields(peer=&*peer.to_string()))]
-    fn on_peer_connect(&self, peer: PeerId, _: BTreeSet<CapabilityId>) {
+    fn on_peer_connect(&self, peer: PeerId, caps: HashMap<CapabilityName, CapabilityVersion>) {
         info!("Settting up peer state");
         let status_message = StatusMessage {
-            protocol_version: 63,
+            protocol_version: *caps.get(&eth()).unwrap(),
             network_id: 1,
             total_difficulty: 17608636743620256866935_u128.into(),
             best_hash: H256::from(hex!(

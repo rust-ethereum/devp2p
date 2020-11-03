@@ -4,7 +4,7 @@ use devp2p::*;
 use k256::ecdsa::SigningKey;
 use maplit::btreemap;
 use rand::{seq::SliceRandom, thread_rng};
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing::*;
 use tracing_subscriber::EnvFilter;
@@ -15,7 +15,7 @@ struct DummyServer;
 #[async_trait]
 impl CapabilityServer for DummyServer {
     #[instrument(skip(self, peer), fields(peer=&*peer.to_string()))]
-    fn on_peer_connect(&self, peer: PeerId, _: BTreeSet<CapabilityId>) {
+    fn on_peer_connect(&self, peer: PeerId, _: HashMap<CapabilityName, CapabilityVersion>) {
         info!("Peer connected")
     }
 

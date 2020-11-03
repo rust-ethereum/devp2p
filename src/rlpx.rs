@@ -8,7 +8,7 @@ use futures::sink::SinkExt;
 use k256::ecdsa::SigningKey;
 use parking_lot::Mutex;
 use std::{
-    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
+    collections::{hash_map::Entry, BTreeMap, HashMap},
     fmt::Debug,
     future::Future,
     net::SocketAddr,
@@ -162,8 +162,8 @@ where
         .capabilities()
         .iter()
         .copied()
-        .map(From::from)
-        .collect::<BTreeSet<_>>();
+        .map(|cap_info| (cap_info.name, cap_info.version))
+        .collect::<HashMap<_, _>>();
     let (mut sink, mut stream) = futures::StreamExt::split(peer);
     let (peer_disconnect_tx, peer_disconnect_rx) = unbounded_channel();
     let mut peer_disconnect_rx = peer_disconnect_rx.fuse();

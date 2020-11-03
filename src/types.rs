@@ -7,7 +7,7 @@ use derive_more::Display;
 use educe::Educe;
 pub use ethereum_types::H512 as PeerId;
 use rlp::{DecoderError, Rlp, RlpStream};
-use std::{collections::BTreeSet, fmt::Debug, net::SocketAddr, str::FromStr};
+use std::{collections::HashMap, fmt::Debug, net::SocketAddr, str::FromStr};
 
 /// Record that specifies information necessary to connect to RLPx node
 #[derive(Clone, Copy, Debug)]
@@ -127,7 +127,7 @@ pub enum OutboundEvent {
 #[auto_impl(&, Box, Arc)]
 pub trait CapabilityServer: Send + Sync + 'static {
     /// Should be used to set up relevant state for the peer.
-    fn on_peer_connect(&self, peer: PeerId, caps: BTreeSet<CapabilityId>);
+    fn on_peer_connect(&self, peer: PeerId, caps: HashMap<CapabilityName, CapabilityVersion>);
     /// Called on the next event for peer.
     async fn on_peer_event(&self, peer: PeerId, event: InboundEvent);
     /// Get the next event for peer.
@@ -136,7 +136,7 @@ pub trait CapabilityServer: Send + Sync + 'static {
 
 #[async_trait]
 impl CapabilityServer for () {
-    fn on_peer_connect(&self, _: PeerId, _: BTreeSet<CapabilityId>) {}
+    fn on_peer_connect(&self, _: PeerId, _: HashMap<CapabilityName, CapabilityVersion>) {}
 
     async fn on_peer_event(&self, _: PeerId, _: InboundEvent) {}
 

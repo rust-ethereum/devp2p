@@ -227,22 +227,26 @@ async fn main() {
     let mut discovery_tasks = StreamMap::new();
     discovery_tasks.insert(
         "discv4".to_string(),
-        Box::pin(Discv4::new(
-            discv4::Node::new(
-                format!("0.0.0.0:{}", port).parse().unwrap(),
-                SigningKey::random(thread_rng()),
-                DISCV4_BOOTNODES
-                    .iter()
-                    .map(|v| v.parse().unwrap())
-                    .collect(),
-                None,
-                true,
-                port,
-            )
-            .await
-            .unwrap(),
-            20,
-        )) as Discovery,
+        Box::pin(
+            Discv4Builder::default()
+                .with_cache(20)
+                .with_concurrent_lookups(50)
+                .build(
+                    discv4::Node::new(
+                        format!("0.0.0.0:{}", port).parse().unwrap(),
+                        SigningKey::random(thread_rng()),
+                        DISCV4_BOOTNODES
+                            .iter()
+                            .map(|v| v.parse().unwrap())
+                            .collect(),
+                        None,
+                        true,
+                        port,
+                    )
+                    .await
+                    .unwrap(),
+                ),
+        ) as Discovery,
     );
 
     let capability_server = Arc::new(CapabilityServerImpl::default());

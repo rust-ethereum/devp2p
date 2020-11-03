@@ -8,7 +8,7 @@ use tokio::stream::Stream;
 mod discv4;
 
 #[cfg(feature = "discv4")]
-pub use self::discv4::Discv4;
+pub use self::discv4::{Discv4, Discv4Builder};
 
 #[cfg(feature = "discv5")]
 mod discv5;

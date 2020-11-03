@@ -27,7 +27,7 @@ discv4 = { git = "https://github.com/rust-ethereum/discv4", optional = true }
 discv5 = { git = "https://github.com/sigp/discv5", optional = true }
 dnsdisc = { git = "https://github.com/rust-ethereum/dnsdisc", optional = true }
 ecdsa = "0.8"
-educe = { version = "0.4", default-features = false, features = ["Clone", "Debug"] }
+educe = { version = "0.4", default-features = false, features = ["Clone", "Debug", "Default"] }
 enr = { version = "0.4", default-features = false, features = ["k256"] }
 enum-primitive-derive = "0.2"
 ethereum-types = "0.9"

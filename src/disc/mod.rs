@@ -1,5 +1,6 @@
 use crate::types::*;
 use derive_more::From;
+use futures::stream::BoxStream;
 use std::{collections::HashMap, net::SocketAddr, task::Poll};
 use tokio::stream::Stream;
 
@@ -20,6 +21,8 @@ mod dnsdisc;
 
 #[cfg(feature = "dnsdisc")]
 pub use self::dnsdisc::DnsDiscovery;
+
+pub type Discovery = BoxStream<'static, anyhow::Result<NodeRecord>>;
 
 #[derive(Clone, Debug, From)]
 pub struct Bootnodes(pub HashMap<SocketAddr, PeerId>);

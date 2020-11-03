@@ -20,7 +20,7 @@ use std::{
 };
 use task_group::*;
 use tokio::{
-    stream::{Stream, StreamExt},
+    stream::{StreamExt, StreamMap},
     sync::{
         mpsc::{channel, Sender},
         Mutex as AsyncMutex,
@@ -224,33 +224,33 @@ async fn main() {
 
     let port = 30303;
 
-    let discovery = Discv4::new(
-        discv4::Node::new(
-            format!("0.0.0.0:{}", port).parse().unwrap(),
-            SigningKey::random(thread_rng()),
-            DISCV4_BOOTNODES
-                .iter()
-                .map(|v| v.parse().unwrap())
-                .collect(),
-            None,
-            true,
-            port,
-        )
-        .await
-        .unwrap(),
-        20,
+    let mut discovery_tasks = StreamMap::new();
+    discovery_tasks.insert(
+        "discv4".to_string(),
+        Box::pin(Discv4::new(
+            discv4::Node::new(
+                format!("0.0.0.0:{}", port).parse().unwrap(),
+                SigningKey::random(thread_rng()),
+                DISCV4_BOOTNODES
+                    .iter()
+                    .map(|v| v.parse().unwrap())
+                    .collect(),
+                None,
+                true,
+                port,
+            )
+            .await
+            .unwrap(),
+            20,
+        )) as Discovery,
     );
-
-    let discovery: Arc<
-        AsyncMutex<dyn Stream<Item = anyhow::Result<NodeRecord>> + Send + Unpin + 'static>,
-    > = Arc::new(AsyncMutex::new(discovery));
 
     let capability_server = Arc::new(CapabilityServerImpl::default());
 
     let swarm = Swarm::builder()
         .with_task_group(task_group.clone())
         .with_listen_options(ListenOptions {
-            discovery_tasks: std::iter::repeat(discovery).take(1).collect(),
+            discovery_tasks,
             max_peers: 50,
             addr: format!("0.0.0.0:{}", port).parse().unwrap(),
             cidr: None,

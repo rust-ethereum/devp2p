@@ -1,6 +1,6 @@
 //! RLPx protocol implementation in Rust
 
-use crate::{node_filter::*, peer::*, transport::Transport, types::*};
+use crate::{disc::Discovery, node_filter::*, peer::*, transport::Transport, types::*};
 use anyhow::{anyhow, bail};
 use cidr::{Cidr, IpCidr};
 use educe::Educe;
@@ -8,7 +8,7 @@ use futures::sink::SinkExt;
 use k256::ecdsa::SigningKey;
 use parking_lot::Mutex;
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap},
+    collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
     fmt::Debug,
     future::Future,
     net::SocketAddr,
@@ -22,11 +22,10 @@ use std::{
 use task_group::TaskGroup;
 use tokio::{
     net::{TcpListener, TcpStream},
-    stream::{Stream, StreamExt},
+    stream::{StreamExt, StreamMap},
     sync::{
         mpsc::{channel, unbounded_channel},
         oneshot::{channel as oneshot, Sender as OneshotSender},
-        Mutex as AsyncMutex,
     },
     time::sleep,
 };
@@ -38,6 +37,7 @@ const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 const PING_TIMEOUT: Duration = Duration::from_secs(60);
 const DISCOVERY_TIMEOUT_SECS: u64 = 90;
 const DISCOVERY_CONNECT_TIMEOUT_SECS: u64 = 5;
+const DIAL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy)]
 enum DisconnectInitiator {
@@ -537,12 +537,10 @@ impl SwarmBuilder {
 }
 
 #[derive(Educe)]
-#[educe(Clone, Debug)]
+#[educe(Debug)]
 pub struct ListenOptions {
     #[educe(Debug(ignore))]
-    pub discovery_tasks: Vec<
-        Arc<AsyncMutex<dyn Stream<Item = anyhow::Result<NodeRecord>> + Send + Unpin + 'static>>,
-    >,
+    pub discovery_tasks: StreamMap<String, Discovery>,
     pub max_peers: usize,
     pub addr: SocketAddr,
     pub cidr: Option<IpCidr>,
@@ -631,61 +629,64 @@ impl<C: CapabilityServer> Swarm<C> {
             port,
         });
 
-        // TODO: Use semaphore
-        if let Some(options) = listen_options {
-            for (num, discovery) in options.discovery_tasks.into_iter().enumerate() {
-                tasks.spawn_with_name(format!("discovery #{}", num), {
-                    let server = Arc::downgrade(&server);
-                    let tasks = Arc::downgrade(&tasks);
-                    async move {
-                        loop {
-                            if let Some(server) = server.upgrade() {
-                                let streams_len = server.streams.lock().mapping.len();
-                                let max_peers = server.node_filter.lock().max_peers();
+        if let Some(mut options) = listen_options {
+            tasks.spawn_with_name("dialer", {
+                let server = Arc::downgrade(&server);
+                let tasks = Arc::downgrade(&tasks);
+                async move {
+                    let current_peers = Arc::new(Mutex::new(HashSet::new()));
+                    loop {
+                        if let Some(server) = server.upgrade() {
+                            let streams_len = server.streams.lock().mapping.len();
+                            let max_peers = server.node_filter.lock().max_peers();
 
-                                if streams_len < max_peers {
-                                    trace!("Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
-                                    match tokio::time::timeout(
-                                        Duration::from_secs(DISCOVERY_TIMEOUT_SECS),
-                                        {
-                                            let discovery = discovery.clone();
-                                            async move {
-                                                discovery.lock().await.next().await
-                                            }
-                                        },
-                                    )
-                                    .await
-                                    .unwrap_or_else(|_| {
-                                        Some(Err(anyhow!("timed out")))
-                                    }) {
-                                        None => {
-                                            debug!("Discovery task ending");
-                                            return;
-                                        }
-                                        Some(Ok(NodeRecord { addr, id: remote_id })) => {
-                                            debug!("Discovered peer: {:?}", remote_id);
-                                            if let Some(tasks) = tasks.upgrade() {
-                                                tasks.spawn_with_name(format!("add peer {} at {}", remote_id, addr), async move {
-                                                    if tokio::time::timeout(Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS), server.add_peer_inner(addr, remote_id, true)).await.is_err() {
-                                                        debug!("Timed out adding peer {}", remote_id);
+                            if streams_len < max_peers {
+                                trace!("Discovering peers as our peer count is too low: {} < {}", streams_len, max_peers);
+                                match tokio::time::timeout(
+                                    Duration::from_secs(DISCOVERY_TIMEOUT_SECS),
+                                    options.discovery_tasks.next(),
+                                )
+                                .await {
+                                    Err(_) => {
+                                        debug!("Failed to get new peer: timed out");
+                                    }
+                                    Ok(None) => {
+                                        debug!("Discoveries ended, dialer quitting");
+                                        return;
+                                    }
+                                    Ok(Some((disc_id, Ok(NodeRecord { addr, id: remote_id })))) => {
+                                        if let Some(tasks) = tasks.upgrade() {
+                                            if current_peers.lock().insert(remote_id) {
+                                                debug!("Discovered peer: {:?} ({})", remote_id, disc_id);
+                                                tasks.spawn_with_name(format!("add peer {} at {}", remote_id, addr), {
+                                                    let current_peers = current_peers.clone();
+                                                    async move {
+                                                        if tokio::time::timeout(
+                                                            Duration::from_secs(DISCOVERY_CONNECT_TIMEOUT_SECS),
+                                                            server.add_peer_inner(addr, remote_id, true)
+                                                        ).await.is_err() {
+                                                            debug!("Timed out adding peer {}", remote_id);
+                                                        }
+                                                        current_peers.lock().remove(&remote_id)
                                                     }
                                                 });
                                             }
                                         }
-                                        Some(Err(e)) => warn!("Failed to get new peer: {}", e)
                                     }
-                                    sleep(Duration::from_millis(2000)).await;
-                                } else {
-                                    trace!("Skipping discovery as current number of peers is too high: {} >= {}", streams_len, max_peers);
-                                    sleep(Duration::from_secs(2)).await;
+                                    Ok(Some((disc_id, Err(e)))) => warn!("Failed to get new peer: {} ({})", e, disc_id)
                                 }
+
+                                sleep(DIAL_INTERVAL).await;
                             } else {
-                                return;
+                                trace!("Skipping discovery as current number of peers is too high: {} >= {}", streams_len, max_peers);
+                                sleep(Duration::from_secs(2)).await;
                             }
+                        } else {
+                            return;
                         }
-                    }.instrument(span!(Level::DEBUG, "discovery", "#{}", num.to_string()))
-                });
-            }
+                    }
+                }.instrument(span!(Level::DEBUG, "dialer"))
+            });
         }
 
         Ok(server)

@@ -1,6 +1,6 @@
 use crate::{types::*, util::*};
 use dnsdisc::{Backend, Resolver};
-use k256::ecdsa::VerifyKey;
+use secp256k1::{PublicKey, SecretKey};
 use std::{pin::Pin, sync::Arc, time::Duration};
 use task_group::TaskGroup;
 use tokio::{
@@ -21,9 +21,9 @@ pub struct DnsDiscovery {
 impl DnsDiscovery {
     #[must_use]
     pub fn new<B: Backend>(
-        discovery: Arc<Resolver<B>>,
+        discovery: Arc<Resolver<B, SecretKey>>,
         domain: String,
-        public_key: Option<VerifyKey>,
+        public_key: Option<PublicKey>,
     ) -> Self {
         let tasks = TaskGroup::default();
 

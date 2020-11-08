@@ -1,9 +1,9 @@
 use arrayvec::ArrayString;
 use async_trait::async_trait;
 use devp2p::*;
-use k256::ecdsa::SigningKey;
 use maplit::btreemap;
 use rand::{seq::SliceRandom, thread_rng};
+use secp256k1::SecretKey;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing::*;
@@ -63,7 +63,7 @@ async fn main() {
     let swarm = Swarm::new(
             btreemap! { CapabilityId { name: CapabilityName(ArrayString::from("eth").unwrap()), version: 63 } => 15 },
             Arc::new(DummyServer),
-            SigningKey::random(thread_rng()),
+            SecretKey::new(&mut secp256k1::rand::thread_rng()),
         )
         .await
         .unwrap();

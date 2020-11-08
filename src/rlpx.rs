@@ -5,8 +5,8 @@ use anyhow::{anyhow, bail};
 use cidr::{Cidr, IpCidr};
 use educe::Educe;
 use futures::sink::SinkExt;
-use k256::ecdsa::SigningKey;
 use parking_lot::Mutex;
+use secp256k1::SecretKey;
 use std::{
     collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
     fmt::Debug,
@@ -95,7 +95,7 @@ impl Default for PeerStreams {
 struct PeerStreamHandshakeData<C> {
     port: u16,
     protocol_version: ProtocolVersion,
-    secret_key: Arc<SigningKey>,
+    secret_key: SecretKey,
     client_version: String,
     capabilities: Arc<CapabilitySet>,
     capability_server: Arc<C>,
@@ -489,7 +489,7 @@ pub struct Swarm<C: CapabilityServer> {
     capability_server: Arc<C>,
 
     #[educe(Debug(ignore))]
-    secret_key: Arc<SigningKey>,
+    secret_key: SecretKey,
     protocol_version: ProtocolVersion,
     client_version: String,
     port: u16,
@@ -524,7 +524,7 @@ impl SwarmBuilder {
         self,
         capability_mask: BTreeMap<CapabilityId, CapabilityLength>,
         capability_server: Arc<C>,
-        secret_key: SigningKey,
+        secret_key: SecretKey,
     ) -> anyhow::Result<Arc<Swarm<C>>> {
         Swarm::new_inner(
             secret_key,
@@ -562,7 +562,7 @@ impl<C: CapabilityServer> Swarm<C> {
     pub async fn new(
         capability_mask: BTreeMap<CapabilityId, CapabilityLength>,
         capability_server: Arc<C>,
-        secret_key: SigningKey,
+        secret_key: SecretKey,
     ) -> anyhow::Result<Arc<Self>> {
         Swarm::builder()
             .build(capability_mask, capability_server, secret_key)
@@ -570,7 +570,7 @@ impl<C: CapabilityServer> Swarm<C> {
     }
 
     async fn new_inner(
-        secret_key: SigningKey,
+        secret_key: SecretKey,
         client_version: String,
         task_group: Option<Arc<TaskGroup>>,
         capabilities: CapabilitySet,
@@ -578,8 +578,6 @@ impl<C: CapabilityServer> Swarm<C> {
         listen_options: Option<ListenOptions>,
     ) -> anyhow::Result<Arc<Self>> {
         let tasks = task_group.unwrap_or_default();
-
-        let secret_key = Arc::new(secret_key);
 
         let protocol_version = ProtocolVersion::V5;
 
@@ -610,7 +608,7 @@ impl<C: CapabilityServer> Swarm<C> {
                     PeerStreamHandshakeData {
                         port,
                         protocol_version,
-                        secret_key: secret_key.clone(),
+                        secret_key,
                         client_version: client_version.clone(),
                         capabilities: capabilities.clone(),
                         capability_server: capability_server.clone(),
@@ -717,7 +715,7 @@ impl<C: CapabilityServer> Swarm<C> {
         let capability_set = capabilities.get_capabilities().to_vec();
         let capability_server = self.capability_server.clone();
 
-        let secret_key = self.secret_key.clone();
+        let secret_key = self.secret_key;
         let protocol_version = self.protocol_version;
         let client_version = self.client_version.clone();
         let port = self.port;

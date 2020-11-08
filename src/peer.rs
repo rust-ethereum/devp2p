@@ -4,14 +4,13 @@ use bytes::Bytes;
 use derive_more::Display;
 use enum_primitive_derive::Primitive;
 use futures::{ready, Sink, SinkExt};
-use k256::ecdsa::SigningKey;
 use num_traits::*;
 use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
+use secp256k1::{PublicKey, SecretKey, SECP256K1};
 use std::{
     fmt::Debug,
     io,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 use tokio::stream::{Stream, StreamExt};
@@ -163,7 +162,7 @@ where
     )]
     pub async fn connect(
         transport: Io,
-        secret_key: Arc<SigningKey>,
+        secret_key: SecretKey,
         remote_id: PeerId,
         protocol_version: ProtocolVersion,
         client_version: String,
@@ -171,7 +170,7 @@ where
         port: u16,
     ) -> anyhow::Result<Self> {
         Ok(Self::new(
-            ECIESStream::connect(transport, secret_key.clone(), remote_id).await?,
+            ECIESStream::connect(transport, secret_key, remote_id).await?,
             secret_key,
             protocol_version,
             client_version,
@@ -195,14 +194,14 @@ where
     )]
     pub async fn incoming(
         transport: Io,
-        secret_key: Arc<SigningKey>,
+        secret_key: SecretKey,
         protocol_version: ProtocolVersion,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
     ) -> anyhow::Result<Self> {
         Ok(Self::new(
-            ECIESStream::incoming(transport, secret_key.clone()).await?,
+            ECIESStream::incoming(transport, secret_key).await?,
             secret_key,
             protocol_version,
             client_version,
@@ -216,13 +215,13 @@ where
     #[instrument(skip(transport, secret_key, protocol_version, client_version, capabilities, port), fields(id=&*transport.remote_id().to_string()))]
     pub async fn new(
         mut transport: ECIESStream<Io>,
-        secret_key: Arc<SigningKey>,
+        secret_key: SecretKey,
         protocol_version: ProtocolVersion,
         client_version: String,
         capabilities: Vec<CapabilityInfo>,
         port: u16,
     ) -> anyhow::Result<Self> {
-        let public_key = secret_key.verify_key();
+        let public_key = PublicKey::from_secret_key(SECP256K1, &secret_key);
         let id = pk2id(&public_key);
         let nonhello_capabilities = capabilities.clone();
         let nonhello_client_version = client_version.clone();

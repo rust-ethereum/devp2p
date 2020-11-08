@@ -4,6 +4,7 @@ use crate::{types::*, util::*};
 use anyhow::anyhow;
 use futures::stream::BoxStream;
 use futures_intrusive::channel::UnbufferedChannel;
+use secp256k1::PublicKey;
 use task_group::TaskGroup;
 use tokio::{
     select,
@@ -30,7 +31,7 @@ impl Discv5 {
             async move {
                 async {
                     loop {
-                        match disc.find_node(enr::NodeId::random()).await {
+                        match disc.find_node(discv5::enr::NodeId::random()).await {
                             Err(e) => {
                                 if errors
                                     .send(anyhow!("Discovery error: {}", e))
@@ -44,13 +45,16 @@ impl Discv5 {
                                 for node in nodes {
                                     if let Some(ip) = node.ip() {
                                         if let Some(port) = node.tcp() {
-                                            if let enr::CombinedPublicKey::Secp256k1(pk) =
+                                            if let discv5::enr::CombinedPublicKey::Secp256k1(pk) =
                                                 node.public_key()
                                             {
                                                 if tx
                                                     .send(NodeRecord {
                                                         addr: (ip, port).into(),
-                                                        id: pk2id(&pk),
+                                                        id: pk2id(
+                                                            &PublicKey::from_slice(&pk.to_bytes())
+                                                                .unwrap(),
+                                                        ),
                                                     })
                                                     .await
                                                     .is_err()

@@ -21,8 +21,8 @@ impl From<ECIESError> for io::Error {
     }
 }
 
-impl From<k256::ecdsa::Error> for ECIESError {
-    fn from(error: k256::ecdsa::Error) -> Self {
+impl From<secp256k1::Error> for ECIESError {
+    fn from(error: secp256k1::Error) -> Self {
         Self::Other(error.into())
     }
 }

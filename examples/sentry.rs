@@ -6,11 +6,10 @@ use devp2p::*;
 use ethereum_types::*;
 use futures::stream::BoxStream;
 use hex_literal::hex;
-use k256::ecdsa::SigningKey;
 use maplit::btreemap;
 use parking_lot::RwLock;
-use rand::thread_rng;
 use rlp_derive::{RlpDecodable, RlpEncodable};
+use secp256k1::SecretKey;
 use std::{
     collections::HashMap,
     sync::{
@@ -217,7 +216,7 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let secret_key = SigningKey::random(thread_rng());
+    let secret_key = SecretKey::new(&mut secp256k1::rand::thread_rng());
 
     let task_metrics = Arc::new(TaskMetrics::default());
     let task_group = Arc::new(TaskGroup::new_with_metrics(task_metrics.clone()));
@@ -234,7 +233,7 @@ async fn main() {
                 .build(
                     discv4::Node::new(
                         format!("0.0.0.0:{}", port).parse().unwrap(),
-                        SigningKey::random(thread_rng()),
+                        SecretKey::new(&mut secp256k1::rand::thread_rng()),
                         DISCV4_BOOTNODES
                             .iter()
                             .map(|v| v.parse().unwrap())

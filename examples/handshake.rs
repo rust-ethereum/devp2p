@@ -1,8 +1,6 @@
 use devp2p::{ecies::ECIESStream, PeerId};
 use hex_literal::hex;
-use k256::ecdsa::SigningKey;
-use rand::thread_rng;
-use std::sync::Arc;
+use secp256k1::SecretKey;
 use tokio::net::TcpStream;
 use tracing_subscriber::EnvFilter;
 
@@ -16,7 +14,7 @@ async fn main() {
 
     ECIESStream::connect(
         TcpStream::connect("18.138.108.67:30303").await.unwrap(),
-        Arc::new(SigningKey::random(thread_rng())),
+        SecretKey::new(&mut secp256k1::rand::thread_rng()),
         REMOTE_ID,
     )
     .await

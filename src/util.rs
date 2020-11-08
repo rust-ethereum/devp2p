@@ -1,8 +1,7 @@
 use crate::types::*;
 use ethereum_types::H256;
-use generic_array::GenericArray;
 use hmac::{Hmac, Mac, NewMac};
-use k256::{ecdsa::VerifyKey, EncodedPoint};
+use secp256k1::PublicKey;
 use sha2::Sha256;
 use sha3::{Digest, Keccak256};
 use std::fmt::{self, Formatter};
@@ -22,14 +21,15 @@ pub fn hmac_sha256(key: &[u8], input: &[u8], auth_data: &[u8]) -> H256 {
     H256::from_slice(&*hmac.finalize().into_bytes())
 }
 
-pub fn pk2id(pk: &VerifyKey) -> PeerId {
-    PeerId::from_slice(&*EncodedPoint::from(pk).to_untagged_bytes().unwrap())
+pub fn pk2id(pk: &PublicKey) -> PeerId {
+    PeerId::from_slice(&pk.serialize_uncompressed()[1..])
 }
 
-pub fn id2pk(id: PeerId) -> Result<VerifyKey, signature::Error> {
-    VerifyKey::from_encoded_point(&EncodedPoint::from_untagged_bytes(
-        GenericArray::from_slice(id.as_ref()),
-    ))
+pub fn id2pk(id: PeerId) -> Result<PublicKey, secp256k1::Error> {
+    let mut s = [0_u8; 65];
+    s[0] = 4;
+    s[1..].copy_from_slice(&id.as_bytes());
+    PublicKey::from_slice(&s)
 }
 
 pub fn hex_debug<T: AsRef<[u8]>>(s: &T, f: &mut Formatter) -> fmt::Result {
@@ -39,13 +39,12 @@ pub fn hex_debug<T: AsRef<[u8]>>(s: &T, f: &mut Formatter) -> fmt::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::ecdsa::SigningKey;
-    use rand::thread_rng;
+    use secp256k1::{SecretKey, SECP256K1};
 
     #[test]
     fn pk2id2pk() {
-        let prikey = SigningKey::random(thread_rng());
-        let pubkey = prikey.verify_key();
+        let prikey = SecretKey::new(&mut secp256k1::rand::thread_rng());
+        let pubkey = PublicKey::from_secret_key(SECP256K1, &prikey);
         assert_eq!(pubkey, id2pk(pk2id(&pubkey)).unwrap());
     }
 }

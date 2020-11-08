@@ -26,9 +26,8 @@ digest = "0.9"
 discv4 = { git = "https://github.com/rust-ethereum/discv4", optional = true }
 discv5 = { git = "https://github.com/sigp/discv5", optional = true }
 dnsdisc = { git = "https://github.com/rust-ethereum/dnsdisc", optional = true }
-ecdsa = "0.8"
 educe = { version = "0.4", default-features = false, features = ["Clone", "Debug", "Default"] }
-enr = { version = "0.4", default-features = false, features = ["k256"] }
+enr = { git = "https://github.com/rust-ethereum/enr", default-features = false, features = ["rust-secp256k1"] }
 enum-primitive-derive = "0.2"
 ethereum-types = "0.9"
 futures = "0.3"
@@ -36,16 +35,15 @@ futures-intrusive = "0.3"
 generic-array = "0.14"
 hex = "0.4"
 hmac = "0.10"
-k256 = { version = "0.5", features = ["ecdh", "ecdsa"] }
 maplit = "1"
 num-traits = "0.2"
 parking_lot = "0.11"
 rand = "0.7"
 rlp = "0.4.6"
 rlp-derive = "0.1"
+secp256k1 = { version = "0.19", features = ["global-context", "rand-std", "recovery"] }
 sha2 = "0.9"
 sha3 = "0.9"
-signature = { version = "1", features = ["std"] }
 snap = "1"
 task-group = { git = "https://github.com/vorot93/task-group" }
 thiserror = "1"

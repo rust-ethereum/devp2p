@@ -317,7 +317,7 @@ impl ECIES {
         Ok(())
     }
 
-    pub fn parse_auth(&mut self, data: &mut [u8]) -> Result<(), ECIESError> {
+    pub fn read_auth(&mut self, data: &mut [u8]) -> Result<(), ECIESError> {
         self.remote_init_msg = Some(data.into());
         let unencrypted = self.decrypt_message(data)?;
         self.parse_auth_unencrypted(&unencrypted)
@@ -366,7 +366,7 @@ impl ECIES {
         Ok(())
     }
 
-    pub fn parse_ack(&mut self, data: &mut [u8]) -> Result<(), ECIESError> {
+    pub fn read_ack(&mut self, data: &mut [u8]) -> Result<(), ECIESError> {
         self.remote_init_msg = Some(data.into());
         let unencrypted = self.decrypt_message(data)?;
         self.parse_ack_unencrypted(&unencrypted)?;
@@ -460,9 +460,10 @@ impl ECIES {
         out.extend_from_slice(tag.as_bytes());
     }
 
-    pub fn parse_header(&mut self, data: &[u8]) -> Result<usize, ECIESError> {
-        let mut header = HeaderBytes::clone_from_slice(&data[0..16]);
-        let mac = H128::from_slice(&data[16..32]);
+    pub fn read_header(&mut self, data: &mut [u8]) -> Result<usize, ECIESError> {
+        let (header_bytes, mac_bytes) = data.split_at_mut(16);
+        let mut header = HeaderBytes::from_mut_slice(header_bytes);
+        let mac = H128::from_slice(&mac_bytes[..16]);
 
         self.ingress_mac.as_mut().unwrap().update_header(&header);
         let check_mac = self.ingress_mac.as_mut().unwrap().digest();
@@ -520,9 +521,9 @@ impl ECIES {
         out.extend_from_slice(tag.as_bytes());
     }
 
-    pub fn parse_body(&mut self, data: &[u8]) -> Result<Vec<u8>, ECIESError> {
-        let body = &data[0..data.len() - 16];
-        let mac = H128::from_slice(&data[data.len() - 16..]);
+    pub fn read_body<'a>(&mut self, data: &'a mut [u8]) -> Result<&'a mut [u8], ECIESError> {
+        let (body, mac_bytes) = data.split_at_mut(data.len() - 16);
+        let mac = H128::from_slice(mac_bytes);
         self.ingress_mac.as_mut().unwrap().update_body(body);
         let check_mac = self.ingress_mac.as_mut().unwrap().digest();
         if check_mac != mac {
@@ -531,10 +532,9 @@ impl ECIES {
 
         let size = self.body_size.unwrap();
         self.body_size = None;
-        let mut ret = body.to_vec();
+        let mut ret = body;
         self.ingress_aes.as_mut().unwrap().decrypt(&mut ret);
-        ret.truncate(size);
-        Ok(ret)
+        Ok(ret.split_at_mut(size).0)
     }
 }
 
@@ -569,85 +569,60 @@ mod tests {
 
         // Handshake
         let mut auth = client_ecies.create_auth();
-        server_ecies.parse_auth(&mut auth).unwrap();
+        server_ecies.read_auth(&mut auth).unwrap();
         let mut ack = server_ecies.create_ack();
-        client_ecies.parse_ack(&mut ack).unwrap();
+        client_ecies.read_ack(&mut ack).unwrap();
 
         let server_to_client_data = [0_u8, 1_u8, 2_u8, 3_u8, 4_u8];
         let client_to_server_data = [5_u8, 6_u8, 7_u8];
 
         // Test server to client 1
-        let header = server_ecies.create_header(server_to_client_data.len());
+        let mut header = server_ecies.create_header(server_to_client_data.len());
         assert_eq!(header.len(), ECIES::header_len());
-        client_ecies.parse_header(header.as_ref()).unwrap();
-        let body = server_ecies.create_body(&server_to_client_data);
+        client_ecies.read_header(&mut *header).unwrap();
+        let mut body = server_ecies.create_body(&server_to_client_data);
         assert_eq!(body.len(), client_ecies.body_len());
-        let ret = client_ecies.parse_body(body.as_ref()).unwrap();
+        let ret = client_ecies.read_body(&mut *body).unwrap();
         assert_eq!(ret, server_to_client_data);
 
         // Test client to server 1
         server_ecies
-            .parse_header(
-                client_ecies
-                    .create_header(client_to_server_data.len())
-                    .as_ref(),
-            )
+            .read_header(&mut *client_ecies.create_header(client_to_server_data.len()))
             .unwrap();
-        let ret = server_ecies
-            .parse_body(client_ecies.create_body(&client_to_server_data).as_ref())
-            .unwrap();
+        let mut b = client_ecies.create_body(&client_to_server_data);
+        let ret = server_ecies.read_body(&mut b).unwrap();
         assert_eq!(ret, client_to_server_data);
 
         // Test server to client 2
         client_ecies
-            .parse_header(
-                server_ecies
-                    .create_header(server_to_client_data.len())
-                    .as_ref(),
-            )
+            .read_header(&mut *server_ecies.create_header(server_to_client_data.len()))
             .unwrap();
-        let ret = client_ecies
-            .parse_body(server_ecies.create_body(&server_to_client_data).as_ref())
-            .unwrap();
+        let mut b = server_ecies.create_body(&server_to_client_data);
+        let ret = client_ecies.read_body(&mut b).unwrap();
         assert_eq!(ret, server_to_client_data);
 
         // Test server to client 3
         client_ecies
-            .parse_header(
-                server_ecies
-                    .create_header(server_to_client_data.len())
-                    .as_ref(),
-            )
+            .read_header(&mut *server_ecies.create_header(server_to_client_data.len()))
             .unwrap();
-        let ret = client_ecies
-            .parse_body(server_ecies.create_body(&server_to_client_data).as_ref())
-            .unwrap();
+        let mut b = server_ecies.create_body(&server_to_client_data);
+        let ret = client_ecies.read_body(&mut b).unwrap();
         assert_eq!(ret, server_to_client_data);
 
         // Test client to server 2
         server_ecies
-            .parse_header(
-                client_ecies
-                    .create_header(client_to_server_data.len())
-                    .as_ref(),
-            )
+            .read_header(&mut *client_ecies.create_header(client_to_server_data.len()))
             .unwrap();
-        let ret = server_ecies
-            .parse_body(client_ecies.create_body(&client_to_server_data).as_ref())
-            .unwrap();
+        let mut b = client_ecies.create_body(&client_to_server_data);
+        let ret = server_ecies.read_body(&mut b).unwrap();
         assert_eq!(ret, client_to_server_data);
 
         // Test client to server 3
         server_ecies
-            .parse_header(
-                client_ecies
-                    .create_header(client_to_server_data.len())
-                    .as_ref(),
-            )
+            .read_header(&mut *client_ecies.create_header(client_to_server_data.len()))
             .unwrap();
-        let ret = server_ecies
-            .parse_body(client_ecies.create_body(&client_to_server_data).as_ref())
-            .unwrap();
+        let mut b = client_ecies.create_body(&client_to_server_data);
+        let ret = server_ecies.read_body(&mut b).unwrap();
         assert_eq!(ret, client_to_server_data);
     }
 
@@ -777,21 +752,19 @@ mod tests {
         "
         );
 
-        eip8_test_server().parse_auth(&mut auth2.to_vec()).unwrap();
-        eip8_test_server().parse_auth(&mut auth3.to_vec()).unwrap();
+        eip8_test_server().read_auth(&mut auth2.to_vec()).unwrap();
+        eip8_test_server().read_auth(&mut auth3.to_vec()).unwrap();
 
         let mut test_client = eip8_test_client();
         let mut test_server = eip8_test_server();
 
         test_server
-            .parse_auth(&mut test_client.create_auth())
+            .read_auth(&mut test_client.create_auth())
             .unwrap();
 
-        test_client
-            .parse_ack(&mut test_server.create_ack())
-            .unwrap();
+        test_client.read_ack(&mut test_server.create_ack()).unwrap();
 
-        test_client.parse_ack(&mut ack2.to_vec()).unwrap();
-        test_client.parse_ack(&mut ack3.to_vec()).unwrap();
+        test_client.read_ack(&mut ack2.to_vec()).unwrap();
+        test_client.read_ack(&mut ack3.to_vec()).unwrap();
     }
 }

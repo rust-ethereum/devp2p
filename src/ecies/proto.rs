@@ -85,8 +85,7 @@ impl Decoder for ECIESCodec {
                     return Ok(None);
                 }
 
-                let mut data = buf.split_to(total_size);
-                self.ecies.parse_auth(&mut *data)?;
+                self.ecies.read_auth(&mut *buf.split_to(total_size))?;
 
                 self.state = ECIESState::Header;
                 Ok(Some(IngressECIESValue::AuthReceive(self.ecies.remote_id())))
@@ -105,8 +104,7 @@ impl Decoder for ECIESCodec {
                     return Ok(None);
                 }
 
-                let mut data = buf.split_to(total_size);
-                self.ecies.parse_ack(&mut *data)?;
+                self.ecies.read_ack(&mut *buf.split_to(total_size))?;
 
                 self.state = ECIESState::Header;
                 Ok(Some(IngressECIESValue::Ack))
@@ -116,8 +114,8 @@ impl Decoder for ECIESCodec {
                     return Ok(None);
                 }
 
-                let data = buf.split_to(ECIES::header_len());
-                self.ecies.parse_header(&data)?;
+                self.ecies
+                    .read_header(&mut *buf.split_to(ECIES::header_len()))?;
 
                 self.state = ECIESState::Body;
                 Ok(None)
@@ -127,11 +125,11 @@ impl Decoder for ECIESCodec {
                     return Ok(None);
                 }
 
-                let data = buf.split_to(self.ecies.body_len());
-                let ret = self.ecies.parse_body(&data)?;
+                let mut data = buf.split_to(self.ecies.body_len());
+                let ret = self.ecies.read_body(&mut *data)?;
 
                 self.state = ECIESState::Header;
-                Ok(Some(IngressECIESValue::Message(ret)))
+                Ok(Some(IngressECIESValue::Message(ret.to_vec())))
             }
         }
     }

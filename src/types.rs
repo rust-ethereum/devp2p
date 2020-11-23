@@ -30,14 +30,8 @@ impl FromStr for NodeRecord {
         }
 
         let mut parts = data.split('@');
-        let id = parts
-            .next()
-            .ok_or_else(|| "Failed to read remote ID")?
-            .parse()?;
-        let addr = parts
-            .next()
-            .ok_or_else(|| "Failed to read address")?
-            .parse()?;
+        let id = parts.next().ok_or("Failed to read remote ID")?.parse()?;
+        let addr = parts.next().ok_or("Failed to read address")?.parse()?;
 
         Ok(Self { id, addr })
     }

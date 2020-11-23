@@ -156,8 +156,8 @@ impl Encoder<EgressECIESValue> for ECIESCodec {
                 Ok(())
             }
             EgressECIESValue::Message(data) => {
-                buf.extend_from_slice(&self.ecies.create_header(data.len()));
-                buf.extend_from_slice(&self.ecies.create_body(&data));
+                self.ecies.write_header(buf, data.len());
+                self.ecies.write_body(buf, &data);
                 Ok(())
             }
         }

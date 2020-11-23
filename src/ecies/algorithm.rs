@@ -10,6 +10,7 @@ use aes_ctr::{
 };
 use anyhow::Context;
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use bytes::BytesMut;
 use digest::Digest;
 use educe::Educe;
 use ethereum_types::{H128, H256};
@@ -201,12 +202,16 @@ impl ECIES {
             &total_size.to_be_bytes(),
         );
 
-        std::iter::empty()
-            .chain(&PublicKey::from_secret_key(SECP256K1, &secret_key).serialize_uncompressed())
-            .chain(&iv_encrypted)
-            .chain(tag.as_ref())
-            .copied()
-            .collect()
+        let pubkey_bytes =
+            PublicKey::from_secret_key(SECP256K1, &secret_key).serialize_uncompressed();
+
+        let mut out =
+            Vec::with_capacity(pubkey_bytes.len() + iv_encrypted.len() + tag.as_ref().len());
+        out.extend_from_slice(&pubkey_bytes);
+        out.extend_from_slice(&iv_encrypted);
+        out.extend_from_slice(tag.as_ref());
+
+        out
     }
 
     fn decrypt_message(&self, data: &[u8]) -> Result<Vec<u8>, ECIESError> {
@@ -270,13 +275,13 @@ impl ECIES {
     pub fn create_auth(&mut self) -> Vec<u8> {
         let unencrypted = self.create_auth_unencrypted();
         let encrypted = self.encrypt_message(&unencrypted);
-        let message: Vec<u8> = u16::try_from(encrypted.len())
-            .unwrap()
-            .to_be_bytes()
-            .iter()
-            .chain(&encrypted)
-            .copied()
-            .collect();
+
+        let len_bytes = u16::try_from(encrypted.len()).unwrap().to_be_bytes();
+
+        let mut message = Vec::with_capacity(len_bytes.len() + encrypted.len());
+        message.extend_from_slice(&len_bytes);
+        message.extend_from_slice(&encrypted);
+
         self.init_msg = Some(message.clone());
         message
     }
@@ -338,13 +343,12 @@ impl ECIES {
     pub fn create_ack(&mut self) -> Vec<u8> {
         let unencrypted = self.create_ack_unencrypted();
         let encrypted = self.encrypt_message(&unencrypted);
-        let message: Vec<u8> = u16::try_from(encrypted.len())
-            .unwrap()
-            .to_be_bytes()
-            .iter()
-            .chain(&encrypted)
-            .copied()
-            .collect();
+
+        let len_bytes = u16::try_from(encrypted.len()).unwrap().to_be_bytes();
+        let mut message = Vec::with_capacity(len_bytes.len() + encrypted.len());
+        message.extend_from_slice(&len_bytes);
+        message.extend_from_slice(&encrypted);
+
         self.init_msg = Some(message.clone());
         self.setup_frame(true);
         message
@@ -441,7 +445,14 @@ impl ECIES {
             .update(self.init_msg.as_ref().unwrap());
     }
 
-    pub fn create_header(&mut self, size: usize) -> Vec<u8> {
+    #[cfg(test)]
+    fn create_header(&mut self, size: usize) -> BytesMut {
+        let mut out = BytesMut::new();
+        self.write_header(&mut out, size);
+        out
+    }
+
+    pub fn write_header(&mut self, out: &mut BytesMut, size: usize) {
         let mut buf = [0; 8];
         BigEndian::write_uint(&mut buf, size as u64, 3);
         let mut header = [0_u8; 16];
@@ -453,11 +464,9 @@ impl ECIES {
         self.egress_mac.as_mut().unwrap().update_header(&header);
         let tag = self.egress_mac.as_mut().unwrap().digest();
 
-        std::iter::empty()
-            .chain(&header)
-            .chain(tag.as_bytes())
-            .copied()
-            .collect()
+        out.reserve(ECIES::header_len());
+        out.extend_from_slice(&header);
+        out.extend_from_slice(tag.as_bytes());
     }
 
     pub fn parse_header(&mut self, data: &[u8]) -> Result<usize, ECIESError> {
@@ -492,7 +501,14 @@ impl ECIES {
         }) + 16
     }
 
-    pub fn create_body(&mut self, data: &[u8]) -> Vec<u8> {
+    #[cfg(test)]
+    fn create_body(&mut self, data: &[u8]) -> BytesMut {
+        let mut out = BytesMut::new();
+        self.write_body(&mut out, data);
+        out
+    }
+
+    pub fn write_body(&mut self, out: &mut BytesMut, data: &[u8]) {
         let len = if data.len() % 16 == 0 {
             data.len()
         } else {
@@ -508,11 +524,9 @@ impl ECIES {
             .update_body(encrypted.as_ref());
         let tag = self.egress_mac.as_mut().unwrap().digest();
 
-        std::iter::empty()
-            .chain(&encrypted)
-            .chain(tag.as_bytes())
-            .copied()
-            .collect()
+        out.reserve(encrypted.len() + tag.as_bytes().len());
+        out.extend_from_slice(&encrypted);
+        out.extend_from_slice(tag.as_bytes());
     }
 
     pub fn parse_body(&mut self, data: &[u8]) -> Result<Vec<u8>, ECIESError> {

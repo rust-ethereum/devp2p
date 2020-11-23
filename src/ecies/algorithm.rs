@@ -214,14 +214,13 @@ impl ECIES {
         out
     }
 
-    fn decrypt_message(&self, data: &[u8]) -> Result<Vec<u8>, ECIESError> {
-        let auth_data = &data[..2];
-        let encrypted = &data[2..];
-        let pubkey_bytes = &encrypted[0..65];
+    fn decrypt_message<'a>(&self, data: &'a mut [u8]) -> Result<&'a mut [u8], ECIESError> {
+        let (auth_data, encrypted) = data.split_at_mut(2);
+        let (pubkey_bytes, encrypted) = encrypted.split_at_mut(65);
         let public_key = PublicKey::from_slice(&pubkey_bytes)
             .with_context(|| format!("bad public key {}", hex::encode(pubkey_bytes)))?;
-        let data_iv = &encrypted[65..(encrypted.len() - 32)];
-        let tag = H256::from_slice(&encrypted[(encrypted.len() - 32)..]);
+        let (data_iv, tag_bytes) = encrypted.split_at_mut(encrypted.len() - 32);
+        let tag = H256::from_slice(tag_bytes);
 
         let x = ecdh_x(&public_key, &self.secret_key);
         let mut key = [0_u8; 32];
@@ -234,11 +233,10 @@ impl ECIES {
             return Err(ECIESError::TagCheckFailed);
         }
 
-        let iv = &data_iv[0..16];
-        let encrypted_data = &data_iv[16..];
-        let mut decrypted_data = encrypted_data.to_vec();
+        let (iv, encrypted_data) = data_iv.split_at_mut(16);
+        let mut decrypted_data = encrypted_data;
 
-        let mut decryptor = Aes128Ctr::new(enc_key.as_ref().into(), iv.into());
+        let mut decryptor = Aes128Ctr::new(enc_key.as_ref().into(), (&*iv).into());
         decryptor.decrypt(&mut decrypted_data);
 
         Ok(decrypted_data)
@@ -277,7 +275,6 @@ impl ECIES {
         let encrypted = self.encrypt_message(&unencrypted);
 
         let len_bytes = u16::try_from(encrypted.len()).unwrap().to_be_bytes();
-
         let mut message = Vec::with_capacity(len_bytes.len() + encrypted.len());
         message.extend_from_slice(&len_bytes);
         message.extend_from_slice(&encrypted);
@@ -326,7 +323,7 @@ impl ECIES {
         Ok(())
     }
 
-    pub fn parse_auth(&mut self, data: &[u8]) -> Result<(), ECIESError> {
+    pub fn parse_auth(&mut self, data: &mut [u8]) -> Result<(), ECIESError> {
         self.remote_init_msg = Some(data.into());
         let unencrypted = self.decrypt_message(data)?;
         self.parse_auth_unencrypted(&unencrypted)
@@ -375,7 +372,7 @@ impl ECIES {
         Ok(())
     }
 
-    pub fn parse_ack(&mut self, data: &[u8]) -> Result<(), ECIESError> {
+    pub fn parse_ack(&mut self, data: &mut [u8]) -> Result<(), ECIESError> {
         self.remote_init_msg = Some(data.into());
         let unencrypted = self.decrypt_message(data)?;
         self.parse_ack_unencrypted(&unencrypted)?;
@@ -577,10 +574,10 @@ mod tests {
             ECIES::new_client(client_secret_key, pk2id(&server_public_key)).unwrap();
 
         // Handshake
-        let auth = client_ecies.create_auth();
-        server_ecies.parse_auth(auth.as_ref()).unwrap();
-        let ack = server_ecies.create_ack();
-        client_ecies.parse_ack(ack.as_ref()).unwrap();
+        let mut auth = client_ecies.create_auth();
+        server_ecies.parse_auth(&mut auth).unwrap();
+        let mut ack = server_ecies.create_ack();
+        client_ecies.parse_ack(&mut ack).unwrap();
 
         let server_to_client_data = [0_u8, 1_u8, 2_u8, 3_u8, 4_u8];
         let client_to_server_data = [5_u8, 6_u8, 7_u8];
@@ -786,17 +783,21 @@ mod tests {
         "
         );
 
-        eip8_test_server().parse_auth(&auth2).unwrap();
-        eip8_test_server().parse_auth(&auth3).unwrap();
+        eip8_test_server().parse_auth(&mut auth2.to_vec()).unwrap();
+        eip8_test_server().parse_auth(&mut auth3.to_vec()).unwrap();
 
         let mut test_client = eip8_test_client();
         let mut test_server = eip8_test_server();
 
-        test_server.parse_auth(&test_client.create_auth()).unwrap();
+        test_server
+            .parse_auth(&mut test_client.create_auth())
+            .unwrap();
 
-        test_client.parse_ack(&test_server.create_ack()).unwrap();
+        test_client
+            .parse_ack(&mut test_server.create_ack())
+            .unwrap();
 
-        test_client.parse_ack(&ack2).unwrap();
-        test_client.parse_ack(&ack3).unwrap();
+        test_client.parse_ack(&mut ack2.to_vec()).unwrap();
+        test_client.parse_ack(&mut ack3.to_vec()).unwrap();
     }
 }

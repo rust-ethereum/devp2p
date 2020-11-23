@@ -22,10 +22,7 @@ use secp256k1::{
 };
 use sha2::Sha256;
 use sha3::Keccak256;
-use std::{
-    convert::TryFrom,
-    iter::{empty, once, repeat},
-};
+use std::{convert::TryFrom, iter::repeat};
 
 const PROTOCOL_VERSION: usize = 4;
 
@@ -252,14 +249,11 @@ impl ECIES {
             )
             .serialize_compact();
 
+        let mut sig_bytes = [0_u8; 65];
+        sig_bytes[..64].copy_from_slice(&sig);
+        sig_bytes[64] = rec_id.to_i32() as u8;
         let mut out = RlpStream::new_list(4);
-        out.append(
-            &empty()
-                .chain(&sig)
-                .chain(once(&(rec_id.to_i32() as u8)))
-                .copied()
-                .collect::<Vec<u8>>(),
-        );
+        out.append(&(&sig_bytes as &[u8]));
         out.append(&pk2id(&self.public_key));
         out.append(&self.nonce);
         out.append(&PROTOCOL_VERSION);

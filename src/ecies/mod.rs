@@ -3,4 +3,4 @@
 mod algorithm;
 mod proto;
 
-pub use self::proto::{ECIESCodec, ECIESState, ECIESStream, ECIESValue};
+pub use self::proto::{ECIESCodec, ECIESState, ECIESStream, EgressECIESValue, IngressECIESValue};

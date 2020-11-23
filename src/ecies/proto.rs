@@ -24,13 +24,19 @@ pub enum ECIESState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Raw values for an ECIES protocol
-pub enum ECIESValue {
+/// Raw egress values for an ECIES protocol
+pub enum EgressECIESValue {
     Auth,
     Ack,
-    Header(usize),
-    Body(Vec<u8>),
+    Message(Vec<u8>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Raw ingress values for an ECIES protocol
+pub enum IngressECIESValue {
     AuthReceive(PeerId),
+    Ack,
+    Message(Vec<u8>),
 }
 
 /// Tokio codec for ECIES
@@ -59,7 +65,7 @@ impl ECIESCodec {
 }
 
 impl Decoder for ECIESCodec {
-    type Item = ECIESValue;
+    type Item = IngressECIESValue;
     type Error = io::Error;
 
     #[instrument(level = "trace", skip(self, buf), fields(peer=&*format!("{:?}", self.ecies.remote_id.map(|s| s.to_string())), state=&*format!("{:?}", self.state)))]
@@ -83,7 +89,7 @@ impl Decoder for ECIESCodec {
                 self.ecies.parse_auth(&data)?;
 
                 self.state = ECIESState::Header;
-                Ok(Some(ECIESValue::AuthReceive(self.ecies.remote_id())))
+                Ok(Some(IngressECIESValue::AuthReceive(self.ecies.remote_id())))
             }
             ECIESState::Ack => {
                 trace!("parsing ack with len {}", buf.len());
@@ -103,7 +109,7 @@ impl Decoder for ECIESCodec {
                 self.ecies.parse_ack(&data)?;
 
                 self.state = ECIESState::Header;
-                Ok(Some(ECIESValue::Ack))
+                Ok(Some(IngressECIESValue::Ack))
             }
             ECIESState::Header => {
                 if buf.len() < ECIES::header_len() {
@@ -111,10 +117,10 @@ impl Decoder for ECIESCodec {
                 }
 
                 let data = buf.split_to(ECIES::header_len());
-                let size = self.ecies.parse_header(&data)?;
+                self.ecies.parse_header(&data)?;
 
                 self.state = ECIESState::Body;
-                Ok(Some(ECIESValue::Header(size)))
+                Ok(None)
             }
             ECIESState::Body => {
                 if buf.len() < self.ecies.body_len() {
@@ -125,42 +131,33 @@ impl Decoder for ECIESCodec {
                 let ret = self.ecies.parse_body(&data)?;
 
                 self.state = ECIESState::Header;
-                Ok(Some(ECIESValue::Body(ret)))
+                Ok(Some(IngressECIESValue::Message(ret)))
             }
         }
     }
 }
 
-impl Encoder<ECIESValue> for ECIESCodec {
+impl Encoder<EgressECIESValue> for ECIESCodec {
     type Error = io::Error;
 
     #[instrument(level = "trace", skip(self, buf), fields(peer=&*format!("{:?}", self.ecies.remote_id.map(|s| s.to_string())), state=&*format!("{:?}", self.state)))]
-    fn encode(&mut self, item: ECIESValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: EgressECIESValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
         match item {
-            ECIESValue::AuthReceive(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "AuthReceive is not expected",
-            )),
-            ECIESValue::Auth => {
+            EgressECIESValue::Auth => {
                 let data = self.ecies.create_auth();
                 self.state = ECIESState::Ack;
                 buf.extend_from_slice(&data);
                 Ok(())
             }
-            ECIESValue::Ack => {
+            EgressECIESValue::Ack => {
                 let data = self.ecies.create_ack();
                 self.state = ECIESState::Header;
                 buf.extend_from_slice(&data);
                 Ok(())
             }
-            ECIESValue::Header(size) => {
-                let data = self.ecies.create_header(size);
-                buf.extend_from_slice(&data);
-                Ok(())
-            }
-            ECIESValue::Body(val) => {
-                let data = self.ecies.create_body(val.as_ref());
-                buf.extend_from_slice(&data);
+            EgressECIESValue::Message(data) => {
+                buf.extend_from_slice(&self.ecies.create_header(data.len()));
+                buf.extend_from_slice(&self.ecies.create_body(&data));
                 Ok(())
             }
         }
@@ -171,7 +168,6 @@ impl Encoder<ECIESValue> for ECIESCodec {
 #[derive(Debug)]
 pub struct ECIESStream<Io> {
     stream: Framed<Io, ECIESCodec>,
-    polled_header: bool,
     remote_id: PeerId,
 }
 
@@ -192,16 +188,15 @@ where
         let mut transport = ecies.framed(transport);
 
         trace!("sending ecies auth ...");
-        transport.send(ECIESValue::Auth).await?;
+        transport.send(EgressECIESValue::Auth).await?;
 
         trace!("waiting for ecies ack ...");
         let ack = transport.try_next().await?;
 
         trace!("parsing ecies ack ...");
-        if ack == Some(ECIESValue::Ack) {
+        if matches!(ack, Some(IngressECIESValue::Ack)) {
             Ok(Self {
                 stream: transport,
-                polled_header: false,
                 remote_id,
             })
         } else {
@@ -220,7 +215,7 @@ where
 
         debug!("receiving ecies auth");
         let remote_id = match ack {
-            Some(ECIESValue::AuthReceive(remote_id)) => remote_id,
+            Some(IngressECIESValue::AuthReceive(remote_id)) => remote_id,
             other => {
                 debug!("expected auth, got {:?} instead", other);
                 bail!("invalid handshake");
@@ -229,13 +224,12 @@ where
 
         debug!("sending ecies ack ...");
         transport
-            .send(ECIESValue::Ack)
+            .send(EgressECIESValue::Ack)
             .await
             .context("failed to send ECIES auth")?;
 
         Ok(Self {
             stream: transport,
-            polled_header: false,
             remote_id,
         })
     }
@@ -253,38 +247,17 @@ where
     type Item = Result<Bytes, io::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if !this.polled_header {
-            match ready!(Pin::new(&mut this.stream).poll_next(cx)) {
-                Some(Ok(ECIESValue::Header(_))) => (),
-                Some(other) => {
-                    return Poll::Ready(Some(Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "ECIES stream protocol error: expected header, received {:?}",
-                            other
-                        ),
-                    ))))
-                }
-                None => return Poll::Ready(None),
-            };
-            this.polled_header = true;
+        match ready!(Pin::new(&mut self.get_mut().stream).poll_next(cx)) {
+            Some(Ok(IngressECIESValue::Message(body))) => Poll::Ready(Some(Ok(body.into()))),
+            Some(other) => Poll::Ready(Some(Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "ECIES stream protocol error: expected message, received {:?}",
+                    other
+                ),
+            )))),
+            None => Poll::Ready(None),
         }
-        let body = match ready!(Pin::new(&mut this.stream).poll_next(cx)) {
-            Some(Ok(ECIESValue::Body(val))) => val,
-            Some(other) => {
-                return Poll::Ready(Some(Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "ECIES stream protocol error: expected header, received {:?}",
-                        other
-                    ),
-                ))))
-            }
-            None => return Poll::Ready(None),
-        };
-        this.polled_header = false;
-        Poll::Ready(Some(Ok(body.into())))
     }
 }
 
@@ -300,8 +273,7 @@ where
 
     fn start_send(self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
         let this = self.get_mut();
-        Pin::new(&mut this.stream).start_send(ECIESValue::Header(item.len()))?;
-        Pin::new(&mut this.stream).start_send(ECIESValue::Body(item))?;
+        Pin::new(&mut this.stream).start_send(EgressECIESValue::Message(item))?;
 
         Ok(())
     }

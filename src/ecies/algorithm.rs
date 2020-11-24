@@ -22,7 +22,7 @@ use secp256k1::{
 };
 use sha2::Sha256;
 use sha3::Keccak256;
-use std::{convert::TryFrom, iter::repeat};
+use std::convert::TryFrom;
 
 const PROTOCOL_VERSION: usize = 4;
 
@@ -258,10 +258,9 @@ impl ECIES {
         out.append(&self.nonce);
         out.append(&PROTOCOL_VERSION);
 
-        out.out()
-            .into_iter()
-            .chain(repeat(0).take(thread_rng().gen_range(100, 301)))
-            .collect()
+        let mut out = out.out();
+        out.resize(out.len() + thread_rng().gen_range(100, 301), 0);
+        out
     }
 
     #[cfg(test)]

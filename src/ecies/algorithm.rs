@@ -173,7 +173,15 @@ impl ECIES {
     }
 
     fn encrypt_message(&self, data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(
+            secp256k1::constants::UNCOMPRESSED_PUBLIC_KEY_SIZE + 16 + data.len() + 32,
+        );
+
         let secret_key = SecretKey::new(&mut secp256k1::rand::thread_rng());
+        out.extend_from_slice(
+            &PublicKey::from_secret_key(SECP256K1, &secret_key).serialize_uncompressed(),
+        );
+
         let x = ecdh_x(&self.remote_public_key.unwrap(), &secret_key);
         let mut key = [0_u8; 32];
         kdf(x, &[], &mut key);
@@ -182,30 +190,21 @@ impl ECIES {
         let mac_key = sha256(&key[16..32]);
 
         let iv = H128::random();
-        let mut iv_encrypted = vec![0_u8; 16 + data.len()];
-        iv_encrypted[0..16].copy_from_slice(iv.as_ref());
-
         let mut encryptor = Aes128Ctr::new(enc_key.as_ref().into(), iv.as_ref().into());
 
         let mut encrypted = data.to_vec();
         encryptor.encrypt(&mut encrypted);
-        iv_encrypted[16..].copy_from_slice(&encrypted);
 
         let total_size: u16 = u16::try_from(65 + 16 + data.len() + 32).unwrap();
 
         let tag = hmac_sha256(
             mac_key.as_ref(),
-            iv_encrypted.as_ref(),
+            &[iv.as_bytes(), &encrypted],
             &total_size.to_be_bytes(),
         );
 
-        let pubkey_bytes =
-            PublicKey::from_secret_key(SECP256K1, &secret_key).serialize_uncompressed();
-
-        let mut out =
-            Vec::with_capacity(pubkey_bytes.len() + iv_encrypted.len() + tag.as_ref().len());
-        out.extend_from_slice(&pubkey_bytes);
-        out.extend_from_slice(&iv_encrypted);
+        out.extend_from_slice(iv.as_bytes());
+        out.extend_from_slice(&encrypted);
         out.extend_from_slice(tag.as_ref());
 
         out
@@ -217,6 +216,7 @@ impl ECIES {
         let public_key = PublicKey::from_slice(&pubkey_bytes)
             .with_context(|| format!("bad public key {}", hex::encode(pubkey_bytes)))?;
         let (data_iv, tag_bytes) = encrypted.split_at_mut(encrypted.len() - 32);
+        let (iv, encrypted_data) = data_iv.split_at_mut(16);
         let tag = H256::from_slice(tag_bytes);
 
         let x = ecdh_x(&public_key, &self.secret_key);
@@ -225,12 +225,11 @@ impl ECIES {
         let enc_key = H128::from_slice(&key[0..16]);
         let mac_key = sha256(&key[16..32]);
 
-        let check_tag = hmac_sha256(mac_key.as_ref(), data_iv, auth_data);
+        let check_tag = hmac_sha256(mac_key.as_ref(), &[iv, encrypted_data], auth_data);
         if check_tag != tag {
             return Err(ECIESError::TagCheckFailed);
         }
 
-        let (iv, encrypted_data) = data_iv.split_at_mut(16);
         let mut decrypted_data = encrypted_data;
 
         let mut decryptor = Aes128Ctr::new(enc_key.as_ref().into(), (&*iv).into());

@@ -142,9 +142,8 @@ impl Encoder<EgressECIESValue> for ECIESCodec {
     fn encode(&mut self, item: EgressECIESValue, buf: &mut BytesMut) -> Result<(), Self::Error> {
         match item {
             EgressECIESValue::Auth => {
-                let data = self.ecies.create_auth();
                 self.state = ECIESState::Ack;
-                buf.extend_from_slice(&data);
+                self.ecies.write_auth(buf);
                 Ok(())
             }
             EgressECIESValue::Ack => {

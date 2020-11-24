@@ -264,17 +264,25 @@ impl ECIES {
             .collect()
     }
 
-    pub fn create_auth(&mut self) -> Vec<u8> {
+    #[cfg(test)]
+    fn create_auth(&mut self) -> BytesMut {
+        let mut buf = BytesMut::new();
+        self.write_auth(&mut buf);
+        buf
+    }
+
+    pub fn write_auth(&mut self, buf: &mut BytesMut) {
         let unencrypted = self.create_auth_unencrypted();
         let encrypted = self.encrypt_message(&unencrypted);
 
         let len_bytes = u16::try_from(encrypted.len()).unwrap().to_be_bytes();
-        let mut message = Vec::with_capacity(len_bytes.len() + encrypted.len());
-        message.extend_from_slice(&len_bytes);
-        message.extend_from_slice(&encrypted);
 
-        self.init_msg = Some(message.clone());
-        message
+        let old_len = buf.len();
+        buf.reserve(len_bytes.len() + encrypted.len());
+        buf.extend_from_slice(&len_bytes);
+        buf.extend_from_slice(&encrypted);
+
+        self.init_msg = Some(buf[old_len..].to_vec());
     }
 
     fn parse_auth_unencrypted(&mut self, data: &[u8]) -> Result<(), ECIESError> {

@@ -506,18 +506,16 @@ impl ECIES {
         } else {
             (data.len() / 16 + 1) * 16
         };
-        let mut data_padded = vec![0_u8; len];
-        data_padded[..data.len()].clone_from_slice(&data[..]);
-        let mut encrypted = data_padded;
+        let old_len = out.len();
+        out.resize(old_len + len, 0);
+
+        let mut encrypted = &mut out[old_len..old_len + len];
+        encrypted[..data.len()].copy_from_slice(data);
+
         self.egress_aes.as_mut().unwrap().encrypt(&mut encrypted);
-        self.egress_mac
-            .as_mut()
-            .unwrap()
-            .update_body(encrypted.as_ref());
+        self.egress_mac.as_mut().unwrap().update_body(&encrypted);
         let tag = self.egress_mac.as_mut().unwrap().digest();
 
-        out.reserve(encrypted.len() + tag.as_bytes().len());
-        out.extend_from_slice(&encrypted);
         out.extend_from_slice(tag.as_bytes());
     }
 

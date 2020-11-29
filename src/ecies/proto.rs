@@ -28,7 +28,7 @@ pub enum ECIESState {
 pub enum EgressECIESValue {
     Auth,
     Ack,
-    Message(Vec<u8>),
+    Message(Bytes),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -258,7 +258,7 @@ where
     }
 }
 
-impl<Io> Sink<Vec<u8>> for ECIESStream<Io>
+impl<Io> Sink<Bytes> for ECIESStream<Io>
 where
     Io: Transport,
 {
@@ -268,7 +268,7 @@ where
         Pin::new(&mut self.get_mut().stream).poll_ready(cx)
     }
 
-    fn start_send(self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
         let this = self.get_mut();
         Pin::new(&mut this.stream).start_send(EgressECIESValue::Message(item))?;
 

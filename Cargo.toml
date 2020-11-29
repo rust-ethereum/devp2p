@@ -24,14 +24,14 @@ cidr = "0.1"
 derive_more = "0.99"
 digest = "0.9"
 discv4 = { git = "https://github.com/rust-ethereum/discv4", optional = true }
-discv5 = { git = "https://github.com/sigp/discv5", optional = true }
+discv5 = { git = "https://github.com/vorot93/discv5", branch = "bytes", optional = true }
 dnsdisc = { git = "https://github.com/rust-ethereum/dnsdisc", optional = true }
 educe = { version = "0.4", default-features = false, features = ["Clone", "Debug", "Default"] }
-enr = { git = "https://github.com/rust-ethereum/enr", default-features = false, features = ["rust-secp256k1"] }
+enr = { git = "https://github.com/rust-ethereum/enr", branch = "vorot93/bytes", default-features = false, features = ["rust-secp256k1"] }
 enum-primitive-derive = "0.2"
-ethereum-types = "0.9"
+ethereum-types = { git = "https://github.com/paritytech/parity-common", default-features = false, features = ["std"] }
 futures = "0.3"
-futures-intrusive = "0.3"
+futures-intrusive = "0.4"
 generic-array = "0.14"
 hex = "0.4"
 hmac = "0.10"
@@ -39,8 +39,8 @@ maplit = "1"
 num-traits = "0.2"
 parking_lot = "0.11"
 rand = "0.7"
-rlp = "0.4.6"
-rlp-derive = "0.1"
+rlp = { git = "https://github.com/paritytech/parity-common" }
+rlp-derive = { git = "https://github.com/paritytech/parity-common" }
 secp256k1 = { version = "0.19", features = ["global-context", "rand-std", "recovery"] }
 sha2 = "0.9"
 sha3 = "0.9"

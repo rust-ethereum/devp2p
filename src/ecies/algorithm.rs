@@ -10,7 +10,7 @@ use aes_ctr::{
 };
 use anyhow::Context;
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use digest::Digest;
 use educe::Educe;
 use ethereum_types::{H128, H256};
@@ -81,8 +81,8 @@ pub struct ECIES {
     ingress_mac: Option<MAC>,
     egress_mac: Option<MAC>,
 
-    init_msg: Option<Vec<u8>>,
-    remote_init_msg: Option<Vec<u8>>,
+    init_msg: Option<Bytes>,
+    remote_init_msg: Option<Bytes>,
 
     body_size: Option<usize>,
 }
@@ -238,7 +238,7 @@ impl ECIES {
         Ok(decrypted_data)
     }
 
-    fn create_auth_unencrypted(&self) -> Vec<u8> {
+    fn create_auth_unencrypted(&self) -> BytesMut {
         let x = ecdh_x(&self.remote_public_key.unwrap(), &self.secret_key);
         let msg = x ^ self.nonce;
         let (rec_id, sig) = SECP256K1
@@ -280,7 +280,7 @@ impl ECIES {
         buf.extend_from_slice(&len_bytes);
         buf.extend_from_slice(&encrypted);
 
-        self.init_msg = Some(buf[old_len..].to_vec());
+        self.init_msg = Some(Bytes::copy_from_slice(&buf[old_len..]));
     }
 
     fn parse_auth_unencrypted(&mut self, data: &[u8]) -> Result<(), ECIESError> {
@@ -324,12 +324,12 @@ impl ECIES {
     }
 
     pub fn read_auth(&mut self, data: &mut [u8]) -> Result<(), ECIESError> {
-        self.remote_init_msg = Some(data.into());
+        self.remote_init_msg = Some(Bytes::copy_from_slice(data));
         let unencrypted = self.decrypt_message(data)?;
         self.parse_auth_unencrypted(&unencrypted)
     }
 
-    fn create_ack_unencrypted(&self) -> Vec<u8> {
+    fn create_ack_unencrypted(&self) -> BytesMut {
         let mut out = RlpStream::new_list(3);
         out.append(&pk2id(&self.ephemeral_public_key));
         out.append(&self.nonce);
@@ -337,16 +337,16 @@ impl ECIES {
         out.out()
     }
 
-    pub fn create_ack(&mut self) -> Vec<u8> {
+    pub fn create_ack(&mut self) -> BytesMut {
         let unencrypted = self.create_ack_unencrypted();
         let encrypted = self.encrypt_message(&unencrypted);
 
         let len_bytes = u16::try_from(encrypted.len()).unwrap().to_be_bytes();
-        let mut message = Vec::with_capacity(len_bytes.len() + encrypted.len());
+        let mut message = BytesMut::with_capacity(len_bytes.len() + encrypted.len());
         message.extend_from_slice(&len_bytes);
         message.extend_from_slice(&encrypted);
 
-        self.init_msg = Some(message.clone());
+        self.init_msg = Some(message.clone().freeze());
         self.setup_frame(true);
         message
     }
@@ -373,7 +373,7 @@ impl ECIES {
     }
 
     pub fn read_ack(&mut self, data: &mut [u8]) -> Result<(), ECIESError> {
-        self.remote_init_msg = Some(data.into());
+        self.remote_init_msg = Some(Bytes::copy_from_slice(data));
         let unencrypted = self.decrypt_message(data)?;
         self.parse_ack_unencrypted(&unencrypted)?;
         self.setup_frame(false);

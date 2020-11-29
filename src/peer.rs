@@ -564,12 +564,12 @@ where
         let mut msg = rlp::encode(&message_id);
 
         if let Some(snappy) = &mut this.snappy {
-            msg.append(&mut snappy.encoder.compress_vec(&*payload).unwrap());
+            msg.extend_from_slice(&snappy.encoder.compress_vec(&*payload).unwrap());
         } else {
             msg.extend_from_slice(&*payload)
         }
 
-        Pin::new(&mut this.stream).start_send(msg)?;
+        Pin::new(&mut this.stream).start_send(msg.freeze())?;
 
         Ok(())
     }

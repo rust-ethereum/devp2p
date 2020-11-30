@@ -797,7 +797,7 @@ impl<C: CapabilityServer> Swarm<C> {
                     remote_id,
                     protocol_version,
                     client_version,
-                    capability_set.clone(),
+                    capability_set,
                     port,
                 )
                 .await

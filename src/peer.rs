@@ -1,6 +1,6 @@
 use crate::{ecies::ECIESStream, transport::Transport, types::*, util::pk2id};
 use anyhow::{anyhow, bail, Context as _};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use derive_more::Display;
 use enum_primitive_derive::Primitive;
 use futures::{ready, Sink, SinkExt};
@@ -245,12 +245,20 @@ where
             },
         };
         trace!("Sending hello message: {:?}", hello);
-        let outbound_hello = rlp::encode(&0_usize)
-            .into_iter()
-            .chain(rlp::encode(&hello))
-            .collect();
+        let mut outbound_hello = BytesMut::new();
+        outbound_hello = {
+            let mut s = RlpStream::new_with_buffer(outbound_hello);
+            s.append(&0_usize);
+            s.out()
+        };
+
+        outbound_hello = {
+            let mut s = RlpStream::new_with_buffer(outbound_hello);
+            s.append(&hello);
+            s.out()
+        };
         trace!("Outbound hello: {}", hex::encode(&outbound_hello));
-        transport.send(outbound_hello).await?;
+        transport.send(outbound_hello.freeze()).await?;
 
         let hello = transport.try_next().await?;
 

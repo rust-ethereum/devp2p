@@ -10,7 +10,7 @@ use aes_ctr::{
 };
 use anyhow::Context;
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use digest::Digest;
 use educe::Educe;
 use ethereum_types::{H128, H256};
@@ -172,10 +172,8 @@ impl ECIES {
         self.remote_id.unwrap()
     }
 
-    fn encrypt_message(&self, data: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(
-            secp256k1::constants::UNCOMPRESSED_PUBLIC_KEY_SIZE + 16 + data.len() + 32,
-        );
+    fn encrypt_message(&self, data: &[u8], out: &mut BytesMut) {
+        out.reserve(secp256k1::constants::UNCOMPRESSED_PUBLIC_KEY_SIZE + 16 + data.len() + 32);
 
         let secret_key = SecretKey::new(&mut secp256k1::rand::thread_rng());
         out.extend_from_slice(
@@ -206,8 +204,6 @@ impl ECIES {
         out.extend_from_slice(iv.as_bytes());
         out.extend_from_slice(&encrypted);
         out.extend_from_slice(tag.as_ref());
-
-        out
     }
 
     fn decrypt_message<'a>(&self, data: &'a mut [u8]) -> Result<&'a mut [u8], ECIESError> {
@@ -271,16 +267,21 @@ impl ECIES {
 
     pub fn write_auth(&mut self, buf: &mut BytesMut) {
         let unencrypted = self.create_auth_unencrypted();
-        let encrypted = self.encrypt_message(&unencrypted);
+
+        let mut out = buf.split_off(buf.len());
+        out.put_u16(0);
+
+        let mut encrypted = out.split_off(out.len());
+        self.encrypt_message(&unencrypted, &mut encrypted);
 
         let len_bytes = u16::try_from(encrypted.len()).unwrap().to_be_bytes();
+        out[..len_bytes.len()].copy_from_slice(&len_bytes);
 
-        let old_len = buf.len();
-        buf.reserve(len_bytes.len() + encrypted.len());
-        buf.extend_from_slice(&len_bytes);
-        buf.extend_from_slice(&encrypted);
+        out.unsplit(encrypted);
 
-        self.init_msg = Some(Bytes::copy_from_slice(&buf[old_len..]));
+        self.init_msg = Some(Bytes::copy_from_slice(&out));
+
+        buf.unsplit(out);
     }
 
     fn parse_auth_unencrypted(&mut self, data: &[u8]) -> Result<(), ECIESError> {
@@ -337,18 +338,34 @@ impl ECIES {
         out.out()
     }
 
+    #[cfg(test)]
     pub fn create_ack(&mut self) -> BytesMut {
+        let mut buf = BytesMut::new();
+        self.write_ack(&mut buf);
+        buf
+    }
+
+    pub fn write_ack(&mut self, out: &mut BytesMut) {
         let unencrypted = self.create_ack_unencrypted();
-        let encrypted = self.encrypt_message(&unencrypted);
 
+        let mut buf = out.split_off(out.len());
+
+        // reserve space for length
+        buf.put_u16(0);
+
+        // encrypt and append
+        let mut encrypted = buf.split_off(buf.len());
+        self.encrypt_message(&unencrypted, &mut encrypted);
         let len_bytes = u16::try_from(encrypted.len()).unwrap().to_be_bytes();
-        let mut message = BytesMut::with_capacity(len_bytes.len() + encrypted.len());
-        message.extend_from_slice(&len_bytes);
-        message.extend_from_slice(&encrypted);
+        buf.unsplit(encrypted);
 
-        self.init_msg = Some(message.clone().freeze());
+        // write length
+        buf[..len_bytes.len()].copy_from_slice(&len_bytes[..]);
+
+        self.init_msg = Some(buf.clone().freeze());
+        out.unsplit(buf);
+
         self.setup_frame(true);
-        message
     }
 
     fn parse_ack_unencrypted(&mut self, data: &[u8]) -> Result<(), ECIESError> {

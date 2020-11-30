@@ -147,9 +147,8 @@ impl Encoder<EgressECIESValue> for ECIESCodec {
                 Ok(())
             }
             EgressECIESValue::Ack => {
-                let data = self.ecies.create_ack();
                 self.state = ECIESState::Header;
-                buf.extend_from_slice(&data);
+                self.ecies.write_ack(buf);
                 Ok(())
             }
             EgressECIESValue::Message(data) => {

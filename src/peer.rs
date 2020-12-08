@@ -569,10 +569,18 @@ where
             }
         };
 
-        let mut msg = rlp::encode(&message_id);
+        let mut s = RlpStream::new_with_buffer(BytesMut::with_capacity(2 + payload.len()));
+        s.append(&message_id);
+        let mut msg = s.out();
 
         if let Some(snappy) = &mut this.snappy {
-            msg.extend_from_slice(&snappy.encoder.compress_vec(&*payload).unwrap());
+            let mut buf = msg.split_off(msg.len());
+            buf.resize(snap::raw::max_compress_len(payload.len()), 0);
+
+            let compressed_len = snappy.encoder.compress(&*payload, &mut buf).unwrap();
+            buf.truncate(compressed_len);
+
+            msg.unsplit(buf);
         } else {
             msg.extend_from_slice(&*payload)
         }

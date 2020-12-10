@@ -29,7 +29,7 @@ dnsdisc = { git = "https://github.com/rust-ethereum/dnsdisc", optional = true }
 educe = { version = "0.4", default-features = false, features = ["Clone", "Debug", "Default"] }
 enr = { git = "https://github.com/rust-ethereum/enr", branch = "vorot93/bytes", default-features = false, features = ["rust-secp256k1"] }
 enum-primitive-derive = "0.2"
-ethereum-types = { git = "https://github.com/paritytech/parity-common", default-features = false, features = ["std"] }
+ethereum-types = { git = "https://github.com/paritytech/parity-common", default-features = false, features = ["std", "rlp"] }
 futures = "0.3"
 futures-intrusive = "0.4"
 generic-array = "0.14"

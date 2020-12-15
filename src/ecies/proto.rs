@@ -36,7 +36,7 @@ pub enum EgressECIESValue {
 pub enum IngressECIESValue {
     AuthReceive(PeerId),
     Ack,
-    Message(Vec<u8>),
+    Message(Bytes),
 }
 
 /// Tokio codec for ECIES
@@ -126,10 +126,10 @@ impl Decoder for ECIESCodec {
                     }
 
                     let mut data = buf.split_to(self.ecies.body_len());
-                    let ret = self.ecies.read_body(&mut *data)?;
+                    let ret = Bytes::copy_from_slice(&self.ecies.read_body(&mut *data)?);
 
                     self.state = ECIESState::Header;
-                    return Ok(Some(IngressECIESValue::Message(ret.to_vec())));
+                    return Ok(Some(IngressECIESValue::Message(ret)));
                 }
             }
         }
@@ -245,7 +245,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match ready!(Pin::new(&mut self.get_mut().stream).poll_next(cx)) {
-            Some(Ok(IngressECIESValue::Message(body))) => Poll::Ready(Some(Ok(body.into()))),
+            Some(Ok(IngressECIESValue::Message(body))) => Poll::Ready(Some(Ok(body))),
             Some(other) => Poll::Ready(Some(Err(io::Error::new(
                 io::ErrorKind::Other,
                 format!(

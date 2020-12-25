@@ -22,13 +22,13 @@ use std::{
 use task_group::TaskGroup;
 use tokio::{
     net::{TcpListener, TcpStream},
-    stream::{StreamExt, StreamMap},
     sync::{
         mpsc::{channel, unbounded_channel},
         oneshot::{channel as oneshot, Sender as OneshotSender},
     },
     time::sleep,
 };
+use tokio_stream::{StreamExt, StreamMap};
 use tracing::*;
 use uuid::Uuid;
 
@@ -165,17 +165,14 @@ where
         .map(|cap_info| (cap_info.name, cap_info.version))
         .collect::<HashMap<_, _>>();
     let (mut sink, mut stream) = futures::StreamExt::split(peer);
-    let (peer_disconnect_tx, peer_disconnect_rx) = unbounded_channel();
-    let mut peer_disconnect_rx = peer_disconnect_rx.fuse();
+    let (peer_disconnect_tx, mut peer_disconnect_rx) = unbounded_channel();
     let tasks = TaskGroup::default();
 
     capability_server.on_peer_connect(remote_id, capability_set);
 
     let awaiting_ping = Arc::new(AtomicBool::default());
-    let (pings_tx, pings) = channel(1);
-    let mut pings = pings.fuse();
-    let (pongs_tx, pongs) = channel(1);
-    let mut pongs = pongs.fuse();
+    let (pings_tx, mut pings) = channel(1);
+    let (pongs_tx, mut pongs) = channel(1);
 
     tasks.spawn_with_name(format!("peer {} ingress router", remote_id), {
         let peer_disconnect_tx = peer_disconnect_tx.clone();
@@ -267,16 +264,16 @@ where
                         };
                     },
                     // We ping the peer.
-                    Some(tx) = pings.next() => {
+                    Some(tx) = pings.recv() => {
                         egress = Some(PeerMessage::Ping);
                         trigger = Some(tx);
                     }
                     // Peer has pinged us.
-                    Some(_) = pongs.next() => {
+                    Some(_) = pongs.recv() => {
                         egress = Some(PeerMessage::Pong);
                     }
                     // Ping timeout or signal from ingress router.
-                    Some(DisconnectSignal { initiator, reason }) = peer_disconnect_rx.next() => {
+                    Some(DisconnectSignal { initiator, reason }) = peer_disconnect_rx.recv() => {
                         if let DisconnectInitiator::Local = initiator {
                             egress = Some(PeerMessage::Disconnect(reason));
                         }

@@ -3,10 +3,8 @@ use dnsdisc::{Backend, Resolver};
 use secp256k1::{PublicKey, SecretKey};
 use std::{pin::Pin, sync::Arc, time::Duration};
 use task_group::TaskGroup;
-use tokio::{
-    stream::{Stream, StreamExt},
-    sync::mpsc::{channel, Receiver},
-};
+use tokio::sync::mpsc::{channel, Receiver};
+use tokio_stream::{Stream, StreamExt};
 use tracing::*;
 
 const MAX_SINGLE_RESOLUTION: u64 = 10;
@@ -86,6 +84,6 @@ impl Stream for DnsDiscovery {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        Pin::new(&mut self.receiver).poll_next(cx)
+        Pin::new(&mut self.receiver).poll_recv(cx)
     }
 }

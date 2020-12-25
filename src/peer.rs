@@ -13,7 +13,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::stream::{Stream, StreamExt};
+use tokio_stream::{Stream, StreamExt};
 use tracing::*;
 
 const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024;

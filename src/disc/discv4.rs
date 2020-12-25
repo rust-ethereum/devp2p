@@ -3,10 +3,8 @@ use discv4::Node;
 use educe::Educe;
 use std::{pin::Pin, sync::Arc};
 use task_group::TaskGroup;
-use tokio::{
-    stream::Stream,
-    sync::mpsc::{channel, Receiver},
-};
+use tokio::sync::mpsc::{channel, Receiver};
+use tokio_stream::Stream;
 
 #[derive(Educe)]
 #[educe(Default)]
@@ -79,7 +77,7 @@ impl Stream for Discv4 {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         Pin::new(&mut self.receiver)
-            .poll_next(cx)
+            .poll_recv(cx)
             .map(|opt| opt.map(Ok))
     }
 }

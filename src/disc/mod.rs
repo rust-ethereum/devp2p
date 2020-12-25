@@ -2,7 +2,7 @@ use crate::types::*;
 use derive_more::From;
 use futures::stream::BoxStream;
 use std::{collections::HashMap, net::SocketAddr, task::Poll};
-use tokio::stream::Stream;
+use tokio_stream::Stream;
 
 #[cfg(feature = "discv4")]
 mod discv4;

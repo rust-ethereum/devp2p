@@ -10,7 +10,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::stream::*;
+use tokio_stream::*;
 use tokio_util::codec::*;
 use tracing::*;
 

@@ -1,16 +1,13 @@
-use std::{pin::Pin, sync::Arc};
-
 use crate::{types::*, util::*};
 use anyhow::anyhow;
+use async_stream::stream;
 use futures::stream::BoxStream;
 use futures_intrusive::channel::UnbufferedChannel;
 use secp256k1::PublicKey;
+use std::{pin::Pin, sync::Arc};
 use task_group::TaskGroup;
-use tokio::{
-    select,
-    stream::{Stream, StreamExt},
-    sync::mpsc::channel,
-};
+use tokio::{select, sync::mpsc::channel};
+use tokio_stream::Stream;
 use tracing::*;
 
 pub struct Discv5 {
@@ -75,11 +72,11 @@ impl Discv5 {
             }
         });
 
-        let (tx, receiver) = channel(1);
+        let (tx, mut receiver) = channel(1);
         tasks.spawn_with_name("discv4 pump 2", async move {
             loop {
                 let err_fut = errors.receive();
-                let node_fut = nodes.next();
+                let node_fut = nodes.recv();
 
                 select! {
                     Some(error) = err_fut => {
@@ -101,7 +98,11 @@ impl Discv5 {
 
         Self {
             tasks,
-            receiver: Box::pin(receiver),
+            receiver: Box::pin(stream! {
+                while let Some(v) = receiver.recv().await {
+                    yield v;
+                }
+            }),
         }
     }
 }

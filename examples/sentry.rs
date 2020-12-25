@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use arrayvec::ArrayString;
+use async_stream::stream;
 use async_trait::async_trait;
 use devp2p::*;
 use ethereum_types::*;
@@ -19,13 +20,13 @@ use std::{
 };
 use task_group::*;
 use tokio::{
-    stream::{StreamExt, StreamMap},
     sync::{
         mpsc::{channel, Sender},
         Mutex as AsyncMutex,
     },
     time::sleep,
 };
+use tokio_stream::{StreamExt, StreamMap};
 use tracing::*;
 use tracing_subscriber::EnvFilter;
 
@@ -125,14 +126,19 @@ impl CapabilityServer for CapabilityServerImpl {
             },
         };
 
-        let (sender, receiver) = channel(1);
-        let receiver =
-            Box::pin(tokio::stream::iter(std::iter::once(first_message)).chain(receiver));
+        let (sender, mut receiver) = channel(1);
+
         self.setup_pipes(
             peer,
             Pipes {
                 sender,
-                receiver: Arc::new(AsyncMutex::new(receiver)),
+                receiver: Arc::new(AsyncMutex::new(Box::pin(stream! {
+                    yield first_message;
+
+                    while let Some(message) = receiver.recv().await {
+                        yield message;
+                    }
+                }))),
             },
         );
     }

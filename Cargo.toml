@@ -28,9 +28,9 @@ discv4 = { git = "https://github.com/rust-ethereum/discv4", optional = true }
 discv5 = { git = "https://github.com/vorot93/discv5", branch = "bytes", optional = true }
 dnsdisc = { git = "https://github.com/rust-ethereum/dnsdisc", optional = true }
 educe = { version = "0.4", default-features = false, features = ["Clone", "Debug", "Default"] }
-enr = { git = "https://github.com/rust-ethereum/enr", branch = "vorot93/bytes", default-features = false, features = ["rust-secp256k1"] }
+enr = { git = "https://github.com/rust-ethereum/enr", default-features = false, features = ["rust-secp256k1"] }
 enum-primitive-derive = "0.2"
-ethereum-types = { git = "https://github.com/paritytech/parity-common", default-features = false, features = ["std", "rlp"] }
+ethereum-types = { version = "0.10", default-features = false, features = ["std", "rlp"] }
 futures = "0.3"
 futures-intrusive = "0.4"
 generic-array = "0.14"
@@ -39,10 +39,10 @@ hmac = "0.10"
 maplit = "1"
 num-traits = "0.2"
 parking_lot = "0.11"
-rand = "0.7"
-rlp = { git = "https://github.com/paritytech/parity-common" }
-rlp-derive = { git = "https://github.com/paritytech/parity-common" }
-secp256k1 = { version = "0.19", features = ["global-context", "rand-std", "recovery"] }
+rand = "0.8"
+rlp = "0.5"
+rlp-derive = "0.1"
+secp256k1 = { version = "0.20", features = ["recovery"] }
 sha2 = "0.9"
 sha3 = "0.9"
 snap = "1"
@@ -60,7 +60,7 @@ hex-literal = "0.3"
 sha3 = "0.9"
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = "0.2"
-trust-dns-resolver = "0.19"
+trust-dns-resolver = "0.20"
 
 [[example]]
 name = "sentry"

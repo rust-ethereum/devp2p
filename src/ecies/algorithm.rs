@@ -254,7 +254,7 @@ impl ECIES {
         out.append(&PROTOCOL_VERSION);
 
         let mut out = out.out();
-        out.resize(out.len() + thread_rng().gen_range(100, 301), 0);
+        out.resize(out.len() + thread_rng().gen_range(100..=300), 0);
         out
     }
 

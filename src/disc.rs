@@ -5,22 +5,28 @@ use std::{collections::HashMap, net::SocketAddr, task::Poll};
 use tokio_stream::Stream;
 
 #[cfg(feature = "discv4")]
-mod discv4;
+mod v4;
 
 #[cfg(feature = "discv4")]
-pub use self::discv4::{Discv4, Discv4Builder};
+pub use self::v4::{Discv4, Discv4Builder};
+#[cfg(feature = "discv4")]
+pub use discv4;
 
 #[cfg(feature = "discv5")]
-mod discv5;
+mod v5;
 
 #[cfg(feature = "discv5")]
-pub use self::discv5::Discv5;
+pub use self::v5::Discv5;
+#[cfg(feature = "discv5")]
+pub use discv5;
 
 #[cfg(feature = "dnsdisc")]
-mod dnsdisc;
+mod dns;
 
 #[cfg(feature = "dnsdisc")]
-pub use self::dnsdisc::DnsDiscovery;
+pub use self::dns::DnsDiscovery;
+#[cfg(feature = "dnsdisc")]
+pub use dnsdisc;
 
 pub type Discovery = BoxStream<'static, anyhow::Result<NodeRecord>>;
 

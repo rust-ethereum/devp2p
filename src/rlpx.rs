@@ -170,14 +170,14 @@ where
 
     capability_server.on_peer_connect(remote_id, capability_set);
 
-    let awaiting_ping = Arc::new(AtomicBool::default());
+    let pinged = Arc::new(AtomicBool::default());
     let (pings_tx, mut pings) = channel(1);
     let (pongs_tx, mut pongs) = channel(1);
 
     tasks.spawn_with_name(format!("peer {} ingress router", remote_id), {
         let peer_disconnect_tx = peer_disconnect_tx.clone();
         let capability_server = capability_server.clone();
-        let awaiting_ping = awaiting_ping.clone();
+        let pinged = pinged.clone();
         async move {
             let disconnect_signal = {
                 async move {
@@ -213,7 +213,7 @@ where
                                 let _ = pongs_tx.send(()).await;
                             }
                             Ok(PeerMessage::Pong) => {
-                                awaiting_ping.store(false, Ordering::Relaxed);
+                                pinged.store(false, Ordering::Relaxed);
                             }
                         }
                     }
@@ -329,25 +329,27 @@ where
     );
 
     tasks.spawn_with_name(format!("peer {} pinger", remote_id), async move {
-        let _: anyhow::Result<()> = async {
-            loop {
-                awaiting_ping.store(true, Ordering::Relaxed);
+        loop {
+            pinged.store(true, Ordering::Relaxed);
 
-                let (tx, rx) = oneshot();
-                pings_tx.send(tx).await?;
-                rx.await?;
+            let (tx, rx) = oneshot();
+            if pings_tx.send(tx).await.is_ok() && rx.await.is_ok() {
                 sleep(PING_TIMEOUT).await;
 
-                if awaiting_ping.load(Ordering::Relaxed) {
+                if pinged.load(Ordering::Relaxed) {
                     let _ = peer_disconnect_tx.send(DisconnectSignal {
                         initiator: DisconnectInitiator::Local,
                         reason: DisconnectReason::PingTimeout,
                     });
-                    bail!("ping timeout");
+
+                    return;
                 }
+
+                continue;
             }
+
+            return;
         }
-        .await;
     });
     ConnectedPeerState { tasks }
 }

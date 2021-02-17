@@ -6,7 +6,7 @@
 //! * `EthIngressServer` which `MuxServer` calls into when new requests and gossip messages arrive.
 //! * `MuxServer` itself implements `EthProtocol` which is a simple gateway to abstract Ethereum network.
 
-#![allow(clippy::large_enum_variant)]
+#![allow(clippy::large_enum_variant, clippy::upper_case_acronyms)]
 
 mod disc;
 pub mod ecies;
